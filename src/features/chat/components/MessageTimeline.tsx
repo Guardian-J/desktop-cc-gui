@@ -1,0 +1,360 @@
+import { lazy, memo, Suspense, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useTranslation } from "react-i18next";
+import Copy from "lucide-react/dist/esm/icons/copy";
+import Check from "lucide-react/dist/esm/icons/check";
+import type { Message } from "@/lib/ipc";
+import type { SessionState } from "../store";
+import { parseUsage } from "../usage";
+import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
+import { useThrottled } from "@/hooks/use-throttled";
+import { useCopied } from "@/hooks/use-copied";
+import { MessageImages } from "./MessageImages";
+import { MessageAnchorRail, type MessageAnchor } from "./MessageAnchorRail";
+import { buildRows, collectToolKeys, rowKey, type TimelineRow } from "./timeline-rows";
+import { ProcessDisclosure } from "./ProcessDisclosure";
+import { useScrollFollow, useTailPin } from "./use-scroll-follow";
+import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { useAnchorRailScroll } from "./use-anchor-rail-scroll";
+import { useLoadEarlier } from "./use-load-earlier";
+
+const ANCHOR_TITLE_MAX_LENGTH = 60;
+const ANCHOR_DESCRIPTION_MAX_LENGTH = 160;
+
+/** Bounded plain-text preview copy for one anchor: first line is the title,
+ * the rest folds into a short description (reference: deriveAnchorPreviewCopy). */
+type AnchorRow = MessageAnchor & { rowIndex: number };
+
+function buildAnchorRows(rows: TimelineRow[]): AnchorRow[] {
+  const anchors: AnchorRow[] = [];
+  rows.forEach((row, rowIndex) => {
+    if (row.kind !== "msg" || row.message.role !== "user") return;
+    const normalizedLines = row.message.text
+      .split("\n")
+      .map((line) => line.trim().replace(/\s+/g, " "))
+      .filter(Boolean);
+    const firstLine = normalizedLines[0] ?? "";
+    const title =
+      firstLine.length > ANCHOR_TITLE_MAX_LENGTH
+        ? `${firstLine.slice(0, ANCHOR_TITLE_MAX_LENGTH)}…`
+        : firstLine;
+    const descriptionSource =
+      normalizedLines.length > 1
+        ? normalizedLines.slice(1).join(" ")
+        : firstLine.slice(ANCHOR_TITLE_MAX_LENGTH).trim();
+    const description =
+      descriptionSource.length > ANCHOR_DESCRIPTION_MAX_LENGTH
+        ? `${descriptionSource.slice(0, ANCHOR_DESCRIPTION_MAX_LENGTH)}…`
+        : descriptionSource;
+    anchors.push({
+      id: `u-${row.message.seq}`,
+      rowIndex,
+      title,
+      ...(description ? { description } : {}),
+    });
+  });
+  return anchors;
+}
+
+const TimelineRowView = memo(function TimelineRowView({
+  row,
+  workspacePath,
+  turnLive,
+  autoExpand,
+  seenTools,
+}: {
+  row: TimelineRow;
+  workspacePath: string;
+  /** True while the current turn is still streaming; suppresses the footer. */
+  turnLive: boolean;
+  /** True on the timeline's last process row: it rides open until a newer
+   * one appears, and stays open once the turn settles. */
+  autoExpand: boolean;
+  seenTools: Set<string>;
+}) {
+  // Every process run — thinking, tools, or both — folds into the same
+  // collapsed summary line ("思考 N 次 工具调用 M 次 >"); expanding shows
+  // the per-step details.
+  if (row.kind === "process") {
+    return (
+      <ProcessDisclosure
+        items={row.items}
+        autoExpand={autoExpand}
+        turnLive={turnLive}
+        processId={row.firstSeq}
+        seenTools={seenTools}
+      />
+    );
+  }
+  return (
+    <MessageRow
+      message={row.message}
+      workspacePath={workspacePath}
+      turnFinal={row.turnFinal && !turnLive}
+    />
+  );
+});
+
+const LazyMarkdown = lazy(() => import("./Markdown"));
+
+/** Markdown body; the react-markdown/highlight stack loads in a lazy chunk. */
+function Markdown({ text, workspacePath }: { text: string; workspacePath: string }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="prose-chat text-body-regular whitespace-pre-wrap text-text-primary">
+          {text}
+        </div>
+      }
+    >
+      <LazyMarkdown text={text} workspacePath={workspacePath} />
+    </Suspense>
+  );
+}
+
+/** Format a message timestamp: HH:mm today, MM-dd HH:mm this year, full date
+ * beyond. ts is RFC3339 (claude/pi) or epoch millis as a string (kimi/dsh). */
+function formatMessageTime(ts: string | null | undefined): string | null {
+  if (!ts) return null;
+  const ms = /^\d+$/.test(ts) ? Number(ts) : Date.parse(ts);
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return hm;
+  if (d.getFullYear() === now.getFullYear())
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
+}
+
+/** Compact token usage for one message: "↑3.2k ↓412". */
+function formatUsage(usage: unknown): string | null {
+  const u = parseUsage(usage);
+  if (!u || (!u.input && !u.output)) return null;
+  const fmt = (n: number) =>
+    n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
+  const parts: string[] = [];
+  if (u.input) parts.push(`↑${fmt(u.input)}`);
+  if (u.output) parts.push(`↓${fmt(u.output)}`);
+  return parts.join(" ");
+}
+
+/** Passive per-message facts, revealed on message hover: time · token usage · model. */
+function MessageMeta({ message }: { message: Message }) {
+  const parts = [
+    formatMessageTime(message.ts),
+    formatUsage(message.usage),
+    message.model || null,
+  ].filter((p): p is string => Boolean(p));
+  if (parts.length === 0) return null;
+  return (
+    <span className="text-caption-1-regular tabular-nums text-text-tertiary opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
+/** Assistant message hover actions (copy). */
+function MessageActions({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const { copied, copy } = useCopied();
+  const iconBtn =
+    "flex size-6 cursor-pointer items-center justify-center rounded-md text-foreground-icon-secondary transition-colors hover:bg-background-tertiary-hover hover:text-foreground-icon-primary";
+  return (
+    <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+      <button
+        type="button"
+        aria-label={t("chat.copy")}
+        onClick={() => copy(text)}
+        className={iconBtn}
+      >
+        {copied ? (
+          <Check className="size-3.5 text-lime-500" aria-hidden />
+        ) : (
+          <Copy className="size-3.5" aria-hidden />
+        )}
+      </button>
+    </div>
+  );
+}
+
+const MessageRow = memo(function MessageRow({
+  message,
+  workspacePath,
+  turnFinal,
+}: {
+  message: Message;
+  workspacePath: string;
+  turnFinal: boolean;
+}) {
+  // A live row's text grows per store flush; a full markdown reparse per
+  // flush scales linearly with reply length (~30ms at 32KB) and starves the
+  // main thread, so the parse is throttled. Settled rows never change and
+  // render as-is.
+  const text = useThrottled(message.text, message.live ? 120 : 0);
+  if (message.role === "user") {
+    return (
+      <div className="-mr-1.5 ml-auto flex w-fit max-w-[85%] flex-col rounded-xl bg-bubble-user px-3.5 py-2.5 text-left text-body-regular whitespace-pre-wrap break-words text-text-white">
+        {message.images && message.images.length > 0 && (
+          <MessageImages images={message.images} />
+        )}
+        {message.text}
+      </div>
+    );
+  }
+  return (
+    <div className="group flex flex-col text-left">
+      <Markdown text={text} workspacePath={workspacePath} />
+      {turnFinal && (
+        <div className="mt-1 flex items-center gap-2">
+          <MessageActions text={message.text} />
+          <MessageMeta message={message} />
+        </div>
+      )}
+    </div>
+  );
+});
+
+export const MessageTimeline = memo(function MessageTimeline({
+  session,
+  streaming,
+  onLoadEarlier,
+  workspacePath,
+}: {
+  session: SessionState;
+  streaming: boolean;
+  onLoadEarlier: () => void;
+  workspacePath: string;
+}) {
+  const { t } = useTranslation();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const items = session.messages;
+  const rows = useMemo(() => buildRows(items), [items]);
+  // Anchor rail: one dash per user message (reference: messageAnchors).
+  const anchors = useMemo(() => buildAnchorRows(rows), [rows]);
+  // Per-timeline, not a module singleton: ChatConversation remounts this
+  // with key={sessionKey}, so a tab switch gets a fresh set. Prime from
+  // the first snapshot that already has rows so history / tab-open does
+  // not replay height 0→auto. Do not lock an empty set — loading failure
+  // and load-earlier both flip `session.loading`, and an empty new chat
+  // must still animate the first live tools.
+  const [seenTools] = useState(() => new Set<string>());
+  const [primed, setPrimed] = useState(false);
+  if (!primed && rows.length > 0) {
+    for (const key of collectToolKeys(rows)) seenTools.add(key);
+    setPrimed(true);
+  }
+  // Key of the last process row — the one that stays expanded by default.
+  const lastProcessKey = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].kind === "process") return rowKey(rows[i]);
+    }
+    return null;
+  }, [rows]);
+  // Live stream rows are ordinary rows that grow in place; the only extra
+  // tail item is the turn-status indicator below them.
+  // The tail indicator stays mounted AND visible for the whole turn — a
+  // constant status anchor below the growing rows. Hiding it while content
+  // grew made every idle ↔ growing transition read as disconnect/reconnect:
+  // the status line kept popping in and out at each tool call and pause.
+  // The reply footer (copy + time + usage) only makes sense once the turn
+  // settles: while streaming, mid-turn segments (kimi multi-message replies)
+  // are not the final word.
+  const turnLive = streaming;
+  const count = rows.length + (streaming ? 1 : 0);
+
+  const virtualizer = useVirtualizer({
+    count,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 72,
+    overscan: 8,
+    getItemKey: (index) =>
+      index < rows.length ? rowKey(rows[index]) : "streaming-tail",
+  });
+
+  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, resumeFollow } = useScrollFollow({ scrollRef });
+  const { activeAnchorId, handleScrollToAnchor } = useAnchorRailScroll({
+    scrollRef,
+    anchors,
+    virtualizer,
+    rowCount: rows.length,
+    atBottomRef,
+    userPausedRef,
+  });
+  useTailPin({ scrollRef, count, items, streaming, isFollowing, scrollToBottom });
+  useLoadEarlier({
+    scrollRef,
+    virtualizer,
+    rows,
+    itemCount: items.length,
+    nextBefore: session.nextBefore,
+    onLoadEarlier,
+  });
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <MessageAnchorRail
+        activeAnchorId={activeAnchorId}
+        anchors={anchors}
+        navigationLabel={t("chat.anchorNavigation")}
+        getFallbackTitle={(index) => t("chat.anchorUserTitle", { index: index + 1 })}
+        onScrollToAnchor={handleScrollToAnchor}
+      />
+      <ScrollToBottomButton scrollRef={scrollRef} contentSignal={count} onJump={resumeFollow} />
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4">
+        <div data-sentinel className="h-px" />
+        {session.nextBefore && (
+          <button
+            type="button"
+            onClick={onLoadEarlier}
+            className="mx-auto my-2 block rounded-full bg-background-tertiary-default px-3 py-1 text-caption-1-medium text-text-secondary hover:bg-background-secondary-hover"
+          >
+            {t("chat.loadEarlier")}
+          </button>
+        )}
+        <div
+          data-virtual-inner
+          style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+          className="mx-auto max-w-[750px]"
+        >
+          {virtualizer.getVirtualItems().map((item) => {
+            const isTail = item.index >= rows.length;
+            return (
+              <div
+                key={item.key}
+                data-index={item.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${item.start}px)`,
+                }}
+                className="py-2"
+              >
+                {isTail ? (
+                  <AgentThinking
+                    variant="wave"
+                    label={t("chat.thinking")}
+                    className="py-2"
+                    startedAt={session.turnStartedAt ?? undefined}
+                  />
+                ) : (
+                  <TimelineRowView
+                    row={rows[item.index]}
+                    workspacePath={workspacePath}
+                    turnLive={turnLive}
+                    autoExpand={rowKey(rows[item.index]) === lastProcessKey}
+                    seenTools={seenTools}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+});

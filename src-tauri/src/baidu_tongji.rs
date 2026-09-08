@@ -1,4 +1,15 @@
-use crate::{app_paths, storage};
+//! Linux-native Baidu Tongji transport.
+//!
+//! Ported from the legacy desktop-cc-gui analytics module. On Linux native
+//! (WebKitGTK), any `hm.baidu.com` request through WebKitNetworkProcess can
+//! crash libsoup and blank the window, so the renderer installs an Image.src
+//! bridge and these two commands move the official `hm.js` fetch and the
+//! `hm.gif` beacon onto a fixed, narrow reqwest path. The official script
+//! stays the payload authority; only the network transport is native.
+//! Windows/macOS and the web-access build keep the external script path and
+//! never invoke these commands.
+
+use crate::paths;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, COOKIE, REFERER, SET_COOKIE, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -38,6 +49,52 @@ struct NativeAnalyticsResponse {
     response_cookie: Option<String>,
 }
 
+// ── Minimal JSON storage helpers (legacy storage:: equivalents) ─────────────
+
+fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map(Some)
+            .map_err(|error| format!("parse {}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read {}: {error}", path.display())),
+    }
+}
+
+fn write_json_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let content = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    crate::settings::atomic_write(path, &content)
+}
+
+/// Quarantine a corrupted record: rename next to the original and report the
+/// backup path. Never deletes data, never fails the caller.
+fn backup_corrupted_file(path: &Path, error: &str) -> Option<PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let file_name = path.file_name()?.to_string_lossy();
+    let backup = path.with_file_name(format!("{file_name}.corrupted-{millis}"));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => Some(backup),
+        Err(rename_error) => {
+            eprintln!(
+                "baidu_tongji: failed to quarantine corrupted record ({error}): {rename_error}"
+            );
+            None
+        }
+    }
+}
+
+// ── State ───────────────────────────────────────────────────────────────────
+
 impl BaiduTongjiState {
     pub(crate) fn load() -> Self {
         let (storage_path, visitor_cookie) = match visitor_cookie_path() {
@@ -46,7 +103,7 @@ impl BaiduTongjiState {
                 (Some(path), cookie)
             }
             Err(error) => {
-                log::warn!("baidu_tongji: failed to resolve visitor-cookie storage: {error}");
+                eprintln!("baidu_tongji: failed to resolve visitor-cookie storage: {error}");
                 (None, None)
             }
         };
@@ -62,7 +119,7 @@ impl BaiduTongjiState {
             Err(error) => {
                 let message =
                     redacted_reqwest_error("failed to build native analytics HTTP client", &error);
-                log::warn!("baidu_tongji: {message}");
+                eprintln!("baidu_tongji: {message}");
                 (None, Some(message))
             }
         };
@@ -78,7 +135,7 @@ impl BaiduTongjiState {
 }
 
 fn visitor_cookie_path() -> Result<PathBuf, String> {
-    Ok(app_paths::app_home_dir()?
+    Ok(paths::app_home()
         .join("analytics")
         .join(BAIDU_TONGJI_COOKIE_FILENAME))
 }
@@ -195,7 +252,7 @@ fn extract_hmac_count(headers: &HeaderMap) -> Option<String> {
 }
 
 fn read_visitor_cookie(path: &Path) -> Result<Option<String>, String> {
-    let Some(record) = storage::read_json_file::<PersistedVisitorCookie>(path)? else {
+    let Some(record) = read_json_file::<PersistedVisitorCookie>(path)? else {
         return Ok(None);
     };
     match record.hmac_count {
@@ -209,8 +266,8 @@ fn load_visitor_cookie(path: &PathBuf) -> Option<String> {
     match read_visitor_cookie(path) {
         Ok(cookie) => cookie,
         Err(error) => {
-            let backup_path = storage::backup_corrupted_file(path, &error);
-            log::warn!(
+            let backup_path = backup_corrupted_file(path, &error);
+            eprintln!(
                 "baidu_tongji: failed to read visitor cookie; quarantined={}",
                 backup_path.is_some()
             );
@@ -223,7 +280,7 @@ fn persist_visitor_cookie(path: &Path, value: &str) -> Result<(), String> {
     if !valid_hmac_count(value) {
         return Err("invalid native analytics visitor cookie".to_string());
     }
-    storage::write_json_file(
+    write_json_file(
         path,
         &PersistedVisitorCookie {
             hmac_count: Some(value.to_string()),
@@ -248,15 +305,15 @@ fn validate_main_linux_webview(webview: &WebviewWindow) -> Result<(), String> {
 
 async fn persist_cookie_update(state: &BaiduTongjiState, value: String) {
     let Some(path) = state.storage_path.clone() else {
-        log::warn!("baidu_tongji: visitor cookie is memory-only because storage is unavailable");
+        eprintln!("baidu_tongji: visitor cookie is memory-only because storage is unavailable");
         return;
     };
     let persisted =
         tokio::task::spawn_blocking(move || persist_visitor_cookie(&path, &value)).await;
     match persisted {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => log::warn!("baidu_tongji: {error}"),
-        Err(error) => log::warn!("baidu_tongji: visitor-cookie persistence task failed: {error}"),
+        Ok(Err(error)) => eprintln!("baidu_tongji: {error}"),
+        Err(error) => eprintln!("baidu_tongji: visitor-cookie persistence task failed: {error}"),
     }
 }
 
@@ -411,7 +468,7 @@ pub(crate) async fn load_baidu_tongji_script(
     webview
         .eval(script)
         .map_err(|error| format!("failed to evaluate native analytics script: {error}"))?;
-    log::info!(
+    println!(
         "baidu_tongji: native script loaded status={} bytes={} visitorCookiePresent={}",
         status.as_u16(),
         bytes.len(),
@@ -438,7 +495,7 @@ pub(crate) async fn send_baidu_tongji_beacon(
     let had_visitor_cookie = sent_cookie.is_some();
     let status = response.status();
     validate_and_commit_beacon_response(&state, status, sent_cookie, response_cookie).await?;
-    log::info!(
+    println!(
         "baidu_tongji: native beacon accepted status={} hasHca=true visitorCookiePresent={}",
         status.as_u16(),
         had_visitor_cookie

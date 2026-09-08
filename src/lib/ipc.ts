@@ -1,0 +1,421 @@
+// Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
+import { invoke } from "./transport";
+
+// ==================== Shared types (mirror Rust serde camelCase) ====================
+
+export interface SessionMeta {
+  engine: string;
+  sessionId: string;
+  workspacePath: string;
+  filePath: string;
+  fileSize: number;
+  fileMtimeMs: number;
+  title: string;
+  preview: string;
+  createdAt: number | null;
+  updatedAt: number | null;
+  messageCount: number;
+  pinned: boolean;
+  customTitle: string | null;
+}
+
+export interface Message {
+  seq: number;
+  role: string; // "user" | "assistant" | "tool" | "thinking"
+  text: string;
+  /** Target file of a tool call (read/edit/write/...); renders as a file chip. */
+  path?: string | null;
+  ts: string | null;
+  usage?: unknown;
+  model?: string | null;
+  /** True while the row belongs to the in-flight stream and may still grow. */
+  live?: boolean;
+  /** Image attachments: data URLs render directly, absolute paths load via readFile. */
+  images?: string[];
+}
+
+export interface SessionPage {
+  messages: Message[];
+  nextBefore: number | null;
+}
+
+export interface Workspace {
+  id: string;
+  path: string;
+  name: string;
+  lastOpenedAt: number | null;
+  sortOrder: number | null;
+  /** Sidebar group id (工作区分组); null = ungrouped. */
+  groupId: string | null;
+}
+
+export interface EngineInfo {
+  id: string;
+  available: boolean;
+  /** False when the user disabled this CLI in settings — hidden from the
+   * picker and history lists; running sessions are unaffected. */
+  enabled: boolean;
+  supportsImages: boolean;
+  /** Permission modes the engine honors at spawn ("auto" | "manual" |
+   * "plan" | "bypass"); the composer picker greys out the rest. */
+  permissions: string[];
+}
+/** One entry of an engine's model catalog (`--list-models` probe). */
+export interface EngineModel {
+  /** Selector passed to `--model` ("provider/model"). */
+  id: string;
+  /** Display name when the catalog carries one. */
+  name?: string | null;
+  /** Secondary line under the name (e.g. "Custom Opus model"). */
+  description?: string | null;
+  provider: string;
+  /** Context window tokens when the catalog reports one. */
+  contextWindow?: number | null;
+}
+
+/** An engine's model catalog plus how much trust the list deserves. */
+export interface EngineCatalog {
+  models: EngineModel[];
+  /**
+   * True when `models` is exactly what the CLI's model flag resolves
+   * (config/registry/binary-derived): a stored pick outside it cannot
+   * run and should reset to the leading entry. False for relay-probed
+   * lists (claude), which may be partial.
+   */
+  authoritative: boolean;
+}
+
+export interface SendResult {
+  runId: string;
+  sessionId: string | null;
+}
+
+export interface ProviderSection {
+  providers: Record<string, unknown>;
+  current: string | null;
+  /** Provider parked when the engine was disabled via the enable switch. */
+  disabledFrom?: string | null;
+}
+export interface CcSwitchStatus {
+  installed: boolean;
+  changed: boolean;
+  providers: number;
+  hash: string;
+  modifiedMs: number;
+}
+
+export interface CcSwitchImportResult {
+  added: number;
+  updated: number;
+  skipped: number;
+  removed: number;
+}
+/** Result of `fetch_provider_models`: model ids plus the candidate URL that
+ *  answered (a derivation of the channel's base URL). */
+export interface ProviderModelList {
+  models: string[];
+  endpoint: string;
+}
+
+export interface WorkspaceGroup {
+  id: string;
+  name: string;
+  sortOrder?: number | null;
+  /** Legacy "clone copies" folder, preserved on import round-trips. */
+  copiesFolder?: string | null;
+}
+
+export interface CliConfig {
+  claude: ProviderSection;
+  kimi: ProviderSection;
+  grok: ProviderSection;
+  codex: ProviderSection;
+  pi: ProviderSection;
+  omp: ProviderSection;
+  dsh: ProviderSection;
+}
+
+export interface AppSettings {
+  theme: string;
+  /** Sidebar workspace groups (工作区二级分类), ordered by sortOrder then name.
+   *  The assignment lives on each workspace (`Workspace.groupId`). */
+  workspaceGroups: WorkspaceGroup[];
+  /** Workspace id -> sidebar display alias; absent = show the folder name. */
+  workspaceAliases: Record<string, string>;
+  language: string;
+  claudeBin: string | null;
+  kimiBin: string | null;
+  grokBin: string | null;
+  codexBin: string | null;
+  piBin: string | null;
+  ompBin: string | null;
+  dshBin: string | null;
+  defaultModels: Record<string, string>;
+  defaultEfforts: Record<string, string>;
+  /** Max sessions listed per workspace in the sidebar (default 5). */
+  sidebarThreadLimit: number;
+  /** Composer send gesture: "enter" (Enter sends) or "cmdEnter" (⌘/Ctrl+Enter sends). */
+  composerSendShortcut: string;
+  /** Terminal shell override; null/empty = auto-detect. */
+  terminalShellPath: string | null;
+}
+
+export interface DirEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+  mtimeMs: number;
+}
+
+export interface FileContent {
+  kind: "text" | "image" | "binary";
+  text: string | null;
+  dataUrl: string | null;
+  truncated: boolean;
+}
+/** Result of `duplicate_item` / `paste_item`: the created destination. */
+export interface FileOpResult {
+  path: string;
+  isDir: boolean;
+}
+
+export interface SearchHit {
+  path: string;
+  line: number;
+  text: string;
+}
+/** One entry of the workspace file index (`list_file_index`). */
+export interface FileIndexEntry {
+  /** Workspace-relative path, "/" separators. */
+  rel: string;
+  isDir: boolean;
+}
+
+export interface GitFileEntry {
+  path: string;
+  status: string;
+  additions?: number;
+  deletions?: number;
+}
+
+export interface GitStatus {
+  branch: string;
+  staged: GitFileEntry[];
+  unstaged: GitFileEntry[];
+  untracked: GitFileEntry[];
+}
+
+export interface BranchInfo {
+  name: string;
+  isCurrent: boolean;
+}
+export interface AppMetrics {
+  /** Resident memory of the app process, bytes. */
+  memoryBytes: number;
+  /** CPU usage since the previous poll, percent of one core. */
+  cpuPercent: number;
+}
+export interface WebAccessInfo {
+  /** Full URL including the auth token — shareable as-is or as a QR code. */
+  url: string;
+  port: number;
+  token: string;
+  lanIp: string;
+}
+
+// ==================== Typed invoke wrappers ====================
+// Shared in-flight/cached app-settings promise: startup, the settings page
+// and the chat store all read the same settings, so fetch once.
+let settingsPromise: Promise<AppSettings> | null = null;
+// ---- pi-family (pi/omp) provider auth & custom providers (供应商认证) ----
+
+export type PiFamilyAuthState = "configured" | "none";
+export type PiFamilyKeySource = "literal" | "command" | "envRef";
+
+export interface PiFamilyAuthProviderSnapshot {
+  id: string;
+  envVar: string | null;
+  state: PiFamilyAuthState;
+  maskedKey?: string;
+  keySource?: PiFamilyKeySource;
+}
+
+export interface PiFamilyAuthListResult {
+  store: { path: string; kind: "authJson" | "sqlite"; exists: boolean };
+  providers: PiFamilyAuthProviderSnapshot[];
+  /** Provider ids holding an active OAuth credential (raw store ids — pi
+   * lands ChatGPT subscription logins under `openai-codex`). */
+  oauthProviders: string[];
+}
+
+export interface PiFamilyCustomProviderSummary {
+  id: string;
+  name: string | null;
+  baseUrl: string | null;
+  api: string | null;
+  modelCount: number;
+  hasApiKey: boolean;
+}
+
+export interface PiFamilyModelsConfigReadResult {
+  file: { path: string; format: "json" | "yaml"; exists: boolean };
+  text: string | null;
+  template: string;
+  providers: PiFamilyCustomProviderSummary[];
+  parseError: string | null;
+}
+
+export const ipc = {
+  // config
+  getCliConfig: () => invoke<CliConfig>("get_cli_config"),
+  upsertProvider: (engine: string, id: string, json: unknown) =>
+    invoke<void>("upsert_provider", { engine, id, json }),
+  deleteProvider: (engine: string, id: string) =>
+    invoke<void>("delete_provider", { engine, id }),
+  setCurrentProvider: (engine: string, id: string) =>
+    invoke<void>("set_current_provider", { engine, id }),
+  /** Native config files a channel switch would overwrite (shown in the
+   *  switch confirmation); empty for display-only engines. */
+  providerFilePaths: (engine: string) =>
+    invoke<string[]>("provider_file_paths", { engine }),
+  reorderProviders: (engine: string, ids: string[]) =>
+    invoke<void>("reorder_providers", { engine, ids }),
+  setEngineEnabled: (engine: string, enabled: boolean) =>
+    invoke<void>("set_engine_enabled", { engine, enabled }),
+  // pi/omp provider auth (auth.json for pi, agent.db auth_credentials for omp)
+  piFamilyAuthList: (engine: string) =>
+    invoke<PiFamilyAuthListResult>("pi_family_auth_list", { engine }),
+  piFamilyAuthSetApiKey: (engine: string, providerId: string, key: string) =>
+    invoke<void>("pi_family_auth_set_api_key", { engine, providerId, key }),
+  piFamilyAuthDeleteCredential: (engine: string, providerId: string) =>
+    invoke<void>("pi_family_auth_delete_credential", { engine, providerId }),
+  // pi/omp custom providers (models.json for pi, models.yml for omp)
+  piFamilyModelsConfigRead: (engine: string) =>
+    invoke<PiFamilyModelsConfigReadResult>("pi_family_models_config_read", { engine }),
+  piFamilyModelsConfigWrite: (engine: string, text: string) =>
+    invoke<void>("pi_family_models_config_write", { engine, text }),
+  // cc-switch interop
+  checkCcSwitch: () => invoke<CcSwitchStatus>("check_cc_switch"),
+  dismissCcSwitch: (hash: string) => invoke<void>("dismiss_cc_switch", { hash }),
+  importCcSwitch: (engine: string) =>
+    invoke<CcSwitchImportResult>("import_cc_switch", { engine }),
+  importCcSwitchFromPath: (path: string, engine: string) =>
+    invoke<CcSwitchImportResult>("import_cc_switch_from_path", { path, engine }),
+  testProviderConnection: (url: string) =>
+    invoke<number>("test_provider_connection", { url }),
+  /** 拉取模型: probe the channel's /v1/models endpoint for its model list. */
+  fetchProviderModels: (baseUrl: string, apiKey: string) =>
+    invoke<ProviderModelList>("fetch_provider_models", { baseUrl, apiKey }),
+  // settings
+  getAppSettings: () =>
+    (settingsPromise ??= invoke<AppSettings>("get_app_settings").catch((e) => {
+      // Allow retry after a failed fetch instead of caching the rejection.
+      settingsPromise = null;
+      throw e;
+    })),
+  updateAppSettings: async (settings: AppSettings) => {
+    await invoke<void>("update_app_settings", { settings });
+    // Keep the cache in sync with the authoritative value just persisted.
+    settingsPromise = Promise.resolve(settings);
+  },
+  // engine
+  sendMessage: (args: {
+    engine: string;
+    workspacePath: string;
+    sessionId: string | null;
+    prompt: string;
+    imagePaths: string[] | null;
+    model: string | null;
+    effort: string | null;
+    permission: string | null;
+  }) => invoke<SendResult>("send_message", args),
+  interruptSession: (sessionId: string) =>
+    invoke<boolean>("interrupt_session", { sessionId }),
+  listEngines: () => invoke<EngineInfo[]>("list_engines"),
+  /** Persist a clipboard image to app home; returns its absolute path so it
+   * can flow through the same path-based image pipeline as picked files. */
+  savePastedImage: (dataBase64: string, extension: string) =>
+    invoke<string>("save_pasted_image", { dataBase64, extension }),
+  /** Copy explicitly user-picked files into the app sandbox and return the
+   * new paths (same order). Picked paths live outside the sandbox, so the
+   * engines' path-based image pipeline cannot read them in place. */
+  importAttachments: (paths: string[]) => invoke<string[]>("import_attachments", { paths }),
+  listEngineModels: (engine: string) =>
+    invoke<EngineCatalog>("list_engine_models", { engine }),
+  // history
+  listSessions: () => invoke<SessionMeta[]>("list_sessions"),
+  loadSessionPage: (
+    engine: string,
+    sessionId: string,
+    limit?: number,
+    beforeSeq?: number | null,
+  ) => invoke<SessionPage>("load_session_page", { engine, sessionId, limit, beforeSeq }),
+  deleteSession: (engine: string, sessionId: string) =>
+    invoke<void>("delete_session", { engine, sessionId }),
+  pinSession: (engine: string, sessionId: string, pinned: boolean) =>
+    invoke<void>("pin_session", { engine, sessionId, pinned }),
+  renameSession: (engine: string, sessionId: string, title: string) =>
+    invoke<void>("rename_session", { engine, sessionId, title }),
+  rescanSessions: () => invoke<void>("rescan_sessions"),
+  listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
+  addWorkspace: (path: string) => invoke<Workspace>("add_workspace", { path }),
+  reorderWorkspaces: (ids: string[]) => invoke<void>("reorder_workspaces", { ids }),
+  removeWorkspace: (id: string) => invoke<void>("remove_workspace", { id }),
+  setWorkspaceGroup: (id: string, groupId: string | null) =>
+    invoke<void>("set_workspace_group", { id, groupId }),
+  // terminal
+  /** Idempotent: re-opening a live session id is a no-op on the backend. */
+  terminalOpen: (args: { id: string; cwd: string; cols: number; rows: number }) =>
+    invoke<void>("terminal_open", args),
+  terminalWrite: (id: string, data: string) =>
+    invoke<void>("terminal_write", { id, data }),
+  terminalResize: (id: string, cols: number, rows: number) =>
+    invoke<void>("terminal_resize", { id, cols, rows }),
+  /** No-op when the session is already gone. */
+  terminalClose: (id: string) => invoke<void>("terminal_close", { id }),
+  // files
+  listDir: (path: string) => invoke<DirEntry[]>("list_dir", { path }),
+  readFile: (path: string) => invoke<FileContent>("read_file", { path }),
+  writeFile: (path: string, content: string) =>
+    invoke<void>("write_file", { path, content }),
+  createDir: (path: string) => invoke<void>("create_dir", { path }),
+  /** Fails when the file already exists (unlike write_file, which overwrites). */
+  createFile: (path: string) => invoke<void>("create_file", { path }),
+  renameItem: (from: string, to: string) => invoke<void>("rename_item", { from, to }),
+  trashItem: (path: string) => invoke<void>("trash_item", { path }),
+  duplicateItem: (path: string) => invoke<FileOpResult>("duplicate_item", { path }),
+  pasteItem: (source: string, targetDir: string) =>
+    invoke<FileOpResult>("paste_item", { source, targetDir }),
+  searchText: (path: string, query: string) =>
+    invoke<SearchHit[]>("search_text", { path, query }),
+  /** Whole-tree file index for the composer @-mention picker (relative
+   * paths; backend caps at 20k entries). */
+  listFileIndex: (path: string) => invoke<FileIndexEntry[]>("list_file_index", { path }),
+  // git
+  gitStatus: (path: string) => invoke<GitStatus>("git_status", { path }),
+  gitDiff: (path: string, file: string, staged: boolean) =>
+    invoke<string>("git_diff", { path, file, staged }),
+  gitStage: (path: string, files: string[]) => invoke<void>("git_stage", { path, files }),
+  gitUnstage: (path: string, files: string[]) =>
+    invoke<void>("git_unstage", { path, files }),
+  gitCommit: (path: string, message: string) =>
+    invoke<string>("git_commit", { path, message }),
+  gitPush: (path: string) => invoke<void>("git_push", { path }),
+  gitPull: (path: string) => invoke<void>("git_pull", { path }),
+  gitBranches: (path: string) => invoke<BranchInfo[]>("git_branches", { path }),
+  gitCheckout: (path: string, branch: string) =>
+    invoke<void>("git_checkout", { path, branch }),
+  gitCreateBranch: (path: string, name: string) =>
+    invoke<void>("git_create_branch", { path, name }),
+  // open-app
+  openWorkspaceIn: (path: string, options: { appName: string; args?: string[] }) =>
+    invoke<void>("open_workspace_in", { path, app: options.appName, args: options.args ?? [] }),
+  revealInFileManager: (path: string) =>
+    invoke<void>("reveal_in_file_manager", { path }),
+  // metrics
+  appMetrics: () => invoke<AppMetrics>("app_metrics"),
+  // web access (start/stop are desktop-only; the bridge answers status too)
+  webAccessStart: () => invoke<WebAccessInfo>("web_access_start"),
+  webAccessStop: () => invoke<void>("web_access_stop"),
+  webAccessStatus: () => invoke<WebAccessInfo | null>("web_access_status"),
+};
