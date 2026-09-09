@@ -48,6 +48,21 @@ impl Engine for PiFamilyEngine {
             cmd.arg("--model");
             cmd.arg(model);
         }
+        // Only explicit OpenAI-Codex selectors opt into this per-app preference.
+        // Never leak it to pi, another provider or an unknown CLI default.
+        if self.id == "omp"
+            && req.model.as_deref().is_some_and(|m| {
+                m.strip_prefix("openai-codex/")
+                    .is_some_and(|id| !id.is_empty())
+            })
+        {
+            if let Some(tier) = req.service_tier.as_deref() {
+                if !matches!(tier, "default" | "priority") {
+                    return Err("Invalid OMP OpenAI service tier".to_string());
+                }
+                cmd.args(["--service-tier", tier]);
+            }
+        }
         // Both accept the full level vocabulary: low…max.
         if let Some(effort) = req.effort.as_deref() {
             cmd.arg("--thinking");
@@ -90,35 +105,50 @@ impl Engine for PiFamilyEngine {
 
 /// Shared NDJSON parser for pi and omp (`--mode json`).
 fn parse_pi_family_line(line: &str, out: &mut Vec<EngineEvent>) {
+    // Stream updates can include the entire growing message twice (message
+    // and assistantMessageEvent.partial). Skip those snapshots without
+    // allocating a JSON object tree for every token.
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(rename = "assistantMessageEvent")]
+        event: Option<Delta>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Delta {
+        #[serde(rename = "type")]
+        kind: String,
+        delta: Option<String>,
+    }
+    let Ok(envelope) = serde_json::from_str::<Envelope>(line) else {
+        return;
+    };
+    if envelope.kind == "message_update" {
+        if let Some(delta) = envelope.event {
+            if let Some(text) = delta.delta.filter(|text| !text.is_empty()) {
+                match delta.kind.as_str() {
+                    "text_delta" => out.push(EngineEvent::Delta(text)),
+                    "thinking_delta" => out.push(EngineEvent::Thinking(text)),
+                    _ => {}
+                }
+            }
+        }
+        return;
+    }
+    let event_type = envelope.kind.as_str();
+    if !matches!(
+        event_type,
+        "session" | "tool_execution_start" | "message_end" | "turn_end" | "agent_end"
+    ) {
+        return;
+    }
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return;
     };
-    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
     match event_type {
         "session" => {
             push_session_id(&value, "id", out);
-        }
-        "message_update" => {
-            let Some(event) = value.get("assistantMessageEvent") else {
-                return;
-            };
-            match event.get("type").and_then(Value::as_str) {
-                Some("text_delta") => {
-                    if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                        if !delta.is_empty() {
-                            out.push(EngineEvent::Delta(delta.to_string()));
-                        }
-                    }
-                }
-                Some("thinking_delta") => {
-                    if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                        if !delta.is_empty() {
-                            out.push(EngineEvent::Thinking(delta.to_string()));
-                        }
-                    }
-                }
-                _ => {}
-            }
         }
         "tool_execution_start" => {
             let name = value
@@ -127,10 +157,12 @@ fn parse_pi_family_line(line: &str, out: &mut Vec<EngineEvent>) {
                 .unwrap_or("tool");
             let intent = value.get("intent").and_then(Value::as_str);
             let path = value.get("args").and_then(super::tool_path_arg);
+            let todos = value.get("args").and_then(super::parse_todo_args);
             out.push(EngineEvent::Message {
                 role: "tool".to_string(),
                 text: tool_label(name, intent),
                 path,
+                todos,
             });
         }
         "message_end" => {
@@ -193,6 +225,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_updates_skip_snapshots_and_preserve_delta_order() {
+        let mut out = Vec::new();
+        for (kind, text) in [("thinking_delta", "思考\n"), ("text_delta", "答案\"你好\"")] {
+            let snapshot =
+                serde_json::json!({"content": [{"type": "text", "text": "长文本".repeat(20000)}]});
+            let line = serde_json::json!({
+                "type": "message_update", "message": snapshot,
+                "assistantMessageEvent": {"type": kind, "delta": text, "partial": snapshot}
+            })
+            .to_string();
+            parse_pi_family_line(&line, &mut out);
+        }
+        assert_eq!(out.len(), 2);
+        assert!(matches!(&out[0], EngineEvent::Thinking(t) if t == "思考\n"));
+        assert!(matches!(&out[1], EngineEvent::Delta(t) if t == "答案\"你好\""));
+        for line in [
+            r#"{"type":"message_update"}"#,
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":""}}"#,
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"ignored"}}"#,
+            "{incomplete",
+        ] {
+            parse_pi_family_line(line, &mut out);
+        }
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    #[ignore = "manual parser throughput benchmark"]
+    fn benchmark_snapshot_updates() {
+        let snapshot = serde_json::json!({"content": (0..200).map(|_| serde_json::json!({"type":"text", "text":"x".repeat(320)})).collect::<Vec<_>>()});
+        let line = serde_json::json!({"type":"message_update", "message":snapshot, "assistantMessageEvent":{"type":"text_delta", "delta":"token", "partial":snapshot}}).to_string();
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            std::hint::black_box(serde_json::from_str::<Value>(&line).unwrap());
+        }
+        let full = start.elapsed();
+        let start = std::time::Instant::now();
+        let mut out = Vec::new();
+        for _ in 0..1000 {
+            out.clear();
+            parse_pi_family_line(&line, &mut out);
+            std::hint::black_box(&out);
+        }
+        eprintln!(
+            "1000 snapshot updates ({} bytes): full JSON {:?}, delta parser {:?}",
+            line.len(),
+            full,
+            start.elapsed()
+        );
+    }
+
+    #[test]
     fn tool_execution_start_carries_args_path() {
         let line = serde_json::json!({
             "type": "tool_execution_start",
@@ -205,7 +289,9 @@ mod tests {
         let mut out = Vec::new();
         parse_pi_family_line(&line, &mut out);
         match &out[0] {
-            EngineEvent::Message { role, text, path } => {
+            EngineEvent::Message {
+                role, text, path, ..
+            } => {
                 assert_eq!(role, "tool");
                 assert_eq!(text, "edit · Adding chrome token");
                 assert_eq!(path.as_deref(), Some("src/app.tsx"));
@@ -225,6 +311,52 @@ mod tests {
         parse_pi_family_line(&line, &mut out);
         match &out[0] {
             EngineEvent::Message { path, .. } => assert_eq!(*path, None),
+            _ => panic!("expected tool message"),
+        }
+    }
+
+    #[test]
+    fn tool_execution_start_carries_todo_payload() {
+        let line = serde_json::json!({
+            "type": "tool_execution_start",
+            "toolCallId": "tool_3",
+            "toolName": "todo",
+            "args": {
+                "op": "init",
+                "list": [
+                    {"phase": "scaffold", "items": ["scan files", "write code"]}
+                ]
+            }
+        })
+        .to_string();
+        let mut out = Vec::new();
+        parse_pi_family_line(&line, &mut out);
+        match &out[0] {
+            EngineEvent::Message {
+                todos: Some(todos), ..
+            } => {
+                assert!(todos.replace);
+                assert_eq!(todos.items.len(), 2);
+                assert_eq!(todos.items[0].content, "scan files");
+                assert_eq!(todos.items[0].status, "pending");
+                assert_eq!(todos.items[1].content, "write code");
+                assert_eq!(todos.items[1].status, "pending");
+            }
+            _ => panic!("expected tool message with todos"),
+        }
+
+        // Non-todo tool args carry no payload.
+        let line = serde_json::json!({
+            "type": "tool_execution_start",
+            "toolCallId": "tool_4",
+            "toolName": "bash",
+            "args": { "command": "ls" }
+        })
+        .to_string();
+        let mut out = Vec::new();
+        parse_pi_family_line(&line, &mut out);
+        match &out[0] {
+            EngineEvent::Message { todos, .. } => assert!(todos.is_none()),
             _ => panic!("expected tool message"),
         }
     }

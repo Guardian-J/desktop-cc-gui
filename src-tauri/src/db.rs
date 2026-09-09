@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Folded into the scanner's stat signature so a schema/derivation change
 /// still invalidates cached parse results.
@@ -50,6 +50,110 @@ impl Db {
             }
         }
         Ok(out)
+    }
+
+    /// Directories the user explicitly granted file access to on top of the
+    /// registered workspaces (the on-demand grant flow, files::grant_root).
+    pub fn granted_roots(&self) -> Result<Vec<String>, String> {
+        let conn = self.0.lock();
+        let mut stmt = conn
+            .prepare("SELECT path FROM granted_roots ORDER BY granted_at")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            match row {
+                Ok(path) => out.push(path),
+                Err(e) => eprintln!("[db] skipping undecodable granted_roots row: {e}"),
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn add_granted_root(&self, path: &str) -> Result<(), String> {
+        let conn = self.0.lock();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        conn.execute(
+            "INSERT OR IGNORE INTO granted_roots(path, granted_at) VALUES(?1, ?2)",
+            rusqlite::params![path, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn remove_granted_root(&self, path: &str) -> Result<(), String> {
+        let conn = self.0.lock();
+        conn.execute("DELETE FROM granted_roots WHERE path=?1", [path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    /// Per-plugin KV value (plugins::plugin_storage_get). Stored as JSON text;
+    /// a corrupt row surfaces as an error instead of a silent `None` so the
+    /// plugin host notices instead of losing state quietly.
+    pub fn plugin_kv_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let conn = self.0.lock();
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM plugin_kv WHERE plugin_id=?1 AND key=?2",
+                rusqlite::params![plugin_id, key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match raw {
+            None => Ok(None),
+            Some(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| format!("decode plugin_kv[{plugin_id}/{key}]: {e}")),
+        }
+    }
+
+    pub fn plugin_kv_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), String> {
+        let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
+        let conn = self.0.lock();
+        conn.execute(
+            "INSERT INTO plugin_kv(plugin_id, key, value) VALUES(?1, ?2, ?3)
+             ON CONFLICT(plugin_id, key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![plugin_id, key, text],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<(), String> {
+        let conn = self.0.lock();
+        conn.execute(
+            "DELETE FROM plugin_kv WHERE plugin_id=?1 AND key=?2",
+            rusqlite::params![plugin_id, key],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Whole-plugin wipe: uninstall with delete_data, and the tombstone purge
+    /// after the 30-day retention window (plugins::KV_TOMBSTONE_TTL_SECS).
+    pub fn plugin_kv_delete_all(&self, plugin_id: &str) -> Result<(), String> {
+        let conn = self.0.lock();
+        conn.execute(
+            "DELETE FROM plugin_kv WHERE plugin_id=?1",
+            rusqlite::params![plugin_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -206,6 +310,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS granted_roots(
+            path TEXT PRIMARY KEY,
+            granted_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS plugin_kv(
+            plugin_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY(plugin_id, key)
+        );
         ",
     )?;
     // NB: no `cache_version` meta row — it was written but never read; cache
@@ -353,5 +467,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(flag, "1");
+    }
+    #[test]
+    fn plugin_kv_roundtrip_and_wipe() {
+        let scratch = Scratch::new();
+        let db = Db::open_at(&scratch.path("app.db")).unwrap();
+        assert_eq!(db.plugin_kv_get("p1", "k").unwrap(), None);
+
+        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 1})).unwrap();
+        db.plugin_kv_set("p1", "other", &serde_json::json!("s")).unwrap();
+        db.plugin_kv_set("p2", "k", &serde_json::json!(true)).unwrap();
+        // Same key under another plugin is an independent row; overwrite wins.
+        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 2})).unwrap();
+        assert_eq!(
+            db.plugin_kv_get("p1", "k").unwrap(),
+            Some(serde_json::json!({"n": 2}))
+        );
+        assert_eq!(
+            db.plugin_kv_get("p2", "k").unwrap(),
+            Some(serde_json::json!(true))
+        );
+
+        db.plugin_kv_delete("p1", "other").unwrap();
+        assert_eq!(db.plugin_kv_get("p1", "other").unwrap(), None);
+
+        db.plugin_kv_delete_all("p1").unwrap();
+        assert_eq!(db.plugin_kv_get("p1", "k").unwrap(), None);
+        assert_eq!(
+            db.plugin_kv_get("p2", "k").unwrap(),
+            Some(serde_json::json!(true))
+        );
     }
 }

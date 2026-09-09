@@ -1,5 +1,5 @@
 use super::{
-    command_for_binary, images, push_session_id, safe_prompt_arg, BuiltCommand, Engine,
+    command_for_binary, images, push_session_id, BuiltCommand, Engine,
     EngineEvent, SendRequest,
 };
 use serde_json::Value;
@@ -38,17 +38,19 @@ impl Engine for CodexEngine {
         // exec auto-declines approval prompts, so "manual" is enforced by the
         // sandbox instead: read-only means nothing can change without the
         // user re-sending in a writable mode. codex exec has no plan mode.
+        // Sandbox goes through -c sandbox_mode (not --sandbox): `exec resume`
+        // dropped the --sandbox flag, while -c works on both subcommands.
         match self.resolve_permission(req.permission.as_deref()) {
             "bypass" => {
                 cmd.arg("--dangerously-bypass-approvals-and-sandbox");
             }
             "manual" => {
-                cmd.arg("--sandbox");
-                cmd.arg("read-only");
+                cmd.arg("-c");
+                cmd.arg("sandbox_mode=\"read-only\"");
             }
             _ => {
-                cmd.arg("--sandbox");
-                cmd.arg("workspace-write");
+                cmd.arg("-c");
+                cmd.arg("sandbox_mode=\"workspace-write\"");
             }
         }
         if let Some(model) = req.model.as_deref() {
@@ -68,11 +70,15 @@ impl Engine for CodexEngine {
                 cmd.arg(path);
             }
         }
-        // Prompt as positional arg.
-        cmd.arg(safe_prompt_arg(&req.prompt));
+        // Prompt travels through stdin (`-`), never argv: on Windows the codex
+        // shim is a `.cmd` batch file and cmd.exe cuts a multiline argument at
+        // the first newline — every line after the first was dropped (or worse,
+        // executed as a command). stdin also dodges cmd's `%VAR%` expansion of
+        // quoted args. `codex exec [resume] -` reads the prompt from stdin.
+        cmd.arg("-");
         Ok(BuiltCommand {
             command: cmd,
-            stdin_payload: None,
+            stdin_payload: Some(req.prompt.clone()),
             cleanup_files: Vec::new(),
             preassigned_session_id: preassigned,
         })
@@ -99,6 +105,7 @@ impl Engine for CodexEngine {
                                     role: "assistant".to_string(),
                                     text: text.to_string(),
                                     path: None,
+                                    todos: None,
                                 });
                             }
                         }
@@ -121,6 +128,7 @@ impl Engine for CodexEngine {
                             role: "tool".to_string(),
                             text: name.chars().take(120).collect(),
                             path: None,
+                            todos: None,
                         });
                     }
                     _ => {}

@@ -1,25 +1,45 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import Settings from "lucide-react/dist/esm/icons/settings";
-import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
-import Info from "lucide-react/dist/esm/icons/info";
-import Smartphone from "lucide-react/dist/esm/icons/smartphone";
-import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal";
-import { SettingsModal } from "@/components/application/settings/settings-modal";
-import { GeneralSection } from "./GeneralSection";
-import { WorkspacesSection } from "./WorkspacesSection";
-import { CliConfigSection } from "./CliConfigSection";
-import { AboutSection } from "./AboutSection";
-import { WebAccessSection } from "./WebAccessSection";
+import Puzzle from "lucide-react/dist/esm/icons/puzzle";
+import {
+  SettingsModal,
+  type SettingsNavGroup,
+} from "@/components/application/settings/settings-modal";
+import { pluginIdFromRegistryKey, settingsRegistry, useRegistry } from "@ccgui/plugin-sdk";
+import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
+import { ENGINE_IDS } from "./providers";
+// Side-effect import: registers all builtin sections into settingsRegistry.
+import "./sections";
+
+/** Rail meta for known nav groups (label + rail order). A group the SDK adds
+ *  later isn't listed here — it falls back to label = group id, appended
+ *  after the known rails, so new groups render instead of silently
+ *  vanishing (empty groups are filtered out as before). */
+const GROUP_META: Record<string, { labelKey: string; order: number }> = {
+  settings: { labelKey: "settings.title", order: 0 },
+  cli: { labelKey: "settings.cliManage", order: 1 },
+};
+const KNOWN_GROUP_COUNT = Object.keys(GROUP_META).length;
 
 /** Unknown page params fall back to General. */
 const renderPage = (key: string) => {
-  if (key === "about") return <AboutSection />;
-  if (key === "workspaces") return <WorkspacesSection />;
-  if (key === "webAccess") return <WebAccessSection />;
-  if (key === "cliConfig") return <CliConfigSection />;
-  return <GeneralSection />;
+  const def = settingsRegistry.get(key);
+  if (!def) {
+    const fallback = settingsRegistry.get("general");
+    return fallback ? <fallback.component /> : null;
+  }
+  const Component = def.component;
+  // Plugin-rendered pages are wrapped so a render crash unmounts only the
+  // plugin subtree (plan acceptance 1b); host pages stay unwrapped.
+  if (key.startsWith("plugin:")) {
+    return (
+      <PluginBoundary pluginId={pluginIdFromRegistryKey(key)}>
+        <Component />
+      </PluginBoundary>
+    );
+  }
+  return <Component />;
 };
 
 /**
@@ -27,41 +47,52 @@ const renderPage = (key: string) => {
  * by App on every route, so opening and closing settings never rebuilds
  * the chat tree.
  *
- * Nav mirrors the BoardUI "Settings/General" rail: one "Settings" group with
- * General, Mobile Access, CLI 配置 (provider channels) and About.
+ * Nav groups and pages come from settingsRegistry: builtin sections register
+ * in ./sections, plugin sections arrive via ctx.ui.registerSettingsSection
+ * (plan §4.2 #1).
  */
 export default function SettingsPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const pageParam = searchParams.get("page") ?? "general";
+  const sections = useRegistry(settingsRegistry);
+  // Legacy links land on a CLI 管理 page: ?page=cliConfig → first CLI,
+  // ?page=dsh → the DSH engine page (its host section merged there).
+  const rawPage = searchParams.get("page") ?? "general";
+  const pageParam =
+    rawPage === "cliConfig" ? `cli:${ENGINE_IDS[0]}` : rawPage === "dsh" ? "cli:dsh" : rawPage;
 
-  const groups = useMemo(
-    () => [
-      {
-        label: t("settings.title"),
-        items: [
-          { key: "general", label: t("settings.general"), icon: Settings },
-          { key: "workspaces", label: t("settings.workspaces"), icon: FolderSymlink },
-          { key: "cliConfig", label: t("settings.cliConfig"), icon: SquareTerminal },
-          { key: "webAccess", label: t("settings.webAccess"), icon: Smartphone },
-          { key: "about", label: t("settings.about"), icon: Info },
-        ],
-      },
-    ],
-    [t],
-  );
+  const groups = useMemo<SettingsNavGroup[]>(() => {
+    const sorted = [...sections].sort((a, b) => a.order - b.order);
+    // Bucket by group in first-seen order; unknown groups (new SDK group
+    // values) keep their own rail instead of joining nothing.
+    const byGroup = new Map<string, SettingsNavGroup["items"]>();
+    for (const def of sorted) {
+      const item = { key: def.key, label: def.label(), icon: def.icon ?? Puzzle };
+      const bucket = byGroup.get(def.group);
+      if (bucket) bucket.push(item);
+      else byGroup.set(def.group, [item]);
+    }
+    // Re-render the rail on language flips: labels are functions of i18n.
+    return [...byGroup.entries()]
+      .map(([group, items], index) => {
+        const meta = GROUP_META[group];
+        return {
+          label: meta ? t(meta.labelKey) : group,
+          order: meta?.order ?? KNOWN_GROUP_COUNT + index,
+          items,
+        };
+      })
+      .sort((a, b) => a.order - b.order);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sections, t, i18n.language]);
 
-  const titles = useMemo(
-    () => ({
-      general: t("settings.general"),
-      workspaces: t("settings.workspaces"),
-      webAccess: t("settings.webAccess"),
-      cliConfig: t("settings.cliConfig"),
-      about: t("settings.about"),
-    }),
-    [t],
-  );
+  const titles = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const def of sections) map[def.key] = def.label();
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sections, i18n.language]);
 
   return (
     <SettingsModal

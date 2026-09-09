@@ -358,6 +358,20 @@ struct EngineIdArgs {
     engine: String,
     id: String,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginReadFileArgs {
+    id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginStorageGetArgs {
+    id: String,
+    key: String,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpsertProviderArgs {
@@ -807,6 +821,8 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> Result<Value
             let a: PathArgs = parse_args(&raw)?;
             ser(crate::files::list_file_index(app.state(), a.path).await)
         }
+        // NB: grant_scope/grant_root/revoke_granted_root are intentionally
+        // absent — remote clients must not widen the filesystem boundary.
         // git
         "git_status" => {
             let a: PathArgs = parse_args(&raw)?;
@@ -878,6 +894,18 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> Result<Value
         "app_metrics" => ser(crate::metrics::app_metrics(app.state())),
         // web access: phones may read status; start/stop stay desktop-only.
         "web_access_status" => ser(Ok(web_access_status(app.clone()))),
+        // plugins (plan §9 risk table ruling): read-only commands ride the
+        // bridge so web clients render plugin UI; install/uninstall/enable/
+        // storage writes stay desktop-only and fall through to unknown.
+        "plugin_list" => ser(crate::plugins::plugin_list(app.state())),
+        "plugin_read_file" => {
+            let a: PluginReadFileArgs = parse_args(&raw)?;
+            ser(crate::plugins::plugin_read_file(a.id, a.name))
+        }
+        "plugin_storage_get" => {
+            let a: PluginStorageGetArgs = parse_args(&raw)?;
+            ser(crate::plugins::plugin_storage_get(app.state(), a.id, a.key))
+        }
         _ => Err(format!("unknown command: {cmd}")),
     }
 }

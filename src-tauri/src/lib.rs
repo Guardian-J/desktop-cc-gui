@@ -2,6 +2,7 @@ pub mod baidu_tongji;
 pub mod cc_switch;
 pub mod config;
 pub mod db;
+pub mod dsh_host;
 pub mod engine;
 pub mod event_sink;
 pub mod files;
@@ -10,6 +11,9 @@ pub mod history;
 pub mod metrics;
 pub mod open_app;
 pub mod paths;
+pub mod plugins;
+pub mod plugin_caps;
+pub mod proxy;
 pub mod provider_files;
 pub mod provider_models;
 pub mod settings;
@@ -28,6 +32,7 @@ pub struct AppState {
     pub terminals: terminal::TerminalRegistry,
     pub processes: Arc<engine::ProcessRegistry>,
     pub web: web::WebAccessState,
+    pub dsh_host: dsh_host::DshHostState,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,10 +45,19 @@ pub fn run() {
     // homebrew/npm/nvm and every engine greys out. Adopt the login shell's
     // PATH before any detection/spawn runs.
     adopt_login_shell_path();
+    // Apply the persisted network proxy to this process's env before any
+    // engine/terminal spawn, so children inherit HTTP(S)_PROXY/ALL_PROXY.
+    if let Ok(settings) = settings::read_settings() {
+        if let Err(error) = proxy::apply_app_proxy_settings(&settings) {
+            eprintln!("[proxy] failed to apply persisted proxy settings: {error}");
+        }
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let db = Arc::new(db::Db::open().expect("failed to open app db"));
             if let Err(error) = db::import_legacy_workspaces_once(&db) {
@@ -72,6 +86,7 @@ pub fn run() {
                 terminals: terminal::TerminalRegistry::default(),
                 processes: Arc::new(engine::ProcessRegistry::default()),
                 web: web::WebAccessState::default(),
+                dsh_host: dsh_host::DshHostState::default(),
             };
             // Clone what the initial scan needs before state moves into manage.
             let scan_db = Arc::clone(&state.db);
@@ -86,6 +101,21 @@ pub fn run() {
             app.manage(baidu_tongji::BaiduTongjiState::load());
             // Initial history scan, non-blocking.
             history::scanner::spawn_scan(scan_db, scan_sink);
+            // DSH host autostart: adopt-or-spawn in the background when
+            // enabled; failures are logged, never fatal to startup.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let settings = settings::read_settings().unwrap_or_default();
+                    if settings.dsh_auto_start == Some(false) {
+                        return;
+                    }
+                    let state = handle.state::<AppState>();
+                    if let Err(error) = dsh_host::ensure_host(&state.dsh_host, &settings).await {
+                        eprintln!("[dsh] autostart failed: {error}");
+                    }
+                });
+            }
             // Dev convenience: `CCGUI_WEB_AUTOSTART=1 pnpm dev` starts the LAN
             // bridge at launch and prints the URL, so the web build can be
             // exercised without clicking the settings toggle.
@@ -105,6 +135,8 @@ pub fn run() {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.processes.kill_all();
+                    state.dsh_host.kill_spawned();
+                    plugin_caps::kill_all_tracked_children();
                     tauri::async_runtime::block_on(terminal::kill_all(&state.terminals));
                 }
             }
@@ -128,6 +160,16 @@ pub fn run() {
             // settings
             settings::get_app_settings,
             settings::update_app_settings,
+            // plugins
+            plugins::plugin_list,
+            plugins::plugin_install_from_path,
+            plugins::plugin_uninstall,
+            plugins::plugin_set_enabled,
+            plugins::plugin_quarantine,
+            plugins::plugin_read_file,
+            plugins::plugin_storage_get,
+            plugins::plugin_storage_set,
+            plugins::plugin_storage_delete,
             // engine
             engine::send_message,
             engine::interrupt_session,
@@ -164,6 +206,11 @@ pub fn run() {
             files::create_file,
             files::search_text,
             files::list_file_index,
+            // On-demand directory grants (desktop-only — see grant_root).
+            files::grant_scope,
+            files::grant_root,
+            files::list_granted_roots,
+            files::revoke_granted_root,
             // git
             git::git_status,
             git::git_diff,
@@ -185,10 +232,21 @@ pub fn run() {
             terminal::terminal_close,
             // metrics
             metrics::app_metrics,
+            // plugin capability egress (network:/exec: manifest grants)
+            plugin_caps::plugin_http_request,
+            plugin_caps::plugin_exec_run,
+            plugin_caps::plugin_exec_spawn,
+            plugin_caps::plugin_exec_kill,
             // web access
             web::web_access_start,
             web::web_access_stop,
             web::web_access_status,
+            // dsh host
+            dsh_host::dsh_host_status,
+            dsh_host::dsh_host_start,
+            dsh_host::dsh_host_stop,
+            dsh_host::dsh_cli_version,
+            dsh_host::dsh_cli_update,
             // baidu tongji (Linux-native transport; rejected elsewhere)
             baidu_tongji::load_baidu_tongji_script,
             baidu_tongji::send_baidu_tongji_beacon,

@@ -12,6 +12,8 @@ import { useGitStore } from "@/features/git/store";
 import { ipc } from "@/lib/ipc";
 import { cx } from "@/utils/cx";
 import { useLayoutPanels } from "./use-layout-panels";
+import { commandRegistry } from "@ccgui/plugin-sdk";
+import { keywords } from "@/features/commands/builtins";
 import { useChatTabs } from "./use-chat-tabs";
 import { useChatSidebar } from "./use-chat-sidebar";
 import { ChatPageDialogs, type ChatPageDialog } from "./ChatPageDialogs";
@@ -20,6 +22,9 @@ import { PANEL_TOGGLE_CLASSES } from "./panel-toggle-classes";
 import { ChatSidebarFrame } from "./ChatSidebarFrame";
 import { ChatSidePanel } from "./ChatSidePanel";
 import { ChatCenterPane } from "./ChatCenterPane";
+// Side-effect import: registers the builtin files/changes tabs into
+// panelTabRegistry (plan §4.2 #4).
+import "./panel-tabs";
 
 // Windows keeps its native titlebar (titleBarStyle Overlay is macOS-only), so
 // the caption row sits directly on the app background with no visual break —
@@ -60,6 +65,28 @@ export default function ChatPage() {
     sidebarRef,
     sidebarResizerRef,
   } = useLayoutPanels();
+
+  // Layout toggles registered as palette commands (plan §4.2 #9): the toggles
+  // live in this hook instance, so registration happens here where they're in
+  // scope. ChatPage stays mounted for the app's lifetime; the cleanup keeps
+  // the registry honest under HMR.
+  useEffect(() => {
+    const disposers = [
+      commandRegistry.register({
+        id: "builtin:toggleSidePanel",
+        title: () => t("commands.toggleSidePanel"),
+        keywords: keywords("commands.toggleSidePanelKeywords"),
+        run: togglePanelCollapsed,
+      }),
+      commandRegistry.register({
+        id: "builtin:toggleSidebar",
+        title: () => t("commands.toggleSidebar"),
+        keywords: keywords("commands.toggleSidebarKeywords"),
+        run: toggleSidebarCollapsed,
+      }),
+    ];
+    return () => disposers.forEach((d) => d());
+  }, [t, togglePanelCollapsed, toggleSidebarCollapsed]);
   const {
     tabItems,
     activeTabKey,
@@ -82,11 +109,13 @@ export default function ChatPage() {
     startNewChat,
     repos,
     sections,
+    archivedRepos,
     handleAddWorkspace,
     handleThreadSelect,
     handleThreadAction,
     handleRemoveWorkspace,
     handleWorkspaceAlias,
+    handleSetWorkspaceArchived,
     handleNewSession,
     handleNewSessionInWorkspace,
     handleReorderWorkspaces,
@@ -140,7 +169,7 @@ export default function ChatPage() {
   return (
     <div
       className={cx(
-        "relative flex h-dvh w-full overflow-hidden bg-background-full",
+        "relative flex h-dvh w-full overflow-hidden bg-background-secondary-default",
         NEEDS_TITLEBAR_HAIRLINE && "border-t border-separator-border",
         dragging && "cursor-col-resize select-none",
       )}
@@ -161,11 +190,13 @@ export default function ChatPage() {
         onAddWorkspace={handleAddWorkspace}
         onRemoveWorkspace={handleRemoveWorkspace}
         onWorkspaceAlias={handleWorkspaceAlias}
+        onSetWorkspaceArchived={handleSetWorkspaceArchived}
+        archivedRepos={archivedRepos}
         onNewSessionInWorkspace={handleNewSessionInWorkspace}
         onNewSession={handleNewSession}
         onReorderWorkspaces={handleReorderWorkspaces}
       />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background-primary-default md:rounded-l-[14px] md:border-l md:border-separator-border">
         <SessionTabStrip
           tabs={tabItems}
           activeKey={activeTabKey}

@@ -1,4 +1,4 @@
-import type { Message } from "@/lib/ipc";
+import type { Message, TodosPayload } from "@/lib/ipc";
 
 /**
  * Streaming buffers and bySession write helpers. Leaf module: functions are
@@ -89,21 +89,20 @@ export function applyStreamParts(
     const role = part.kind === "thinking" ? "thinking" : "assistant";
     const last = out[out.length - 1];
     if (last?.live && last.role === role) {
-      out = [...out.slice(0, -1), { ...last, text: last.text + part.text }];
+      if (out === messages) out = messages.slice();
+      out[out.length - 1] = { ...last, text: last.text + part.text };
       continue;
     }
     const seq = out.length ? out[out.length - 1].seq + 1 : 1;
-    out = [
-      ...out,
-      {
-        seq,
-        role,
-        text: part.text,
-        ts: new Date().toISOString(),
-        live: true,
-        ...(role === "assistant" ? { model } : {}),
-      },
-    ];
+    if (out === messages) out = messages.slice();
+    out.push({
+      seq,
+      role,
+      text: part.text,
+      ts: new Date().toISOString(),
+      live: true,
+      ...(role === "assistant" ? { model } : {}),
+    });
   }
   return out;
 }
@@ -164,6 +163,7 @@ export function appendToolMessage<T extends BySessionSlice>(
   text: string,
   model: string | null,
   path: string | null = null,
+  todos: TodosPayload | null = null,
 ) {
   const pending = drainPending(key);
   set((s) => {
@@ -173,7 +173,17 @@ export function appendToolMessage<T extends BySessionSlice>(
       : prev.messages;
     messages = settleLiveRows(messages);
     const seq = messages.length ? messages[messages.length - 1].seq + 1 : 1;
-    messages = [...messages, { role: "tool", text, path, ts: new Date().toISOString(), seq }];
+    messages = [
+      ...messages,
+      {
+        role: "tool",
+        text,
+        path,
+        ts: new Date().toISOString(),
+        seq,
+        ...(todos ? { todos } : {}),
+      },
+    ];
     return { bySession: { ...s.bySession, [key]: { ...prev, messages } } } as Partial<T>;
   });
 }

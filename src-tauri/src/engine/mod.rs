@@ -40,6 +40,8 @@ pub struct SendRequest {
     /// Reasoning effort ("low" | "medium" | "high" | "xhigh" | "max"); engines without an
     /// effort knob ignore it, engines with a narrower knob clamp.
     pub effort: Option<String>,
+    /// OMP OpenAI service tier override, independent of reasoning effort.
+    pub service_tier: Option<String>,
     /// Permission mode ("auto" | "manual" | "plan" | "bypass"); each engine
     /// resolves it against the modes it can actually honor at spawn (see
     /// `Engine::resolve_permission`).
@@ -68,6 +70,9 @@ pub enum EngineEvent {
         role: String,
         text: String,
         path: Option<String>,
+        /// Todo-list snapshot/patch from a todo tool call (claude TodoWrite,
+        /// omp todo op); feeds the run-status strip's task pill.
+        todos: Option<TodosPayload>,
     },
     /// Native session id became known.
     SessionId(String),
@@ -85,6 +90,21 @@ pub enum EngineEvent {
     },
 }
 
+/// One todo entry carried to the frontend.
+#[derive(Debug, Clone, Serialize)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: String,
+}
+
+/// `replace: true` is a full snapshot of the todo list; `false` is a patch
+/// the frontend applies by matching on `content`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TodosPayload {
+    pub items: Vec<TodoItem>,
+    pub replace: bool,
+}
+
 /// First path-like argument of a tool call (`read`/`edit`/`write` use
 /// `path`, claude's tools use `file_path`). Returns None for tools whose
 /// args carry no file target (e.g. bash `command`). Glob patterns are kept
@@ -96,6 +116,97 @@ pub(crate) fn tool_path_arg(args: &Value) -> Option<String> {
         .map(|s| s.trim())
         .find(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+/// Parse a tool call's args into a todo-list payload. Two shapes: claude's
+/// TodoWrite (`todos` array, a full snapshot) and the omp harness todo
+/// protocol (`op` + task/list, mostly patches). None when the args carry
+/// no todo data.
+pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
+    let pending_item = |content: &str| TodoItem {
+        content: content.to_string(),
+        status: "pending".to_string(),
+    };
+    // `list` phases, each with an `items` string array, flattened.
+    let phase_items = |args: &Value| -> Vec<TodoItem> {
+        args.get("list")
+            .and_then(Value::as_array)
+            .map(|phases| {
+                phases
+                    .iter()
+                    .filter_map(|phase| phase.get("items").and_then(Value::as_array))
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(pending_item)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if let Some(todos) = args.get("todos").and_then(Value::as_array) {
+        let items = todos
+            .iter()
+            .filter_map(|entry| {
+                let content = ["content", "text", "title", "task"]
+                    .iter()
+                    .filter_map(|key| entry.get(key).and_then(Value::as_str))
+                    .map(|s| s.trim())
+                    .find(|s| !s.is_empty())?;
+                let status = match entry.get("status").and_then(Value::as_str).unwrap_or("") {
+                    "in_progress" | "running" | "active" => "active",
+                    "completed" | "complete" | "done" => "complete",
+                    "blocked" => "blocked",
+                    _ => "pending",
+                };
+                Some(TodoItem {
+                    content: content.to_string(),
+                    status: status.to_string(),
+                })
+            })
+            .collect();
+        return Some(TodosPayload {
+            items,
+            replace: true,
+        });
+    }
+    let op = args.get("op").and_then(Value::as_str)?;
+    match op {
+        "init" => Some(TodosPayload {
+            items: phase_items(args),
+            replace: true,
+        }),
+        "append" => {
+            let items = match args.get("items").and_then(Value::as_array) {
+                Some(items) => items.iter().filter_map(Value::as_str).map(pending_item).collect(),
+                None => phase_items(args),
+            };
+            Some(TodosPayload {
+                items,
+                replace: false,
+            })
+        }
+        "start" | "done" | "block" | "unblock" | "drop" => {
+            let task = args.get("task").and_then(Value::as_str)?;
+            let status = match op {
+                "start" => "active",
+                "done" => "complete",
+                "block" => "blocked",
+                "unblock" => "pending",
+                _ => "dropped",
+            };
+            Some(TodosPayload {
+                items: vec![TodoItem {
+                    content: task.to_string(),
+                    status: status.to_string(),
+                }],
+                replace: false,
+            })
+        }
+        "rm" | "clear" => Some(TodosPayload {
+            items: Vec::new(),
+            replace: true,
+        }),
+        _ => None,
+    }
 }
 
 pub trait Engine: Send + Sync {
@@ -300,7 +411,7 @@ impl Drop for ProcessRegistry {
 /// so pgid == pid). Grandchildren holding the stdout pipe die too, which is
 /// what lets the reader task observe EOF and drain the registry.
 #[cfg(unix)]
-fn kill_process_group(pid: u32) {
+pub(crate) fn kill_process_group(pid: u32) {
     // SAFETY: kill with a negated pgid signals the group; no memory touched.
     unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
 }
@@ -312,7 +423,7 @@ fn kill_process_group(pid: u32) {
 /// whole tree down. Fire-and-forget: the callers' start_kill still handles
 /// the direct child synchronously.
 #[cfg(not(unix))]
-fn kill_process_group(pid: u32) {
+pub(crate) fn kill_process_group(pid: u32) {
     let mut command = std::process::Command::new("taskkill");
     command
         .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -382,9 +493,7 @@ fn engine_bin(settings: &crate::settings::AppSettings, engine_id: &str) -> Strin
             // Defense in depth: settings write validates too, but the file
             // may have been hand-edited since.
             match crate::settings::validate_bin_override(trimmed) {
-                Ok(path) => {
-                    return resolve::resolve_launchable_cli_binary(&path.to_string_lossy())
-                }
+                Ok(path) => return resolve::resolve_launchable_cli_binary(&path.to_string_lossy()),
                 Err(reason) => {
                     eprintln!("[engine] ignoring invalid {engine_id} bin override: {reason}");
                 }
@@ -466,6 +575,11 @@ fn prepare_launch(
         images: image_paths.unwrap_or_default(),
         model,
         effort,
+        service_tier: if engine == "omp" {
+            settings.omp_openai_service_tier.clone()
+        } else {
+            None
+        },
         permission: permission.filter(|p| !p.trim().is_empty()),
     };
     let bin = engine_bin(&settings, engine);
@@ -613,10 +727,20 @@ impl RunContext {
                 "thinking",
                 Value::String(text),
             ),
-            EngineEvent::Message { role, text, path } => {
+            EngineEvent::Message {
+                role,
+                text,
+                path,
+                todos,
+            } => {
                 let mut payload = serde_json::json!({ "role": role, "text": text });
                 if let Some(path) = path {
                     payload["path"] = Value::String(path);
+                }
+                if let Some(todos) = todos {
+                    if let Ok(value) = serde_json::to_value(todos) {
+                        payload["todos"] = value;
+                    }
                 }
                 state.push(
                     &self.sink,
@@ -883,6 +1007,7 @@ mod permission_tests {
             images: Vec::new(),
             model: None,
             effort: None,
+            service_tier: None,
             permission: permission.map(str::to_string),
         }
     }
@@ -895,6 +1020,67 @@ mod permission_tests {
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect()
+    }
+
+    #[test]
+    fn omp_fast_tier_is_explicit_and_independent_of_effort() {
+        let mut request = req(None);
+        request.model = Some("openai-codex/gpt-5.4".into());
+        request.effort = Some("high".into());
+        for tier in [None, Some("priority"), Some("default")] {
+            request.service_tier = tier.map(str::to_string);
+            let args = argv(&pi_family::omp(), &request);
+            let actual = args
+                .iter()
+                .position(|a| a == "--service-tier")
+                .map(|i| args[i + 1].as_str());
+            assert_eq!(actual, tier);
+            assert!(args.windows(2).any(|a| a == ["--thinking", "high"]));
+        }
+    }
+
+    #[test]
+    fn omp_fast_tier_does_not_leak_to_other_models_or_pi() {
+        let mut request = req(None);
+        request.service_tier = Some("priority".into());
+        for model in [
+            None,
+            Some("anthropic/claude"),
+            Some("google/gemini"),
+            Some("gpt-5.4"),
+            Some("openai/"),
+            Some("openai/gpt-5.4"),
+            Some("openai-codex/"),
+            Some("custom/gpt-5.4"),
+        ] {
+            request.model = model.map(str::to_string);
+            assert!(!argv(&pi_family::omp(), &request)
+                .iter()
+                .any(|a| a == "--service-tier"));
+        }
+        request.model = Some("openai-codex/gpt-5.4".into());
+        assert!(!argv(&pi_family::pi(), &request)
+            .iter()
+            .any(|a| a == "--service-tier"));
+        assert!(argv(&pi_family::omp(), &request)
+            .iter()
+            .any(|a| a == "--service-tier"));
+        request.service_tier = Some("invalid".into());
+        assert!(pi_family::omp()
+            .build_command(&request, "fake-bin")
+            .is_err());
+    }
+
+    #[test]
+    fn omp_tier_settings_are_backward_compatible_and_roundtrip() {
+        let mut settings: crate::settings::AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.omp_openai_service_tier, None);
+        for tier in [Some("priority"), Some("default"), None] {
+            settings.omp_openai_service_tier = tier.map(str::to_string);
+            let encoded = serde_json::to_string(&settings).unwrap();
+            let decoded: crate::settings::AppSettings = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.omp_openai_service_tier.as_deref(), tier);
+        }
     }
 
     #[test]
@@ -930,14 +1116,63 @@ mod permission_tests {
     fn codex_maps_modes_to_sandbox_flags() {
         let e = codex::CodexEngine;
         let auto = argv(&e, &req(Some("auto")));
-        assert!(auto.contains(&"workspace-write".to_string()));
+        assert!(auto.contains(&"sandbox_mode=\"workspace-write\"".to_string()));
         assert!(!auto.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
 
         let manual = argv(&e, &req(Some("manual")));
-        assert!(manual.contains(&"read-only".to_string()));
+        assert!(manual.contains(&"sandbox_mode=\"read-only\"".to_string()));
 
         let bypass = argv(&e, &req(Some("bypass")));
         assert!(bypass.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+    }
+
+    #[test]
+    fn codex_resume_avoids_unsupported_sandbox_flag() {
+        // `codex exec resume` rejects --sandbox (clap exit 2); the sandbox must
+        // travel via -c sandbox_mode on both fresh and resumed sessions.
+        let e = codex::CodexEngine;
+        let mut resume = req(Some("manual"));
+        resume.session_id = Some("00000000-0000-0000-0000-000000000000".to_string());
+        let args = argv(&e, &resume);
+        assert!(args.contains(&"resume".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+        assert!(args.contains(&"sandbox_mode=\"read-only\"".to_string()));
+
+        let fresh = argv(&e, &req(Some("auto")));
+        assert!(!fresh.contains(&"--sandbox".to_string()));
+        assert!(fresh.contains(&"sandbox_mode=\"workspace-write\"".to_string()));
+    }
+
+    #[test]
+    fn codex_prompt_goes_through_stdin_not_argv() {
+        // Windows resolves npm codex to a `.cmd` shim spawned via `cmd /c`;
+        // cmd.exe cuts a multiline argument at the first newline, so only line
+        // 1 ever reached the model. The prompt must ride stdin (`-`) verbatim.
+        let e = codex::CodexEngine;
+        let mut request = req(Some("auto"));
+        request.prompt = "first line\nmodel = \"gpt-5\"\n%PATH%".to_string();
+        let built = e.build_command(&request, "fake-bin").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"-".to_string()));
+        assert!(!args.iter().any(|a| a.contains("first line")));
+        assert_eq!(built.stdin_payload.as_deref(), Some(request.prompt.as_str()));
+
+        let mut resume = req(Some("auto"));
+        resume.session_id = Some("00000000-0000-0000-0000-000000000000".to_string());
+        let built = e.build_command(&resume, "fake-bin").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"-".to_string()));
+        assert_eq!(built.stdin_payload.as_deref(), Some("hi"));
     }
 
     #[test]

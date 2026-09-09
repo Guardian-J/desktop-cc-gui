@@ -32,12 +32,19 @@ pub struct AppSettings {
     /// folder name; workspaces missing here display their directory name.
     #[serde(default)]
     pub workspace_aliases: HashMap<String, String>,
+    /// Ids of workspaces hidden from the sidebar into the collapsible
+    /// 已归档 section; the record and its sessions stay intact.
+    #[serde(default)]
+    pub archived_workspaces: Vec<String>,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]
     pub default_models: HashMap<String, String>,
     #[serde(default)]
     pub default_efforts: HashMap<String, String>,
+    /// Per-app OMP OpenAI tier override; None preserves native CLI settings.
+    #[serde(default)]
+    pub omp_openai_service_tier: Option<String>,
     /// Max sessions shown per workspace in the sidebar before collapsing
     /// behind a "show more" row.
     #[serde(default = "default_sidebar_thread_limit")]
@@ -50,6 +57,22 @@ pub struct AppSettings {
     /// Validated with the same spawn-target rules as bin overrides.
     #[serde(default)]
     pub terminal_shell_path: Option<String>,
+    /// DeepSeek Harness host address; None/empty = 127.0.0.1.
+    #[serde(default)]
+    pub dsh_host: Option<String>,
+    /// DeepSeek Harness host port; None/0 = 3080.
+    #[serde(default)]
+    pub dsh_port: Option<u16>,
+    /// Auto-start the DSH host at app launch; None = on (`!= Some(false)`).
+    #[serde(default)]
+    pub dsh_auto_start: Option<bool>,
+    /// Global network proxy switch; applied to this process's env so spawned
+    /// children (engine CLIs, terminals, dsh host) inherit it.
+    #[serde(default)]
+    pub system_proxy_enabled: bool,
+    /// Proxy URL (http/https/socks5); None/empty = unset.
+    #[serde(default)]
+    pub system_proxy_url: Option<String>,
     /// Per-engine binary overrides. flatten keeps the legacy flat shape
     /// (`"claudeBin": …`) the frontend depends on; keys stay camelCase and
     /// unknown extra fields round-trip untouched.
@@ -78,12 +101,19 @@ impl Default for AppSettings {
             theme: default_theme(),
             workspace_groups: Vec::new(),
             workspace_aliases: HashMap::new(),
+            archived_workspaces: Vec::new(),
             language: default_language(),
             default_models: HashMap::new(),
             default_efforts: HashMap::new(),
+            omp_openai_service_tier: None,
             sidebar_thread_limit: default_sidebar_thread_limit(),
             composer_send_shortcut: default_composer_send_shortcut(),
             terminal_shell_path: None,
+            dsh_host: None,
+            dsh_port: None,
+            dsh_auto_start: None,
+            system_proxy_enabled: false,
+            system_proxy_url: None,
             bin_overrides: HashMap::new(),
         }
     }
@@ -345,6 +375,13 @@ pub fn get_app_settings() -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn update_app_settings(mut settings: AppSettings) -> Result<(), String> {
+    if settings
+        .omp_openai_service_tier
+        .as_deref()
+        .is_some_and(|tier| !matches!(tier, "default" | "priority"))
+    {
+        return Err("Invalid OMP OpenAI service tier".to_string());
+    }
     // Reject only the offending bin-override fields: the rest of the settings
     // still persist, and the error names what was dropped.
     let mut rejected = Vec::new();
@@ -376,7 +413,12 @@ pub fn update_app_settings(mut settings: AppSettings) -> Result<(), String> {
     }
     let path = crate::paths::settings_path();
     let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    // Reject before persisting: an invalid proxy URL must not be saved (the
+    // frontend rolls its drafts back on this error).
+    crate::proxy::validate_proxy_settings(&settings)?;
     atomic_write(&path, &content)?;
+    // Apply to this process's env so the next spawned child inherits it.
+    crate::proxy::apply_app_proxy_settings(&settings)?;
     if rejected.is_empty() {
         Ok(())
     } else {

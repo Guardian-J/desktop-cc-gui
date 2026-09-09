@@ -1,5 +1,6 @@
 // Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
 import { invoke } from "./transport";
+import { withGrantRetry } from "./grant";
 
 // ==================== Shared types (mirror Rust serde camelCase) ====================
 
@@ -19,12 +20,27 @@ export interface SessionMeta {
   customTitle: string | null;
 }
 
+export type TodoStatus = "pending" | "active" | "complete" | "blocked" | "dropped";
+
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+}
+
+/** Todo-list payload on todo-class tool rows: replace = full snapshot,
+ * otherwise a patch matched by content (status "dropped" removes). */
+export interface TodosPayload {
+  items: TodoItem[];
+  replace: boolean;
+}
+
 export interface Message {
   seq: number;
   role: string; // "user" | "assistant" | "tool" | "thinking"
   text: string;
   /** Target file of a tool call (read/edit/write/...); renders as a file chip. */
   path?: string | null;
+  todos?: TodosPayload;
   ts: string | null;
   usage?: unknown;
   model?: string | null;
@@ -142,6 +158,8 @@ export interface AppSettings {
   workspaceGroups: WorkspaceGroup[];
   /** Workspace id -> sidebar display alias; absent = show the folder name. */
   workspaceAliases: Record<string, string>;
+  /** Ids of workspaces hidden into the sidebar's collapsible 已归档 section. */
+  archivedWorkspaces: string[];
   language: string;
   claudeBin: string | null;
   kimiBin: string | null;
@@ -152,12 +170,24 @@ export interface AppSettings {
   dshBin: string | null;
   defaultModels: Record<string, string>;
   defaultEfforts: Record<string, string>;
+  ompOpenaiServiceTier?: "default" | "priority" | null;
   /** Max sessions listed per workspace in the sidebar (default 5). */
   sidebarThreadLimit: number;
   /** Composer send gesture: "enter" (Enter sends) or "cmdEnter" (⌘/Ctrl+Enter sends). */
   composerSendShortcut: string;
   /** Terminal shell override; null/empty = auto-detect. */
   terminalShellPath: string | null;
+  /** DSH host address (default "127.0.0.1"). */
+  dshHost?: string | null;
+  /** DSH host port (default 3080). */
+  dshPort?: number | null;
+
+  /** Auto-adopt-or-spawn the DSH host on app start (default true). */
+  dshAutoStart?: boolean | null;
+  /** Global network proxy switch; spawned children inherit the proxy env. */
+  systemProxyEnabled: boolean;
+  /** Proxy URL (http/https/socks5); null = unset. */
+  systemProxyUrl: string | null;
 }
 
 export interface DirEntry {
@@ -222,6 +252,39 @@ export interface WebAccessInfo {
   token: string;
   lanIp: string;
 }
+// ---- DeepSeek Harness local host ----
+
+/** Snapshot of the DSH local host + CLI probe (`dsh_host_status`,
+ *  `dsh_host_start`). Never spawns on its own; `dsh_host_start` does. */
+export interface DshHostStatus {
+  installed: boolean;
+  version: string | null;
+  host: string;
+  port: number;
+  origin: string;
+  autoStart: boolean;
+  running: boolean;
+  /** "spawned" = we launched it (and will kill it); "adopted" = pre-existing
+   *  listener we attached to and never kill implicitly. */
+  ownership: "spawned" | "adopted" | null;
+  /** Raw host.describe value (provider/model/attachedSessions/…). */
+  describe: {
+    provider?: string | null;
+    model?: string | null;
+    attachedSessions?: number | null;
+    version?: string | null;
+  } | null;
+  /** Probe error, set only when the host is down. */
+  error: string | null;
+}
+
+/** Local dsh CLI version + npm registry latest (`dsh_cli_version`). */
+export interface DshCliVersion {
+  installed: boolean;
+  localVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+}
 
 // ==================== Typed invoke wrappers ====================
 // Shared in-flight/cached app-settings promise: startup, the settings page
@@ -263,6 +326,24 @@ export interface PiFamilyModelsConfigReadResult {
   template: string;
   providers: PiFamilyCustomProviderSummary[];
   parseError: string | null;
+}
+
+// ==================== Plugins (Phase 1 runtime, plan §4.3) ====================
+
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  tier: "declarative" | "js";
+  source: "marketplace" | "local" | "ai" | "builtin";
+  enabled: boolean;
+  quarantined: boolean;
+  lastError: string | null;
+  permissions: string[];
+  installedAt: number;
+  minAppVersion: string | null;
 }
 
 export const ipc = {
@@ -373,24 +454,31 @@ export const ipc = {
     invoke<void>("terminal_resize", { id, cols, rows }),
   /** No-op when the session is already gone. */
   terminalClose: (id: string) => invoke<void>("terminal_close", { id }),
-  // files
-  listDir: (path: string) => invoke<DirEntry[]>("list_dir", { path }),
-  readFile: (path: string) => invoke<FileContent>("read_file", { path }),
+  // files — every command goes through withGrantRetry so an outside-roots
+  // rejection becomes a one-click grant prompt + retry (see lib/grant.ts).
+  listDir: (path: string) => withGrantRetry(() => invoke<DirEntry[]>("list_dir", { path })),
+  readFile: (path: string) => withGrantRetry(() => invoke<FileContent>("read_file", { path })),
   writeFile: (path: string, content: string) =>
-    invoke<void>("write_file", { path, content }),
-  createDir: (path: string) => invoke<void>("create_dir", { path }),
+    withGrantRetry(() => invoke<void>("write_file", { path, content })),
+  createDir: (path: string) => withGrantRetry(() => invoke<void>("create_dir", { path })),
   /** Fails when the file already exists (unlike write_file, which overwrites). */
-  createFile: (path: string) => invoke<void>("create_file", { path }),
-  renameItem: (from: string, to: string) => invoke<void>("rename_item", { from, to }),
-  trashItem: (path: string) => invoke<void>("trash_item", { path }),
-  duplicateItem: (path: string) => invoke<FileOpResult>("duplicate_item", { path }),
+  createFile: (path: string) => withGrantRetry(() => invoke<void>("create_file", { path })),
+  renameItem: (from: string, to: string) =>
+    withGrantRetry(() => invoke<void>("rename_item", { from, to })),
+  trashItem: (path: string) => withGrantRetry(() => invoke<void>("trash_item", { path })),
+  duplicateItem: (path: string) =>
+    withGrantRetry(() => invoke<FileOpResult>("duplicate_item", { path })),
   pasteItem: (source: string, targetDir: string) =>
-    invoke<FileOpResult>("paste_item", { source, targetDir }),
+    withGrantRetry(() => invoke<FileOpResult>("paste_item", { source, targetDir })),
   searchText: (path: string, query: string) =>
-    invoke<SearchHit[]>("search_text", { path, query }),
+    withGrantRetry(() => invoke<SearchHit[]>("search_text", { path, query })),
   /** Whole-tree file index for the composer @-mention picker (relative
    * paths; backend caps at 20k entries). */
-  listFileIndex: (path: string) => invoke<FileIndexEntry[]>("list_file_index", { path }),
+  listFileIndex: (path: string) =>
+    withGrantRetry(() => invoke<FileIndexEntry[]>("list_file_index", { path })),
+  // granted directories (desktop-only commands; the settings list hides on web)
+  listGrantedRoots: () => invoke<string[]>("list_granted_roots"),
+  revokeGrantedRoot: (path: string) => invoke<void>("revoke_granted_root", { path }),
   // git
   gitStatus: (path: string) => invoke<GitStatus>("git_status", { path }),
   gitDiff: (path: string, file: string, staged: boolean) =>
@@ -414,8 +502,32 @@ export const ipc = {
     invoke<void>("reveal_in_file_manager", { path }),
   // metrics
   appMetrics: () => invoke<AppMetrics>("app_metrics"),
+  // plugins
+  pluginList: () => invoke<PluginInfo[]>("plugin_list"),
+  pluginInstallFromPath: (path: string) =>
+    invoke<PluginInfo>("plugin_install_from_path", { path }),
+  pluginUninstall: (id: string, deleteData: boolean) =>
+    invoke<void>("plugin_uninstall", { id, deleteData }),
+  pluginSetEnabled: (id: string, enabled: boolean) =>
+    invoke<PluginInfo>("plugin_set_enabled", { id, enabled }),
+  pluginQuarantine: (id: string, error: string) =>
+    invoke<PluginInfo>("plugin_quarantine", { id, error }),
+  pluginReadFile: (id: string, name: string) =>
+    invoke<string>("plugin_read_file", { id, name }),
+  pluginStorageGet: (id: string, key: string) =>
+    invoke<unknown>("plugin_storage_get", { id, key }),
+  pluginStorageSet: (id: string, key: string, value: unknown) =>
+    invoke<void>("plugin_storage_set", { id, key, value }),
+  pluginStorageDelete: (id: string, key: string) =>
+    invoke<void>("plugin_storage_delete", { id, key }),
   // web access (start/stop are desktop-only; the bridge answers status too)
   webAccessStart: () => invoke<WebAccessInfo>("web_access_start"),
   webAccessStop: () => invoke<void>("web_access_stop"),
   webAccessStatus: () => invoke<WebAccessInfo | null>("web_access_status"),
+  // DeepSeek Harness local host (dsh web --host H --port P)
+  dshHostStatus: () => invoke<DshHostStatus>("dsh_host_status"),
+  dshHostStart: () => invoke<DshHostStatus>("dsh_host_start"),
+  dshHostStop: () => invoke<{ ok: boolean }>("dsh_host_stop"),
+  dshCliVersion: () => invoke<DshCliVersion>("dsh_cli_version"),
+  dshCliUpdate: () => invoke<{ ok: boolean; version: string | null }>("dsh_cli_update"),
 };

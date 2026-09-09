@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Plus from "lucide-react/dist/esm/icons/plus";
+import Search from "lucide-react/dist/esm/icons/search";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import CloudDownload from "lucide-react/dist/esm/icons/cloud-download";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch";
@@ -28,6 +29,7 @@ interface ChangesPanelHeaderProps {
   /** First error to surface: a failed action, else the last refresh failure. */
   error: string | null;
   run: (key: string, action: () => Promise<unknown>) => void;
+  onDismissError: () => void;
 }
 
 /** Title row with refresh/pull/push, the branch picker, and the new-branch form. */
@@ -39,11 +41,25 @@ export function ChangesPanelHeader({
   pending,
   error,
   run,
+  onDismissError,
 }: ChangesPanelHeaderProps) {
   const { t } = useTranslation();
   const [branchOpen, setBranchOpen] = useState(false);
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
+  const [branchQuery, setBranchQuery] = useState("");
+
+  // Stale filter text must not survive into the next open.
+  useEffect(() => {
+    if (!branchOpen) setBranchQuery("");
+  }, [branchOpen]);
+
+  const filteredBranches = useMemo(() => {
+    const q = branchQuery.trim().toLowerCase();
+    return (branches ?? []).filter(
+      (b) => q.length === 0 || b.name.toLowerCase().includes(q),
+    );
+  }, [branches, branchQuery]);
 
   return (
     <div className="flex flex-col gap-2 border-b border-separator-border px-3 py-2.5">
@@ -95,8 +111,31 @@ export function ChangesPanelHeader({
                 className="ml-auto size-4 shrink-0 text-foreground-icon-tertiary"
               />
             </DropdownTrigger>
-            <DropdownPopover aria-label={t("git.branch")} placement="bottom start">
-              {(branches ?? []).map((b) => (
+            <DropdownPopover aria-label={t("git.branch")} placement="bottom start" className="max-h-80!">
+              {/* Single scroller: the popover itself, capped at 320px
+                  (react-aria's inline viewport clamp would otherwise let it
+                  grow to nearly full-window height, so the cap needs the
+                  important modifier to win). Search and the new-branch footer
+                  pin via sticky; the rows scroll between them. An inner
+                  max-h scroll div nested badly here — in short windows the
+                  clamped popover clipped the inner list and its scrollbar,
+                  leaving the lower branches unreachable. */}
+              <div className="sticky -top-2.5 z-10 -mx-2.5 -mt-2.5 bg-background-primary-default px-2.5 pt-2.5 pb-1">
+                <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border-button-default px-2">
+                  <Search
+                    aria-hidden
+                    className="size-4 shrink-0 text-foreground-icon-secondary"
+                  />
+                  <input
+                    autoFocus
+                    value={branchQuery}
+                    onChange={(e) => setBranchQuery(e.target.value)}
+                    placeholder={t("git.searchBranches")}
+                    className="min-w-0 flex-1 bg-transparent text-body-medium text-text-primary outline-none placeholder:text-text-placeholder"
+                  />
+                </div>
+              </div>
+              {filteredBranches.map((b) => (
                 <DropdownItem
                   key={b.name}
                   selected={b.isCurrent}
@@ -115,19 +154,26 @@ export function ChangesPanelHeader({
                   </span>
                 </DropdownItem>
               ))}
-              <DropdownDivider />
-              <DropdownItem
-                className="px-2 py-1.5"
-                onSelect={() => {
-                  setBranchOpen(false);
-                  setCreatingBranch(true);
-                }}
-              >
-                <Plus aria-hidden className="size-4 text-foreground-icon-secondary" />
-                <span className="text-body-medium text-text-primary">
-                  {t("git.newBranch")}
+              {filteredBranches.length === 0 && (
+                <span className="px-2 py-1.5 text-body-medium text-text-tertiary">
+                  {t("git.noMatchingBranches")}
                 </span>
-              </DropdownItem>
+              )}
+              <div className="sticky -bottom-2.5 z-10 -mx-2.5 -mb-2.5 bg-background-primary-default px-2.5 pb-2.5">
+                <DropdownDivider />
+                <DropdownItem
+                  className="px-2 py-1.5"
+                  onSelect={() => {
+                    setBranchOpen(false);
+                    setCreatingBranch(true);
+                  }}
+                >
+                  <Plus aria-hidden className="size-4 text-foreground-icon-secondary" />
+                  <span className="text-body-medium text-text-primary">
+                    {t("git.newBranch")}
+                  </span>
+                </DropdownItem>
+              </div>
             </DropdownPopover>
           </Dropdown>
         </div>
@@ -177,7 +223,17 @@ export function ChangesPanelHeader({
         </form>
       )}
       {error && (
-        <p className="break-words text-xs text-text-error-primary">{error}</p>
+        <div role="alert" className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 break-words text-xs text-text-error-primary">{error}</p>
+          <button
+            type="button"
+            aria-label={t("common.close")}
+            onClick={onDismissError}
+            className="shrink-0 cursor-pointer rounded p-0.5 text-text-error-primary hover:bg-background-tertiary-hover"
+          >
+            ×
+          </button>
+        </div>
       )}
     </div>
   );
