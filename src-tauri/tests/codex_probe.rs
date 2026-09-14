@@ -57,6 +57,7 @@ fn redirect_env(home: &std::path::Path) {
     std::env::set_var("APPDATA", home.join("appdata"));
     std::env::set_var("USERPROFILE", home.join("profile"));
     std::env::set_var("LOCALAPPDATA", home.join("localappdata"));
+    ccgui_next_lib::engine::resolve::clear_search_paths_cache();
 }
 
 /// Fake codex CLI: `%APPDATA%\npm\codex.cmd` running a Node script that reads
@@ -150,6 +151,7 @@ async fn send_codex_and_wait(state: &AppState, events: &Arc<Capture>, deadline_m
         workspace.to_string_lossy().to_string(),
         None,
         "hi".to_string(),
+        None,
         None,
         None,
         None,

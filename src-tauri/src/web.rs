@@ -1001,6 +1001,7 @@ struct SendMessageArgs {
     model: Option<String>,
     effort: Option<String>,
     permission: Option<String>,
+    provider_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1081,6 +1082,13 @@ struct RememberEffortArgs {
     engine: String,
     session_id: String,
     effort: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RememberProviderArgs {
+    engine: String,
+    session_id: String,
+    provider_id: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1308,6 +1316,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> Result<Value
                 a.model,
                 a.effort,
                 a.permission,
+                a.provider_id,
             )
             .await)
         }
@@ -1401,6 +1410,15 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> Result<Value
                 a.engine,
                 a.session_id,
                 a.effort,
+            ))
+        }
+        "remember_session_provider" => {
+            let a: RememberProviderArgs = parse_args(&raw)?;
+            ser(crate::history::reader::remember_session_provider(
+                app.state(),
+                a.engine,
+                a.session_id,
+                a.provider_id,
             ))
         }
         "rescan_sessions" => {

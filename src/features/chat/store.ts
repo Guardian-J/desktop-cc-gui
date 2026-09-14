@@ -15,7 +15,11 @@ import { errorText } from "@/lib/errors";
 import { writeStored } from "@/lib/storage";
 import { newId } from "@/lib/id";
 import { subscribeTauriEvent } from "@/hooks/use-tauri-event";
-import { CLI_CONFIG_CHANGED_EVENT } from "@/features/settings/providers";
+import {
+  CLI_CONFIG_CHANGED_EVENT,
+  engineCurrents,
+  notifyCliConfigChanged,
+} from "@/features/settings/providers";
 import {
   ENGINE_PREF_KEY,
   PERMISSION_PREF_KEY,
@@ -35,7 +39,9 @@ import {
   patchSession,
   resolveSessionModel,
   resolveSessionEffort,
+  resolveSessionProvider,
   routeRun,
+  rememberSettledRun,
   runRouting,
   setStreamingFlag,
   settleLiveRows,
@@ -49,6 +55,7 @@ import {
   patchGrantBySeq,
   rememberModelForRun,
   rememberEffortForRun,
+  rememberProviderForRun,
   settleOrphanedRuns,
   upsertSessionMetaInto,
 } from "./store/engine-events";
@@ -56,6 +63,7 @@ import { effectivePermission, readPermissionPref } from "./store/permissions";
 import { persistSettings } from "./store/settings-persist";
 import { appendCommittedRows, visibleSessions } from "./store/session-utils";
 import type { ChatStore } from "./store/types";
+import { mergeUsage } from "./usage";
 
 // Facade re-exports: callers keep importing everything from "../store".
 export { sessionKey } from "./store/persistence";
@@ -221,10 +229,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (effort) {
       if (tab.sessionId) {
         void ipc
-          .rememberSessionEffort(engine, tab.sessionId, effort)
-          .catch(() => {});
+          .rememberSessionEffort?.(engine, tab.sessionId, effort)
+          ?.catch(() => {});
       } else {
         rememberEffortForRun(key, effort);
+      }
+    }
+    const provider =
+      resolveSessionProvider(
+        tab,
+        get().bySession[key],
+        get().providers[engine],
+      ) ?? null;
+    if (provider) {
+      if (tab.sessionId) {
+        void ipc
+          .rememberSessionProvider?.(engine, tab.sessionId, provider)
+          ?.catch(() => {});
+      } else {
+        rememberProviderForRun(key, provider);
       }
     }
     // Optimistic user message.
@@ -249,10 +272,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         turnStartedAt: Date.now(),
         activeModel: model,
         activeEffort: effort,
+        activeProvider: provider,
         // The tail indicator counts this reply, not the one before it.
         turnUsage: null,
       },
     );
+    // Refresh independently: a slow history read must not delay sending or Stop.
+    void get().refreshSessionUsage(key);
     try {
       const result = await ipc.sendMessage({
         engine,
@@ -267,6 +293,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           engine,
           get().permission,
         ),
+        providerId: provider,
       });
       if (result.sessionId && !tab.sessionId) {
         // Preassigned native id (grok): adopt immediately.
@@ -277,13 +304,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (model) {
           void ipc
-            .rememberSessionModel(engine, result.sessionId, model)
-            .catch(() => {});
+            .rememberSessionModel?.(engine, result.sessionId, model)
+            ?.catch(() => {});
         }
         if (effort) {
           void ipc
-            .rememberSessionEffort(engine, result.sessionId, effort)
-            .catch(() => {});
+            .rememberSessionEffort?.(engine, result.sessionId, effort)
+            ?.catch(() => {});
+        }
+        if (provider) {
+          void ipc
+            .rememberSessionProvider?.(engine, result.sessionId, provider)
+            ?.catch(() => {});
         }
         settleOrphanedRuns(set, routeRun(result.runId, newKey));
         set((s) => {
@@ -337,7 +369,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             firstLineTitle(prompt),
           ),
         );
-      } else if (!runRouting.has(result.runId)) {
+      } else if (!runRouting.has(result.runId) && !get().bySession[key]?.settledRunIds?.includes(result.runId)) {
         // The engine can announce its session id while the invoke is in
         // flight; onSession rekeys the run to the native key then, and
         // routing it back to the pre-send key would strand the live turn
@@ -355,6 +387,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? sessionKey(engine, result.sessionId, tab.workspacePath)
           : key;
       if (get().bySession[liveKey]?.interrupted) {
+        patchSession(set, liveKey, { settledRunIds: rememberSettledRun(get().bySession[liveKey], result.runId) });
         runRouting.delete(result.runId);
         untrackRun(result.runId);
         dropRunUsage(result.runId);
@@ -378,6 +411,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // without this the rest of the queue waits for a settle that is not
       // coming. Each drain consumes one item, so a run of failures empties
       // the queue instead of looping.
+      void get().refreshSessionUsage(key);
       if (!get().bySession[key]?.interrupted) drainQueue(key);
     }
   }
@@ -434,6 +468,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ompServiceTier: null,
     codexServiceTier: null,
     models: {},
+    providers: {},
     threadLimit: 10,
     workspaceGroups: [],
     workspaceAliases: {},
@@ -537,6 +572,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }),
         )
         .catch(() => {});
+      ipc
+        .getCliConfig?.()
+        ?.then((config) => set({ providers: engineCurrents(config) }))
+        .catch(() => {});
     },
 
     refreshSessions: async () => {
@@ -553,6 +592,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ...current,
             activeModel: meta.model ?? current.activeModel,
             activeEffort: meta.effort ?? current.activeEffort,
+            activeProvider: meta.provider ?? current.activeProvider,
           };
         }
         return { sessions: visible, bySession };
@@ -560,14 +600,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     refreshEngines: async () => {
-      const [engines, sessions] = await Promise.all([
+      const [engines, sessions, config] = await Promise.all([
         ipc.listEngines().catch(() => null),
         ipc.listSessions().catch(() => null),
+        ipc.getCliConfig?.().catch(() => null) ?? Promise.resolve(null),
       ]);
       if (!engines) return;
       set({
         engines,
         ...(sessions ? { sessions: visibleSessions(sessions, engines) } : {}),
+        ...(config ? { providers: engineCurrents(config) } : {}),
       });
       ensureUsableEngine(engines);
     },
@@ -686,6 +728,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (rememberedEffort && !get().bySession[key]?.activeEffort) {
         patchSession(set, key, { activeEffort: rememberedEffort });
       }
+      const rememberedProvider = get().sessions.find(
+        (x) => x.engine === engine && x.sessionId === sessionId,
+      )?.provider;
+      if (rememberedProvider && !get().bySession[key]?.activeProvider) {
+        patchSession(set, key, { activeProvider: rememberedProvider });
+      }
       const syncEngine = engine !== get().activeEngine;
       if (syncEngine) writeStored(ENGINE_PREF_KEY, engine);
       set((s) => {
@@ -695,7 +743,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           sameTab(t, engine, sessionId, workspacePath),
         );
         const tab: ActiveSession = stored
-          ? { ...stored, effort: undefined }
+          ? { ...stored, effort: undefined, provider: undefined }
           : { engine, sessionId, workspacePath };
         const openTabs = stored
           ? s.openTabs.map((t) => (t === stored ? tab : t))
@@ -829,6 +877,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             engine,
             model: undefined,
             effort: undefined,
+            provider: undefined,
           };
           openTabs = s.openTabs.map((t) =>
             sameTab(t, active.engine, active.sessionId, active.workspacePath)
@@ -900,6 +949,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
         // Empty = "CLI default": clear the tab override so the session falls
         // back to its own history/model default again.
         stampActiveTab({ model: model || undefined });
+      }
+    },
+    setProvider: async (engine, providerId) => {
+      const active = get().active;
+      try {
+        if (active?.engine === engine && active.sessionId) {
+          await ipc.rememberSessionProvider(engine, active.sessionId, providerId);
+          const key = sessionKey(engine, active.sessionId, active.workspacePath);
+          patchSession(set, key, { activeProvider: providerId });
+          if (get().active === active) stampActiveTab({ provider: undefined });
+        } else {
+          await ipc.setCurrentProvider(engine, providerId);
+          set({ providers: { ...get().providers, [engine]: providerId } });
+          if (get().active === active && active?.engine === engine) {
+            stampActiveTab({ provider: providerId || undefined });
+          }
+          notifyCliConfigChanged();
+        }
+        set({ actionError: null });
+      } catch (error) {
+        // Migration conflicts and failed writes must not leave a checkmark
+        // on a channel the backend never accepted.
+        set({ actionError: errorText(error) });
       }
     },
     pinModels: async (updates) => {
@@ -1297,10 +1369,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // The runs are dead: drop their routing and usage entries so the maps
       // cannot grow forever. (A late done event would also remove them.)
       for (const runId of deadRunIds) {
+        patchSession(set, key, { settledRunIds: rememberSettledRun(get().bySession[key], runId) });
         runRouting.delete(runId);
         untrackRun(runId);
         dropRunUsage(runId);
       }
+      await get().refreshSessionUsage(key);
     },
 
     deleteSession: async (engine, sessionId) => {
@@ -1454,37 +1528,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? sessionKey(active.engine, active.sessionId, active.workspacePath)
           : "");
       if (!targetKey) return;
-      const targetTab =
-        openTabs.find(
-          (t) =>
-            sessionKey(t.engine, t.sessionId, t.workspacePath) === targetKey,
-        ) ?? active;
-
-      let engine = targetTab?.engine;
-      let sessionId = targetTab?.sessionId;
-      if (
-        !sessionId &&
-        targetKey.includes("/") &&
-        !targetKey.startsWith("new:")
-      ) {
-        const slashIdx = targetKey.indexOf("/");
-        engine = targetKey.slice(0, slashIdx);
-        sessionId = targetKey.slice(slashIdx + 1);
-      }
-      if (!engine || !sessionId) return;
+      // A background/closed tab must never fall back to the active session.
+      const targetTab = openTabs.find(
+        (t) => sessionKey(t.engine, t.sessionId, t.workspacePath) === targetKey,
+      );
+      const slashIdx = targetKey.indexOf("/");
+      const engine = targetTab?.engine ?? targetKey.slice(0, slashIdx);
+      const sessionId = targetTab?.sessionId ?? targetKey.slice(slashIdx + 1);
+      if (targetKey.startsWith("new:") || slashIdx < 1 || !engine || !sessionId) return;
+      const before = get().bySession[targetKey];
+      if (!before) return;
 
       try {
-        const page = await ipc.loadSessionPage(
-          engine,
-          sessionId,
-          100,
-        );
+        // A just-created session may not be indexed yet when done arrives.
+        void ipc.rescanSessions().catch(() => {});
+        const read = async () => {
+          for (let attempt = 0; ; attempt++) {
+            try { return await ipc.loadSessionPage(engine, sessionId, 100); }
+            catch (error) {
+              if (attempt === 2) throw error;
+              await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+              const current = get().bySession[targetKey];
+              if (!current || current.messages !== before.messages
+                  || current.turnStartedAt !== before.turnStartedAt) return null;
+            }
+          }
+        };
+        const page = await read();
+        if (!page) return;
         const latestUsage =
           [...page.messages].reverse().find((m) => m.usage)?.usage ?? null;
-        if (latestUsage) {
-          patchSession(set, targetKey, { usage: latestUsage });
+        const current = get().bySession[targetKey];
+        // Discard stale reads after a newer report, a new turn or tab removal.
+        if (latestUsage && current && current.usage === before.usage
+            && current.turnStartedAt === before.turnStartedAt
+            && current.messages === before.messages) {
+          patchSession(set, targetKey, { usage: mergeUsage(latestUsage, current.usage) });
         }
-        void ipc.rescanSessions();
       } catch (error) {
         console.error("Failed to refresh session usage:", error);
       }
