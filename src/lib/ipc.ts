@@ -626,6 +626,8 @@ export const ipc = {
     invoke<void>("set_window_theme", { dark }),
   // engine
   sendMessage: (args: {
+    /** Route events before the send invocation resolves (older callers may omit). */
+    runId?: string;
     engine: string;
     workspacePath: string;
     sessionId: string | null;

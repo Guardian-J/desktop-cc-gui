@@ -1682,6 +1682,7 @@ pub async fn send_message(
     effort: Option<String>,
     permission: Option<String>,
     provider_id: Option<String>,
+    run_id: Option<String>,
 ) -> Result<SendResult, String> {
     send_message_inner(
         &state,
@@ -1694,6 +1695,7 @@ pub async fn send_message(
         effort,
         permission,
         provider_id,
+        run_id,
     )
     .await
 }
@@ -1713,7 +1715,17 @@ pub async fn send_message_inner(
     effort: Option<String>,
     permission: Option<String>,
     provider_id: Option<String>,
+    run_id: Option<String>,
 ) -> Result<SendResult, String> {
+    let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if run_id.is_empty() || run_id.len() > 128
+        || !run_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err("invalid run id".into());
+    }
+    if state.processes.0.lock().map_err(|e| e.to_string())?.contains_key(&run_id) {
+        return Err("run id already active".into());
+    }
     if state.processes.len() >= MAX_CONCURRENT_RUNS {
         return Err(format!(
             "too many concurrent runs ({MAX_CONCURRENT_RUNS}); wait for one to finish"
@@ -1738,7 +1750,7 @@ pub async fn send_message_inner(
     // Host-stream engines drive their own transport: no child process — the
     // registry entry only routes interrupts to the transport task.
     if launch.engine_impl.drives_own_transport() {
-        return send_host_stream(state, launch, engine).await;
+        return send_host_stream(state, launch, engine, run_id).await;
     }
 
     let mut command = launch.built.command;
@@ -1772,7 +1784,6 @@ pub async fn send_message_inner(
 
     spawn_stdin_writer(&mut child, launch.built.stdin_payload);
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let pid = child.id().unwrap_or(0);
     // Detach both pipes while we still own the child outright. A missing pipe
     // after spawn is fatal: kill the child so it cannot run unobserved and
@@ -1870,8 +1881,8 @@ async fn send_host_stream(
     state: &crate::AppState,
     launch: Launch,
     engine: String,
+    run_id: String,
 ) -> Result<SendResult, String> {
-    let run_id = uuid::Uuid::new_v4().to_string();
     let pid = next_virtual_pid();
     let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader_abort = Arc::new(std::sync::OnceLock::new());

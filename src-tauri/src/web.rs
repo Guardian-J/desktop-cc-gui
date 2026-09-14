@@ -993,6 +993,7 @@ struct UpdateSettingsArgs {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SendMessageArgs {
+    run_id: Option<String>,
     engine: String,
     workspace_path: String,
     session_id: Option<String>,
@@ -1317,6 +1318,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> Result<Value
                 a.effort,
                 a.permission,
                 a.provider_id,
+                a.run_id,
             )
             .await)
         }

@@ -158,6 +158,18 @@ describe("stop during an in-flight send", () => {
 describe("compactContext and refreshSessionUsage", () => {
   beforeEach(resetStore);
 
+  it("retries a successful but unchanged history read until the final usage is persisted", async () => {
+    const key = "codex/delayed-write";
+    const previous = { input_tokens: 1000, model_context_window: 200000 };
+    const latest = { input_tokens: 90000, model_context_window: 1000000 };
+    useChatStore.setState({ bySession: { [key]: { ...EMPTY_SESSION, usage: previous } } });
+    vi.mocked(ipc.loadSessionPage)
+      .mockResolvedValueOnce({ messages: [{ usage: previous }] } as any)
+      .mockResolvedValueOnce({ messages: [{ usage: latest }] } as any);
+    await useChatStore.getState().refreshSessionUsage(key);
+    expect(useChatStore.getState().bySession[key].usage).toEqual(latest);
+  });
+
   it("refreshes an existing session before sending without waiting for history", async () => {
     const tab = { engine: "codex", sessionId: "before-send", workspacePath: WS };
     const key = "codex/before-send";

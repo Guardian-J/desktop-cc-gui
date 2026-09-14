@@ -279,8 +279,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
     // Refresh independently: a slow history read must not delay sending or Stop.
     void get().refreshSessionUsage(key);
+    const requestedRunId = `run-${newId()}`;
+    settleOrphanedRuns(set, routeRun(requestedRunId, key));
     try {
       const result = await ipc.sendMessage({
+        runId: requestedRunId,
         engine,
         workspacePath: tab.workspacePath,
         sessionId: tab.sessionId,
@@ -295,7 +298,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ),
         providerId: provider,
       });
-      if (result.sessionId && !tab.sessionId) {
+      // Older backends choose their own id. Retire the provisional route.
+      if (result.runId !== requestedRunId) {
+        runRouting.delete(requestedRunId);
+        untrackRun(requestedRunId);
+      }
+      // A whole turn can finish while invoke is still pending. Its session
+      // event has then moved the state and done has removed the routing entry.
+      const knownKey = runRouting.get(result.runId) ?? Object.keys(get().bySession).find(
+        (candidate) => get().bySession[candidate]?.settledRunIds?.includes(result.runId),
+      );
+      const settled = knownKey && get().bySession[knownKey]?.settledRunIds?.includes(result.runId);
+      if (result.sessionId && !tab.sessionId
+          && (!settled || (knownKey && get().bySession[knownKey]?.interrupted))) {
         // Preassigned native id (grok): adopt immediately.
         const newKey = sessionKey(
           engine,
@@ -369,23 +384,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             firstLineTitle(prompt),
           ),
         );
-      } else if (!runRouting.has(result.runId) && !get().bySession[key]?.settledRunIds?.includes(result.runId)) {
+      } else if (!runRouting.has(result.runId) && !settled) {
         // The engine can announce its session id while the invoke is in
         // flight; onSession rekeys the run to the native key then, and
         // routing it back to the pre-send key would strand the live turn
         // there while the tab renders the native key.
         settleOrphanedRuns(set, routeRun(result.runId, key));
       }
-      // Stop pressed while this send was still in flight: interrupt() ran
-      // before runRouting had this run (it is written above, after the
-      // await), so it settled the UI and killed nothing — the CLI kept
-      // streaming. Now that the ids exist, kill it. A native id adopted
+      // Stop can precede native spawn while invoke is still in flight.
+      // Retry the interrupt now that the backend has registered the child.
+      // A native id adopted
       // just above moved the state to a new key, so read the key the turn
       // actually lives under.
-      const liveKey =
+      const liveKey = runRouting.get(result.runId) ?? knownKey ?? (
         result.sessionId && !tab.sessionId
           ? sessionKey(engine, result.sessionId, tab.workspacePath)
-          : key;
+          : key);
       if (get().bySession[liveKey]?.interrupted) {
         patchSession(set, liveKey, { settledRunIds: rememberSettledRun(get().bySession[liveKey], result.runId) });
         runRouting.delete(result.runId);
@@ -399,10 +413,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ]);
       }
     } catch (error) {
+      const failedKey = runRouting.get(requestedRunId) ?? key;
+      runRouting.delete(requestedRunId);
+      untrackRun(requestedRunId);
+      dropRunUsage(requestedRunId);
       set((s) => ({
-        streamingByKey: setStreamingFlag(s.streamingByKey, key, false),
+        streamingByKey: setStreamingFlag(s.streamingByKey, failedKey, false),
       }));
-      patchSession(set, key, {
+      patchSession(set, failedKey, {
         error: String(error),
         streaming: false,
         turnStartedAt: null,
@@ -411,8 +429,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // without this the rest of the queue waits for a settle that is not
       // coming. Each drain consumes one item, so a run of failures empties
       // the queue instead of looping.
-      void get().refreshSessionUsage(key);
-      if (!get().bySession[key]?.interrupted) drainQueue(key);
+      void get().refreshSessionUsage(failedKey);
+      if (!get().bySession[failedKey]?.interrupted) drainQueue(failedKey);
     }
   }
 
@@ -1542,28 +1560,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         // A just-created session may not be indexed yet when done arrives.
         void ipc.rescanSessions().catch(() => {});
-        const read = async () => {
-          for (let attempt = 0; ; attempt++) {
-            try { return await ipc.loadSessionPage(engine, sessionId, 100); }
-            catch (error) {
-              if (attempt === 2) throw error;
-              await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
-              const current = get().bySession[targetKey];
-              if (!current || current.messages !== before.messages
-                  || current.turnStartedAt !== before.turnStartedAt) return null;
-            }
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+          const isCurrent = () => {
+            const current = get().bySession[targetKey];
+            return current && current.usage === before.usage
+              && current.turnStartedAt === before.turnStartedAt
+              && current.messages === before.messages;
+          };
+          if (!isCurrent()) return;
+          try {
+            const page = await ipc.loadSessionPage(engine, sessionId, 100);
+            if (!isCurrent()) return;
+            const latestUsage = [...page.messages].reverse().find((m) => m.usage)?.usage;
+            // CLI history may flush after done. A successful read containing
+            // no new usage is not evidence that this turn has been persisted.
+            if (!latestUsage || JSON.stringify(latestUsage) === JSON.stringify(before.usage)) continue;
+            patchSession(set, targetKey, { usage: mergeUsage(latestUsage, before.usage) });
+            return;
+          } catch (error) {
+            if (attempt === 2) throw error;
           }
-        };
-        const page = await read();
-        if (!page) return;
-        const latestUsage =
-          [...page.messages].reverse().find((m) => m.usage)?.usage ?? null;
-        const current = get().bySession[targetKey];
-        // Discard stale reads after a newer report, a new turn or tab removal.
-        if (latestUsage && current && current.usage === before.usage
-            && current.turnStartedAt === before.turnStartedAt
-            && current.messages === before.messages) {
-          patchSession(set, targetKey, { usage: mergeUsage(latestUsage, current.usage) });
         }
       } catch (error) {
         console.error("Failed to refresh session usage:", error);

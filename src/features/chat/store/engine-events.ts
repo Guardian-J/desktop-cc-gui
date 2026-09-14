@@ -851,7 +851,9 @@ export function handleEngineEvents(
 ) {
   for (const event of events) {
     const state = deps.get();
-    let key = runRouting.get(event.runId);
+    let key = runRouting.get(event.runId) ?? Object.keys(state.bySession).find(
+      (candidate) => state.bySession[candidate]?.settledRunIds?.includes(event.runId),
+    );
     if (key) touchRun(event.runId);
     if (!key && event.sessionId) {
       key = sessionKey(event.engine, event.sessionId, "");
