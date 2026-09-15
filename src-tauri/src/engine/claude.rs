@@ -72,10 +72,9 @@ impl Engine for ClaudeEngine {
         }
         if let Some(model) = req.model.as_deref() {
             cmd.arg("--model");
-            // Launch with the id the picker names: family aliases resolve
-            // through their ANTHROPIC_DEFAULT_<FAMILY>_MODEL override here,
-            // so relay setups don't depend on the CLI's own alias remap.
-            cmd.arg(super::models::resolve_claude_launch_model(model));
+            // prepare_launch resolves aliases against the selected channel;
+            // reading native settings here would remap independent channels.
+            cmd.arg(model);
         }
         // Claude Code has no effort flag; the thinking budget env var is the
         // effort knob. "low" stays at the CLI default (no forced thinking).

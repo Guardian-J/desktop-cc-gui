@@ -1,5 +1,6 @@
 pub mod agy;
 pub mod claude;
+mod claude_channel;
 pub mod codex;
 mod codex_provider_env;
 mod codex_usage;
@@ -991,6 +992,11 @@ fn prepare_launch(
         .filter(|m| !m.trim().is_empty())
         .or_else(|| settings.default_models.get(engine).cloned())
         .filter(|m| !m.trim().is_empty());
+    let model = if engine == "claude" {
+        claude_channel::resolve_model(model.as_deref(), provider.as_ref(), &channel_env)
+    } else {
+        model
+    };
     let effort = effort
         .filter(|e| !e.trim().is_empty())
         .or_else(|| settings.default_efforts.get(engine).cloned())
@@ -1029,6 +1035,8 @@ fn prepare_launch(
             cleanup_files: Vec::new(),
             preassigned_session_id: None,
         }
+    } else if engine == "kimi" && provider.is_some() {
+        kimi::build_channel_command(&req, &bin)?
     } else {
         engine_impl.build_command(&req, &bin)?
     };
@@ -1036,6 +1044,8 @@ fn prepare_launch(
         built.command.env(key, value);
     }
     let configured = match (engine, provider.as_ref()) {
+        ("claude", Some(provider)) => claude_channel::apply(&mut built, provider, &channel_env, &req),
+        ("kimi", Some(_)) => kimi::apply_channel(&mut built.command, &channel_env, &req),
         ("codex", Some(provider)) => codex::apply_channel(&mut built.command, provider, &channel_env, &req),
         ("grok", Some(provider)) => grok::isolate_channel(&mut built, provider, &req),
         _ => Ok(()),
@@ -1830,8 +1840,7 @@ pub async fn send_message_inner(
         launch
             .req
             .model
-            .as_deref()
-            .map(models::resolve_claude_launch_model)
+            .clone()
             .or_else(|| Some(models::resolve_claude_launch_model("default")))
             .filter(|m| !m.is_empty())
     } else {
