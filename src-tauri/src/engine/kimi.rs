@@ -34,10 +34,7 @@ pub(super) fn apply_channel(
     }
     command.env("KIMI_MODEL_NAME", model);
     command.env("KIMI_MODEL_API_KEY", api_key);
-    command.env(
-        "KIMI_MODEL_PROVIDER_TYPE",
-        provider_type,
-    );
+    command.env("KIMI_MODEL_PROVIDER_TYPE", provider_type);
     if let Some(base_url) = value("KIMI_MODEL_BASE_URL").or_else(|| value("KIMI_BASE_URL")) {
         command.env("KIMI_MODEL_BASE_URL", base_url);
     } else {
@@ -177,7 +174,7 @@ mod channel_tests {
             additional_dirs: vec![],
             provider_id: Some("plugin_model-switcher_probe".into()),
         };
-        let env = HashMap::from([
+        let mut env = HashMap::from([
             ("KIMI_BASE_URL".into(), "https://selected.invalid/v1".into()),
             ("KIMI_API_KEY".into(), "test-selected".into()),
             ("KIMI_MODEL_NAME".into(), "channel-default".into()),
@@ -217,7 +214,37 @@ mod channel_tests {
             .get_envs()
             .any(|(k, _)| k == "KIMI_MODEL_API_KEY"));
         assert!(apply_channel(&mut built.command, &HashMap::new(), &req).is_err());
+        env.insert("KIMI_MODEL_PROVIDER_TYPE".into(), "invalid-provider".into());
+        assert!(apply_channel(&mut built.command, &env, &req).is_err());
+        env.insert("KIMI_MODEL_PROVIDER_TYPE".into(), "anthropic".into());
+        env.insert("KIMI_MODEL_API_KEY".into(), "test-modern".into());
+        env.insert(
+            "KIMI_MODEL_BASE_URL".into(),
+            "https://modern.invalid".into(),
+        );
         req.model = None;
+        apply_channel(&mut built.command, &env, &req).unwrap();
+        let injected: HashMap<_, _> = built
+            .command
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_str().unwrap(), v.and_then(|s| s.to_str())))
+            .collect();
+        assert_eq!(injected["KIMI_MODEL_NAME"], Some("channel-default"));
+        assert_eq!(injected["KIMI_MODEL_API_KEY"], Some("test-modern"));
+        assert_eq!(
+            injected["KIMI_MODEL_BASE_URL"],
+            Some("https://modern.invalid")
+        );
+        assert_eq!(injected["KIMI_MODEL_PROVIDER_TYPE"], Some("anthropic"));
+        env.remove("KIMI_BASE_URL");
+        env.remove("KIMI_MODEL_BASE_URL");
+        apply_channel(&mut built.command, &env, &req).unwrap();
+        assert!(built
+            .command
+            .as_std()
+            .get_envs()
+            .any(|(k, v)| k == "KIMI_MODEL_BASE_URL" && v.is_none()));
         let mut missing_model = env.clone();
         missing_model.remove("KIMI_MODEL_NAME");
         assert!(apply_channel(&mut built.command, &missing_model, &req).is_err());
