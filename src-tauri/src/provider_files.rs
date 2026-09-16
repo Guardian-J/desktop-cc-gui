@@ -114,6 +114,71 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// 检查单个 provider 是否生成的内容与当前文件匹配
+fn matches_provider_content(
+    engine: &str,
+    target: &Target,
+    base: &str,
+    provider: &Value,
+    live: Option<&str>,
+) -> bool {
+    let rendered = match engine {
+        "claude" => render_claude(base, provider),
+        "codex" if target.path.file_name().is_some_and(|name| name == "auth.json") => {
+            render_codex_auth(base, provider)
+        }
+        "codex" => render_codex(base, provider),
+        "kimi" => render_kimi(base, provider),
+        "grok" => render_grok(base, provider),
+        _ => return false,
+    };
+    match (live, rendered) {
+        (Some(live), Ok(expected)) => {
+            // JSON property order was not stable in the old writer.
+            // For TOML require exact bytes, including user comments.
+            if file_format(&target.path) == "json" {
+                let actual = serde_json::from_str::<Value>(live);
+                let expected = serde_json::from_str::<Value>(&expected);
+                matches!((actual, expected), (Ok(a), Ok(b)) if a == b)
+            } else {
+                live == expected
+            }
+        }
+        _ => false,
+    }
+}
+
+/// 检查当前 provider 是否为官方配置
+fn is_official_provider(section: &crate::config::ProviderSection) -> bool {
+    let current = if section.current.as_deref() == Some(DISABLED_PROVIDER_ID) {
+        section.disabled_from.as_deref()
+    } else {
+        section.current.as_deref()
+    };
+    matches!(
+        current,
+        None | Some("") | Some(LOCAL_PROVIDER_ID) | Some(LEGACY_LOCAL_CONFIG_TOML_ID)
+    )
+}
+
+/// 执行单个文件的恢复操作
+fn restore_file(target: &Target, live: Option<&str>, original: Option<&str>) -> Result<(), String> {
+    if let Some(live) = live {
+        let archive = target.backup.with_extension("pre-migration");
+        // Never overwrite an earlier recovery copy after a failed run.
+        if !archive.exists() {
+            crate::settings::atomic_write(&archive, live)?;
+        }
+    }
+    if let Some(original) = original {
+        crate::settings::atomic_write(&target.path, original)?;
+    } else if target.path.exists() {
+        std::fs::remove_file(&target.path)
+            .map_err(|e| format!("remove {}: {e}", target.path.display()))?;
+    }
+    Ok(())
+}
+
 fn migrate_targets(
     engine: &str,
     section: &crate::config::ProviderSection,
@@ -142,46 +207,12 @@ fn migrate_targets(
                     ""
                 });
             for provider in section.providers.values() {
-                let rendered = match engine {
-                    "claude" => render_claude(base, provider),
-                    "codex"
-                        if target
-                            .path
-                            .file_name()
-                            .is_some_and(|name| name == "auth.json") =>
-                    {
-                        render_codex_auth(base, provider)
-                    }
-                    "codex" => render_codex(base, provider),
-                    "kimi" => render_kimi(base, provider),
-                    "grok" => render_grok(base, provider),
-                    _ => continue,
-                };
-                if let (Some(live), Ok(expected)) = (live.as_deref(), rendered) {
-                    // JSON property order was not stable in the old writer.
-                    // For TOML require exact bytes, including user comments.
-                    restore_original = if file_format(&target.path) == "json" {
-                        let actual = serde_json::from_str::<Value>(live);
-                        let expected = serde_json::from_str::<Value>(&expected);
-                        matches!((actual, expected), (Ok(a), Ok(b)) if a == b)
-                    } else {
-                        live == expected
-                    };
-                }
-                if restore_original {
+                if matches_provider_content(engine, target, base, provider, live.as_deref()) {
+                    restore_original = true;
                     break;
                 }
             }
-            let current = if section.current.as_deref() == Some(DISABLED_PROVIDER_ID) {
-                section.disabled_from.as_deref()
-            } else {
-                section.current.as_deref()
-            };
-            let official = matches!(
-                current,
-                None | Some("") | Some(LOCAL_PROVIDER_ID) | Some(LEGACY_LOCAL_CONFIG_TOML_ID)
-            );
-            if !restore_original && !official {
+            if !restore_original && !is_official_provider(section) {
                 return Err(format!(
                     "CCGUI_PROVIDER_MIGRATION_CONFLICT:{}",
                     serde_json::json!({
@@ -202,19 +233,7 @@ fn migrate_targets(
             ));
         }
         if restore_original {
-            if let Some(live) = live.as_deref() {
-                let archive = target.backup.with_extension("pre-migration");
-                // Never overwrite an earlier recovery copy after a failed run.
-                if !archive.exists() {
-                    crate::settings::atomic_write(&archive, live)?;
-                }
-            }
-            if let Some(original) = original.as_deref() {
-                crate::settings::atomic_write(&target.path, original)?;
-            } else if target.path.exists() {
-                std::fs::remove_file(&target.path)
-                    .map_err(|e| format!("remove {}: {e}", target.path.display()))?;
-            }
+            restore_file(target, live.as_deref(), original.as_deref())?;
         }
         crate::settings::atomic_write(&marker, &target.path.to_string_lossy())?;
     }

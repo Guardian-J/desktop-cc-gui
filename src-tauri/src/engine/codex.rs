@@ -8,6 +8,97 @@ use serde_json::Value;
 /// the same session files and item.completed messages without a daemon.
 pub struct CodexEngine;
 
+/// 获取或插入嵌套 table，减少重复的 or_insert + as_table_mut 模式
+fn get_or_insert_table_mut<'a>(
+    config: &'a mut toml::Table,
+    key: &str,
+) -> Result<&'a mut toml::Table, String> {
+    use toml::Value as Toml;
+    config
+        .entry(key)
+        .or_insert_with(|| Toml::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| format!("Codex channel {key} must be a table"))
+}
+
+/// 处理 API key：注入环境变量并配置 provider table
+fn apply_api_key(
+    command: &mut tokio::process::Command,
+    config: &mut toml::Table,
+    api_key: &str,
+) -> Result<(), String> {
+    use toml::Value as Toml;
+    let selected = config
+        .get("model_provider")
+        .and_then(Toml::as_str)
+        .unwrap_or("openai")
+        .to_string();
+    let providers = get_or_insert_table_mut(config, "model_providers")?;
+    let table = get_or_insert_table_mut(providers, &selected)?;
+    table
+        .entry("name")
+        .or_insert_with(|| Toml::String(selected));
+    table.insert("env_key".into(), Toml::String("CCGUI_CODEX_API_KEY".into()));
+    table.insert("requires_openai_auth".into(), Toml::Boolean(false));
+    table.remove("experimental_bearer_token");
+    command.env("CCGUI_CODEX_API_KEY", api_key);
+    Ok(())
+}
+
+/// 处理 bearer token：移至环境变量避免进程列表泄露
+fn apply_bearer_token(
+    command: &mut tokio::process::Command,
+    table: &mut toml::Table,
+    provider_index: usize,
+) -> Result<(), String> {
+    use toml::Value as Toml;
+    if let Some(token) = table.remove("experimental_bearer_token") {
+        let token = token
+            .as_str()
+            .ok_or("Codex channel bearer token must be a string")?;
+        let key = format!("CCGUI_CODEX_BEARER_{provider_index}");
+        command.env(&key, token);
+        table.insert("env_key".into(), Toml::String(key));
+        table.insert("requires_openai_auth".into(), Toml::Boolean(false));
+    }
+    Ok(())
+}
+
+/// 处理 http headers：移至环境变量避免进程列表泄露
+fn apply_http_headers(
+    command: &mut tokio::process::Command,
+    table: &mut toml::Table,
+    env: &std::collections::HashMap<String, String>,
+    provider_index: usize,
+) -> Result<(), String> {
+    use toml::Value as Toml;
+    if let Some(headers) = table.remove("http_headers") {
+        let headers = headers
+            .as_table()
+            .ok_or("Codex channel headers must be a table")?;
+        let env_headers = get_or_insert_table_mut(table, "env_http_headers")?;
+        for (header_index, (header, value)) in headers.iter().enumerate() {
+            let value = value
+                .as_str()
+                .ok_or("Codex channel header must be a string")?;
+            let key = env_headers
+                .entry(header.clone())
+                .or_insert_with(|| {
+                    Toml::String(format!(
+                        "CCGUI_CODEX_HEADER_{provider_index}_{header_index}"
+                    ))
+                })
+                .as_str()
+                .ok_or("Codex channel header env key must be a string")?;
+            // Preserve the CLI's env-header-over-literal-header precedence.
+            if !env.contains_key(key) && std::env::var_os(key).is_none() {
+                command.env(key, value);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Process-scoped equivalents of the provider keys formerly written into
 /// config.toml/auth.json. Explicit model/effort picks still win.
 pub(super) fn apply_channel(
@@ -60,76 +151,17 @@ pub(super) fn apply_channel(
         );
     }
     if let Some(key) = api_key {
-        let selected = config
-            .get("model_provider")
-            .and_then(Toml::as_str)
-            .unwrap_or("openai")
-            .to_string();
-        let providers = config
-            .entry("model_providers")
-            .or_insert_with(|| Toml::Table(Default::default()))
-            .as_table_mut()
-            .ok_or("Codex channel model_providers must be a table")?;
-        let table = providers
-            .entry(selected.clone())
-            .or_insert_with(|| Toml::Table(Default::default()))
-            .as_table_mut()
-            .ok_or("Codex channel provider must be a table")?;
-        table
-            .entry("name")
-            .or_insert_with(|| Toml::String(selected));
-        table.insert("env_key".into(), Toml::String("CCGUI_CODEX_API_KEY".into()));
-        table.insert("requires_openai_auth".into(), Toml::Boolean(false));
-        table.remove("experimental_bearer_token");
-        command.env("CCGUI_CODEX_API_KEY", key);
+        apply_api_key(command, &mut config, key)?;
     }
     // Provider documents may authenticate via literal headers or a bearer
     // token. Move those to env too, so process listings do not reveal them.
-    if let Some(providers) = config
-        .get_mut("model_providers")
-        .and_then(Toml::as_table_mut)
-    {
+    if let Some(providers) = config.get_mut("model_providers").and_then(Toml::as_table_mut) {
         for (provider_index, (_, table)) in providers.iter_mut().enumerate() {
             let table = table
                 .as_table_mut()
                 .ok_or("Codex channel provider must be a table")?;
-            if let Some(token) = table.remove("experimental_bearer_token") {
-                let token = token
-                    .as_str()
-                    .ok_or("Codex channel bearer token must be a string")?;
-                let key = format!("CCGUI_CODEX_BEARER_{provider_index}");
-                command.env(&key, token);
-                table.insert("env_key".into(), Toml::String(key));
-                table.insert("requires_openai_auth".into(), Toml::Boolean(false));
-            }
-            if let Some(headers) = table.remove("http_headers") {
-                let headers = headers
-                    .as_table()
-                    .ok_or("Codex channel headers must be a table")?;
-                let env_headers = table
-                    .entry("env_http_headers")
-                    .or_insert_with(|| Toml::Table(Default::default()))
-                    .as_table_mut()
-                    .ok_or("Codex channel env headers must be a table")?;
-                for (header_index, (header, value)) in headers.iter().enumerate() {
-                    let value = value
-                        .as_str()
-                        .ok_or("Codex channel header must be a string")?;
-                    let key = env_headers
-                        .entry(header.clone())
-                        .or_insert_with(|| {
-                            Toml::String(format!(
-                                "CCGUI_CODEX_HEADER_{provider_index}_{header_index}"
-                            ))
-                        })
-                        .as_str()
-                        .ok_or("Codex channel header env key must be a string")?;
-                    // Preserve the CLI's env-header-over-literal-header precedence.
-                    if !env.contains_key(key) && std::env::var_os(key).is_none() {
-                        command.env(key, value);
-                    }
-                }
-            }
+            apply_bearer_token(command, table, provider_index)?;
+            apply_http_headers(command, table, env, provider_index)?;
         }
     }
     // Keep the existing provider contract: unrelated native hooks, trust and

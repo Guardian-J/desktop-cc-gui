@@ -138,7 +138,7 @@ export function useEngineModels(
       });
     }
     return result;
-  }, [engines, cliConfig, catalogs, models, customModels, providers]);
+  }, [engines, cliConfig, catalogs, models, customModels]);
   // Selectable ids WITHOUT the current-override append: what the channel,
   // the backend catalog, and the custom model list can actually serve.
   const knownIdsByEngine = useMemo(() => {
