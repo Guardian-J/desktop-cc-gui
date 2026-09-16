@@ -364,9 +364,17 @@ function onSession(
       cur && cur !== prev && cur.messages.length > 0
         ? [...prev.messages, ...cur.messages]
         : prev.messages;
+    // prev 对标量优先（保留 live turn 状态），显式保留 cur 的增量字段
     const bySession = {
       ...s.bySession,
-      [newKey]: { ...prev, ...cur, messages },
+      [newKey]: {
+        ...cur,
+        ...prev,
+        messages,
+        usage: cur?.usage ?? prev.usage,
+        turnUsage: cur?.turnUsage ?? prev.turnUsage,
+        settledRunIds: cur?.settledRunIds ?? prev.settledRunIds,
+      },
     };
     if (fromKey !== newKey) delete bySession[fromKey];
     const drafts = { ...s.drafts };
@@ -380,7 +388,7 @@ function onSession(
       s.active.engine === event.engine &&
       s.active.sessionId === null &&
       s.active.workspacePath === workspacePath
-        ? { ...s.active, sessionId: nativeId, effort: undefined }
+        ? { ...s.active, sessionId: nativeId, effort: undefined, provider: undefined }
         : s.active;
     return { bySession, drafts, streamingByKey, active: activeNext };
   });
@@ -402,7 +410,7 @@ function onSession(
           return t;
         }
         stamped = true;
-        return { ...t, sessionId: nativeId, effort: undefined };
+        return { ...t, sessionId: nativeId, effort: undefined, provider: undefined };
       }),
     );
     persistTabs(openTabs, s.active);
