@@ -1,9 +1,10 @@
 pub mod agy;
 pub mod claude;
-mod claude_channel;
 pub mod codex;
 mod codex_provider_env;
 mod codex_usage;
+#[cfg(windows)]
+pub(crate) mod job;
 pub mod dsh;
 mod dsh_session;
 pub mod grok;
@@ -12,6 +13,7 @@ pub mod kimi;
 pub mod models;
 pub mod opencode;
 pub mod pi_family;
+pub mod wsl_transport;
 pub mod pi_family_auth;
 pub mod qoder;
 mod qoder_session;
@@ -60,16 +62,13 @@ pub struct SendRequest {
     /// headless permission denials. Engines without an equivalent flag
     /// ignore them.
     pub additional_dirs: Vec<String>,
-    /// Session-scoped channel id. Official / empty injects nothing; spawn
-    /// falls back to the engine's `current` when this is None.
-    pub provider_id: Option<String>,
 }
 
 pub struct BuiltCommand {
     pub command: Command,
     /// Written to stdin after spawn; stdin is then closed.
     pub stdin_payload: Option<String>,
-    /// Private staging files/directories to remove once the process exits.
+    /// Temp files to remove once the process exits.
     pub cleanup_files: Vec<PathBuf>,
     /// Session id assigned before spawn (grok `-s <uuid>`).
     pub preassigned_session_id: Option<String>,
@@ -107,6 +106,21 @@ pub enum EngineEvent {
     /// Non-terminal engine notice (e.g. an upstream 429 the CLI is
     /// retrying): surfaced to the UI, but the turn is still running.
     Warn(String),
+    /// One model attempt ended, but the CLI may retry or compact next.
+    /// Keep its outcome for EOF; unlike Error/Done, this never ends the run.
+    AttemptEnd { error: Option<String> },
+    /// The CLI is backing off before re-issuing a request (claude
+    /// `system/api_retry`, omp `auto_retry_start`). Distinct from `Warn`
+    /// because the UI shows it as live progress ("重试中 2/5") in the run
+    /// status line rather than as an error banner; cleared by the next
+    /// content event or by the turn settling.
+    Retry {
+        attempt: u64,
+        /// The CLI's own retry budget; 0 when it does not report one.
+        max: u64,
+        /// Human-readable reason (HTTP status / provider message).
+        message: String,
+    },
     /// A tool call was denied by the CLI's permission system (headless mode
     /// cannot prompt). `path` is the denied absolute path when the denial
     /// text or tool input carries one — the UI offers a directory grant for
@@ -140,6 +154,20 @@ pub struct TodoItem {
 pub struct TodosPayload {
     pub items: Vec<TodoItem>,
     pub replace: bool,
+}
+
+/// Normalize a CLI's todo status onto the four the UI renders. Every CLI
+/// spells these differently (claude `in_progress`, omp `running`/`active`,
+/// `abandoned` for a dropped task), and a status the UI does not know reads
+/// as "pending" - showing finished or abandoned work as still to do.
+fn todo_status(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("") {
+        "in_progress" | "running" | "active" => "active",
+        "completed" | "complete" | "done" => "complete",
+        "blocked" => "blocked",
+        "dropped" | "cancelled" | "abandoned" | "deleted" => "dropped",
+        _ => "pending",
+    }
 }
 
 /// Drop empty / null payloads so the UI does not render a blank args panel.
@@ -202,13 +230,62 @@ pub(crate) fn tool_call_patch(name: impl Into<String>, args: Option<&Value>) -> 
     }
 }
 
-/// Patches execution result onto the matching in-flight tool row.
+/// Todo state echoed by the todo tool's own result (`details.phases`).
+///
+/// This is the authoritative snapshot: omp answers every todo call (init,
+/// start, done, block, append, view) with the complete post-op list, where
+/// each phase carries its tasks and their current status. Reading it avoids
+/// two live-path gaps at once — the start event carries no `args` for this
+/// tool, and `done`/`block` may name a PHASE instead of one task, which a
+/// task-keyed patch could never apply. `replace: true` because the payload
+/// is a full list, not a delta.
+pub(crate) fn parse_todo_result(result: &Value) -> Option<TodosPayload> {
+    let phases = result
+        .get("details")
+        .and_then(|d| d.get("phases"))
+        .and_then(Value::as_array)?;
+    let mut items = Vec::new();
+    for phase in phases {
+        let Some(tasks) = phase.get("tasks").and_then(Value::as_array) else {
+            continue;
+        };
+        for task in tasks {
+            let Some(content) = task
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let status = todo_status(task.get("status").and_then(Value::as_str));
+            items.push(TodoItem {
+                id: None,
+                content: content.to_string(),
+                status: status.to_string(),
+            });
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    Some(TodosPayload {
+        items,
+        replace: true,
+    })
+}
+
+/// Patches execution result onto the matching in-flight tool row. A todo
+/// tool's result carries the full list (`details.phases`), so it doubles as
+/// an authoritative todo snapshot — the live path's only reliable source for
+/// this tool (see [`parse_todo_result`]).
 pub(crate) fn tool_result_patch(name: impl Into<String>, result: Option<&Value>) -> EngineEvent {
+    let todos = result.and_then(parse_todo_result);
     EngineEvent::Message {
         role: "tool".to_string(),
         text: name.into(),
         path: None,
-        todos: None,
+        todos,
         args: None,
         result: result.cloned(),
         patch: true,
@@ -285,12 +362,7 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
                     .filter_map(|key| entry.get(key).and_then(Value::as_str))
                     .map(|s| s.trim())
                     .find(|s| !s.is_empty())?;
-                let status = match entry.get("status").and_then(Value::as_str).unwrap_or("") {
-                    "in_progress" | "running" | "active" => "active",
-                    "completed" | "complete" | "done" => "complete",
-                    "blocked" => "blocked",
-                    _ => "pending",
-                };
+                let status = todo_status(entry.get("status").and_then(Value::as_str));
                 let id = entry
                     .get("id")
                     .or_else(|| entry.get("taskId"))
@@ -317,12 +389,7 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
         .filter(|s| !s.is_empty())
     {
         if args.get("taskId").is_none() && args.get("op").is_none() {
-            let status = match args.get("status").and_then(Value::as_str).unwrap_or("") {
-                "in_progress" | "running" | "active" => "active",
-                "completed" | "complete" | "done" => "complete",
-                "blocked" => "blocked",
-                _ => "pending",
-            };
+            let status = todo_status(args.get("status").and_then(Value::as_str));
             return Some(TodosPayload {
                 items: vec![TodoItem {
                     id: None,
@@ -347,13 +414,7 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("");
-        let status = match args.get("status").and_then(Value::as_str).unwrap_or("") {
-            "in_progress" | "running" | "active" => "active",
-            "completed" | "complete" | "done" => "complete",
-            "blocked" => "blocked",
-            "deleted" => "dropped",
-            _ => "pending",
-        };
+        let status = todo_status(args.get("status").and_then(Value::as_str));
         return Some(TodosPayload {
             items: vec![TodoItem {
                 id: Some(task_id.to_string()),
@@ -381,6 +442,13 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
             })
         }
         "start" | "done" | "block" | "unblock" | "drop" => {
+            // `task` names ONE item. A phase-wide op names a `phase` instead
+            // (the CLI pairs it with an empty `items` array) and must NOT be
+            // emitted here: the frontend matches patches by `content`, so a
+            // phase name would find no item and get APPENDED as a phantom
+            // row. Phase-wide moves travel via the tool's own result
+            // snapshot (`parse_todo_result`), which always carries the
+            // complete post-op list.
             let task = args.get("task").and_then(Value::as_str)?;
             let status = match op {
                 "start" => "active",
@@ -657,29 +725,18 @@ impl ProcessRegistry {
     /// several parallel runs must all die on a single stop, or the survivors
     /// keep streaming and fight the next run over the session file.
     pub fn kill(&self, key: &str) -> bool {
-        let mut entries: Vec<(
-            u32,
-            Option<Arc<TokioMutex<tokio::process::Child>>>,
-            Arc<std::sync::atomic::AtomicBool>,
-            Arc<std::sync::OnceLock<tokio::task::AbortHandle>>,
-        )> = match self.0.lock() {
-            Ok(map) => {
-                let mut seen_pids = std::collections::HashSet::new();
-                map.iter()
-                    .filter(|(k, e)| *k == key || e.run_id == key)
-                    .filter(|(_, e)| seen_pids.insert(e.pid))
-                    .map(|(_, e)| {
-                        (
-                            e.pid,
-                            e.child.clone(),
-                            Arc::clone(&e.killed),
-                            Arc::clone(&e.reader_abort),
-                        )
-                    })
-                    .collect()
-            }
-            Err(_) => Vec::new(),
-        };
+        let mut entries: Vec<(u32, Option<Arc<TokioMutex<tokio::process::Child>>>, Arc<std::sync::atomic::AtomicBool>, Arc<std::sync::OnceLock<tokio::task::AbortHandle>>)> =
+            match self.0.lock() {
+                Ok(map) => {
+                    let mut seen_pids = std::collections::HashSet::new();
+                    map.iter()
+                        .filter(|(k, e)| *k == key || e.run_id == key)
+                        .filter(|(_, e)| seen_pids.insert(e.pid))
+                        .map(|(_, e)| (e.pid, e.child.clone(), Arc::clone(&e.killed), Arc::clone(&e.reader_abort)))
+                        .collect()
+                }
+                Err(_) => Vec::new(),
+            };
         // The registry keys one child under BOTH its session id and run id
         // (rekey copies): de-duplicate by pid so one stop fires one
         // taskkill, not one per key.
@@ -870,9 +927,7 @@ fn codex_bin_from_home(settings: &crate::settings::AppSettings) -> Option<String
     }
     let expanded = crate::open_app::expand_user_path(home).ok()?;
     let candidate = expanded.join("bin").join("codex");
-    candidate
-        .exists()
-        .then(|| resolve::resolve_launchable_cli_binary(&candidate.to_string_lossy()))
+    candidate.exists().then(|| resolve::resolve_launchable_cli_binary(&candidate.to_string_lossy()))
 }
 
 /// CLI binary name behind an engine id, when they differ: qoder's engine ids
@@ -974,29 +1029,16 @@ fn prepare_launch(
     effort: Option<String>,
     permission: Option<String>,
     additional_dirs: Vec<String>,
-    provider_id: Option<String>,
 ) -> Result<Launch, String> {
     let engine_impl = engine_by_id(engine).ok_or_else(|| format!("unknown engine: {engine}"))?;
-    // 停用 still gates sending. Channel settings apply to this child below;
-    // native CLI files remain the official configuration.
+    // Channels live in each CLI's native config file (provider_files); the
+    // only launch-time gate left is the 停用 pseudo-provider.
     crate::config::ensure_engine_enabled(engine)?;
-    let provider_id = provider_id.filter(|s| !s.trim().is_empty());
-    let provider = crate::config::resolve_provider(engine, provider_id.as_deref())?;
-    let channel_env = provider
-        .as_ref()
-        .map(|p| crate::provider_files::channel_env(engine, p))
-        .transpose()?
-        .unwrap_or_default();
     let settings = crate::settings::read_settings().unwrap_or_default();
     let model = model
         .filter(|m| !m.trim().is_empty())
         .or_else(|| settings.default_models.get(engine).cloned())
         .filter(|m| !m.trim().is_empty());
-    let model = if engine == "claude" {
-        claude_channel::resolve_model(model.as_deref(), provider.as_ref(), &channel_env)
-    } else {
-        model
-    };
     let effort = effort
         .filter(|e| !e.trim().is_empty())
         .or_else(|| settings.default_efforts.get(engine).cloned())
@@ -1022,38 +1064,21 @@ fn prepare_launch(
             .filter(|d| !d.is_empty() && Path::new(d).is_absolute())
             .take(32)
             .collect(),
-        provider_id,
     };
     let bin = engine_bin(&settings, engine);
     // Host-stream engines never spawn: hand back a placeholder command so
     // prepare_launch stays shape-compatible; send_message branches to the
     // virtual path before anything would touch it.
-    let mut built = if engine_impl.drives_own_transport() {
+    let built = if engine_impl.drives_own_transport() {
         BuiltCommand {
             command: Command::new("unused-virtual-engine"),
             stdin_payload: None,
             cleanup_files: Vec::new(),
             preassigned_session_id: None,
         }
-    } else if engine == "kimi" && provider.is_some() {
-        kimi::build_channel_command(&req, &bin)?
     } else {
         engine_impl.build_command(&req, &bin)?
     };
-    for (key, value) in &channel_env {
-        built.command.env(key, value);
-    }
-    let configured = match (engine, provider.as_ref()) {
-        ("claude", Some(provider)) => claude_channel::apply(&mut built, provider, &channel_env, &req),
-        ("kimi", Some(_)) => kimi::apply_channel(&mut built.command, &channel_env, &req),
-        ("codex", Some(provider)) => codex::apply_channel(&mut built.command, provider, &channel_env, &req),
-        ("grok", Some(provider)) => grok::isolate_channel(&mut built, provider, &req),
-        _ => Ok(()),
-    };
-    if let Err(error) = configured {
-        cleanup_staged_files(&built.cleanup_files);
-        return Err(error);
-    }
     Ok(Launch {
         req,
         bin,
@@ -1077,6 +1102,26 @@ fn spawn_stdin_writer(child: &mut Child, payload: Option<String>) {
     }
 }
 
+/// Diagnostics ring: keeps the last 4KB for the error banner.
+fn ring_push(buf: &Arc<Mutex<String>>, text: &str) {
+    const CAP: usize = 4096;
+    let mut guard = match buf.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    guard.push_str(text);
+    if guard.len() > CAP {
+        // drain panics on a non-char-boundary start — snap forward. The old
+        // stderr ring could panic mid-CJK here, silently killing the
+        // capture task and starving the error banner of the failure text.
+        let mut keep = guard.len() - CAP;
+        while !guard.is_char_boundary(keep) {
+            keep += 1;
+        }
+        guard.drain(..keep);
+    }
+}
+
 /// Stderr capture ring: keeps the last 4KB for the error banner.
 fn spawn_stderr_capture(stderr: ChildStderr) -> Arc<Mutex<String>> {
     let buf = Arc::new(Mutex::new(String::new()));
@@ -1088,17 +1133,7 @@ fn spawn_stderr_capture(stderr: ChildStderr) -> Arc<Mutex<String>> {
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let mut guard = match target.lock() {
-                        Ok(g) => g,
-                        Err(p) => p.into_inner(),
-                    };
-                    guard.push_str(&line);
-                    if guard.len() > 4096 {
-                        let keep = guard.len() - 4096;
-                        guard.drain(..keep);
-                    }
-                }
+                Ok(_) => ring_push(&target, &line),
             }
         }
     });
@@ -1111,8 +1146,9 @@ struct TurnState {
     native_session_id: Option<String>,
     saw_done: bool,
     saw_error: bool,
+    attempt_error: Option<String>,
     // NOTE: TurnState lives for the whole process (one run_reader per
-    // spawn), so once saw_error is set every later Done in this process
+    // spawn), so once saw_error is set every later event in this process
     // is suppressed. That is correct for the current one-process-per-turn
     // engines (omp --print, codex exec); a future multi-turn-per-process
     // engine must reset this per turn instead.
@@ -1126,6 +1162,7 @@ impl TurnState {
             native_session_id: preassigned,
             saw_done: false,
             saw_error: false,
+            attempt_error: None,
             saw_any_output: false,
         }
     }
@@ -1162,100 +1199,15 @@ struct RunContext {
     killed: Arc<std::sync::atomic::AtomicBool>,
     cleanup_files: Vec<PathBuf>,
     stderr_buf: Arc<Mutex<String>>,
-}
-
-impl Drop for RunContext {
-    fn drop(&mut self) {
-        // Also runs when the reader is aborted during interrupt or shutdown.
-        cleanup_staged_files(&self.cleanup_files);
-    }
-}
-
-fn cleanup_staged_files(paths: &[PathBuf]) {
-    for path in paths {
-        let result = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
-        if let Err(error) = result {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("[engine] failed to remove staging path {}: {error}", path.display());
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod staging_tests {
-    use super::*;
-
-    struct Noop;
-    impl event_sink::Emit for Noop {
-        fn emit_json(&self, _: &str, _: &str) {}
-    }
-
-    #[tokio::test]
-    async fn reader_context_cleans_private_configs_on_completion_and_abort() {
-        for abort in [false, true] {
-            let directory = std::env::temp_dir().join(format!("ccgui-reader-cleanup-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(directory.join("config.toml"), "temporary credential").unwrap();
-            let mut command = Command::new(if cfg!(windows) {"cmd.exe"} else {"sh"});
-            command.args(if cfg!(windows) {["/c", "exit 0"]} else {["-c", "exit 0"]});
-            let mut child = command.spawn().unwrap();
-            child.wait().await.unwrap();
-            let ctx = RunContext {
-                core: TurnCore {sink: event_sink::EventSink::new(Arc::new(Noop)), registry: Arc::new(ProcessRegistry::default()), engine_id: "grok".into(), run_id: "test".into()},
-                engine_impl: Box::new(grok::GrokEngine), pid: 0,
-                preassigned_session_id: None, initial_model: None,
-                child: Arc::new(TokioMutex::new(child)), killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                cleanup_files: vec![directory.clone()], stderr_buf: Arc::new(Mutex::new(String::new())),
-            };
-            let task = tokio::spawn(async move {
-                if abort { std::future::pending::<()>().await; }
-                drop(ctx);
-            });
-            if abort { task.abort(); }
-            let result = task.await;
-            assert_eq!(result.is_err(), abort);
-            assert!(!directory.exists());
-        }
-    }
-}
-
-#[cfg(test)]
-mod terminal_event_tests {
-    use super::*;
-
-    #[derive(Default)]
-    struct Collector(Mutex<Vec<Value>>);
-    impl event_sink::Emit for Collector {
-        fn emit_json(&self, _: &str, raw: &str) {
-            self.0.lock().unwrap().extend(serde_json::from_str::<Vec<Value>>(raw).unwrap());
-        }
-    }
-
-    #[tokio::test]
-    async fn terminal_runs_do_not_emit_late_usage_text_or_duplicate_completion() {
-        for fail in [false, true] {
-            let collector = Arc::new(Collector::default());
-            let core = TurnCore {
-                sink: event_sink::EventSink::new(collector.clone()),
-                registry: Arc::new(ProcessRegistry::default()),
-                engine_id: "codex".into(), run_id: "terminal-test".into(),
-            };
-            let mut state = TurnState::new(Some("session".into()));
-            core.dispatch_event(&mut state, EngineEvent::Delta("完成中文与 emoji 🐎".into()));
-            core.dispatch_event(&mut state, EngineEvent::Usage(serde_json::json!({"input_tokens": 90000, "model_context_window":1000000})));
-            core.dispatch_event(&mut state, if fail { EngineEvent::Error("failed".into()) }
-                else { EngineEvent::Done { session_id: None, usage: None } });
-            core.dispatch_event(&mut state, EngineEvent::Usage(serde_json::json!({"input_tokens":90000})));
-            core.dispatch_event(&mut state, EngineEvent::Delta("late".into()));
-            core.dispatch_event(&mut state, EngineEvent::Done { session_id: None, usage: None });
-            core.sink.flush();
-            let events = collector.0.lock().unwrap();
-            let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
-            assert_eq!(kinds, ["delta", "usage", if fail {"error"} else {"done"}]);
-            assert_eq!(events[0]["data"], "完成中文与 emoji 🐎");
-        }
-    }
+    /// Off-protocol stdout lines (plain text from CLI startup failures,
+    /// wrapper errors, node crashes): parse_line drops non-JSON lines, so
+    /// without this ring a failed run with empty stderr surfaces as a bare
+    /// "exited with status" banner.
+    stdout_plain_buf: Arc<Mutex<String>>,
+    /// Kill-on-close job guard: drops with this context at settle, sweeping
+    /// any grandchild the CLI orphaned (Windows pwsh.exe/conhost.exe).
+    #[cfg(windows)]
+    _tree_guard: Option<Arc<job::KillOnCloseJob>>,
 }
 
 /// Event-routing core shared by process runs ([`RunContext`]) and virtual
@@ -1345,6 +1297,7 @@ impl TurnCore {
                     payload,
                 )
             }
+            EngineEvent::AttemptEnd { error } => state.attempt_error = error,
             EngineEvent::SessionId(id) => self.adopt_session_id(state, &id, true),
             EngineEvent::Usage(usage) => {
                 state.push(&self.sink, &self.run_id, &self.engine_id, "usage", usage)
@@ -1385,6 +1338,23 @@ impl TurnCore {
                     Value::String(error),
                 );
             }
+            EngineEvent::Retry {
+                attempt,
+                max,
+                message,
+            } => {
+                // Not terminal: the CLI is backing off and will re-issue the
+                // request. The frontend renders it as live progress in the
+                // run status line (not as an error banner) and clears it on
+                // the next content event.
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "retry",
+                    serde_json::json!({ "attempt": attempt, "max": max, "message": message }),
+                );
+            }
             EngineEvent::PermissionDenied {
                 tool,
                 path,
@@ -1410,13 +1380,6 @@ impl TurnCore {
                 );
             }
             EngineEvent::Done { session_id, usage } => {
-                // A Done after a terminal Error must never reach the UI: it
-                // clears the error banner and flips a failed turn back to
-                // "success" in the footer. Engines can emit both in one
-                // flush (omp: turn_end error, then agent_end done).
-                if state.saw_error {
-                    return;
-                }
                 state.saw_done = true;
                 if let Some(id) = session_id {
                     self.adopt_session_id(state, &id, false);
@@ -1522,7 +1485,7 @@ async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(500));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let read = if is_codex && !state.saw_done && !state.saw_error {
+        let read = if is_codex {
             tokio::select! {
                 line = read_line_capped(&mut reader, &mut line_buf) => line,
                 _ = poll.tick() => {
@@ -1572,26 +1535,18 @@ async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
             continue;
         }
         state.saw_any_output = true;
+        if serde_json::from_str::<Value>(trimmed).is_err() {
+            // Every engine protocol here is NDJSON: a non-JSON line is
+            // off-protocol diagnostics (clap usage errors, shell wrapper
+            // complaints, node crashes) that no parse_line would keep.
+            ring_push(&ctx.stdout_plain_buf, &format!("{trimmed}\n"));
+        }
         let mut events = Vec::new();
         ctx.engine_impl.parse_line(trimmed, &mut events);
         stream_session_id |= events
             .iter()
             .any(|event| matches!(event, EngineEvent::SessionId(_)));
-        for mut event in events {
-            // Flush the final rollout records BEFORE done/error. Sending them
-            // afterwards made observers adopt the already-finished run again.
-            if matches!(event, EngineEvent::Done { .. } | EngineEvent::Error(_))
-                && !state.saw_done && !state.saw_error
-            {
-                if let Some(tail) = usage_tail.as_mut() {
-                    for usage in tail.poll() {
-                        ctx.dispatch_event(&mut state, EngineEvent::Usage(usage));
-                    }
-                    if let EngineEvent::Done { usage: Some(usage), .. } = &mut event {
-                        *usage = tail.with_window(usage);
-                    }
-                }
-            }
+        for event in events {
             ctx.dispatch_event(&mut state, event);
         }
     }
@@ -1609,6 +1564,19 @@ async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
         let mut guard = ctx.child.lock().await;
         guard.wait().await.ok()
     };
+    // Unix mirror of the Windows kill-on-close job guard: grandchildren the
+    // CLI orphaned (background shells that outlived the turn) are still in
+    // the run's process group — sweep them so a settled turn leaks nothing.
+    // Clean exit → empty group → ESRCH no-op; a pid-reuse hit would need a
+    // fresh process to take the just-reaped pid AND lead a new group within
+    // microseconds. pid 0 is never signalled: kill(0, …) targets OUR group.
+    #[cfg(unix)]
+    if ctx.pid != 0 {
+        kill_process_group(ctx.pid);
+    }
+    for path in &ctx.cleanup_files {
+        let _ = std::fs::remove_file(path);
+    }
     // Drain this run's registry entries: under the native session id after
     // rekey, and under the run id when the session id never arrived.
     if let Some(key) = state.native_session_id.clone() {
@@ -1648,16 +1616,30 @@ async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
                 "done",
                 serde_json::json!({ "usage": null }),
             );
-        } else if failed || !state.saw_any_output {
-            let mut message = format!(
-                "{} exited with status {}",
-                ctx.core.engine_id,
-                status
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            );
+        } else if failed || !state.saw_any_output || state.attempt_error.is_some() {
+            let mut message = state.attempt_error.take().unwrap_or_else(|| {
+                format!(
+                    "{} exited with status {}",
+                    ctx.core.engine_id,
+                    status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                )
+            });
             if !stderr_tail.is_empty() {
                 message.push_str(&format!(": {stderr_tail}"));
+            } else {
+                // Startup failures of old/odd CLIs often land on stdout as
+                // plain text instead of stderr; without this fallback the
+                // banner is a bare exit code.
+                let stdout_tail = ctx
+                    .stdout_plain_buf
+                    .lock()
+                    .map(|g| redact_secrets(g.trim()))
+                    .unwrap_or_default();
+                if !stdout_tail.is_empty() {
+                    message.push_str(&format!(": {stdout_tail}"));
+                }
             }
             state.push(
                 &ctx.core.sink,
@@ -1691,8 +1673,6 @@ pub async fn send_message(
     model: Option<String>,
     effort: Option<String>,
     permission: Option<String>,
-    provider_id: Option<String>,
-    run_id: Option<String>,
 ) -> Result<SendResult, String> {
     send_message_inner(
         &state,
@@ -1704,8 +1684,6 @@ pub async fn send_message(
         model,
         effort,
         permission,
-        provider_id,
-        run_id,
     )
     .await
 }
@@ -1724,18 +1702,7 @@ pub async fn send_message_inner(
     model: Option<String>,
     effort: Option<String>,
     permission: Option<String>,
-    provider_id: Option<String>,
-    run_id: Option<String>,
 ) -> Result<SendResult, String> {
-    let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    if run_id.is_empty() || run_id.len() > 128
-        || !run_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-    {
-        return Err("invalid run id".into());
-    }
-    if state.processes.0.lock().map_err(|e| e.to_string())?.contains_key(&run_id) {
-        return Err("run id already active".into());
-    }
     if state.processes.len() >= MAX_CONCURRENT_RUNS {
         return Err(format!(
             "too many concurrent runs ({MAX_CONCURRENT_RUNS}); wait for one to finish"
@@ -1754,17 +1721,54 @@ pub async fn send_message_inner(
         // a grant approved mid-conversation takes effect on the next send
         // (each send is a fresh process).
         state.db.granted_roots().unwrap_or_default(),
-        provider_id,
     )?;
 
+    // WSL 远程工作区:引擎进程经 ssh 在发行版内执行(见 wsl_transport)。
+    let wsl_tp = wsl_transport::transport_for_workspace(&state.db, &workspace_path);
     // Host-stream engines drive their own transport: no child process — the
-    // registry entry only routes interrupts to the transport task.
+    // registry entry only routes interrupts to the transport task. 远程
+    // 工作区下没有可包装的子进程,本机 host 又对远端路径无意义,显式拒绝。
     if launch.engine_impl.drives_own_transport() {
-        return send_host_stream(state, launch, engine, run_id).await;
+        if wsl_tp.is_some() {
+            return Err(format!("引擎 {engine} 不支持远程工作区(WSL)"));
+        }
+        return send_host_stream(state, launch, engine).await;
     }
-
-    let mut command = launch.built.command;
-    if engine == "codex" {
+    let (mut command, extra_cleanup, skip_local_cwd) = match &wsl_tp {
+        Some(tp) => {
+            // 依赖本机 staging 文件的引擎(grok 等 cleanup_files 非空):
+            // 远端 CLI 读不到本机文件,直接拒绝而非跑出莫名其妙的失败;
+            // 已写盘的 staging 文件顺手清掉,不 strand。
+            if !launch.built.cleanup_files.is_empty() {
+                for path in &launch.built.cleanup_files {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(format!(
+                    "引擎 {engine} 不支持远程工作区(WSL):依赖本机临时文件"
+                ));
+            }
+            match wsl_transport::wrap(launch.built.command, tp).await {
+                Ok(wrapped) => (wrapped.command, wrapped.cleanup_files, wrapped.skip_local_cwd),
+                Err(error) => {
+                    // wrap 失败(ssh 上传失败等)同样不许 strand staging 文件。
+                    for path in &launch.built.cleanup_files {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        None => (launch.built.command, Vec::new(), false),
+    };
+    let mut cleanup_files = launch.built.cleanup_files;
+    cleanup_files.extend(extra_cleanup);
+    // 本地 env 不跨 ssh:WSL 分支的 command 是本地 ssh 进程,apply 无意义
+    // (还白跑一次登录 shell 解析);远端 codex 用发行版自己的配置。
+    if engine == "codex" && wsl_tp.is_none() {
+        // v1.0.0 switched codex to `codex exec --json`: a CLI that predates
+        // the exec transport exits 1 before any event, surfacing as a bare
+        // "exit code: 1" banner. Fail fast with an actionable message.
+        codex::check_exec_support(&launch.bin, launch.req.session_id.is_some()).await?;
         codex_provider_env::apply(&mut command).await;
     }
     command
@@ -1774,8 +1778,13 @@ pub async fn send_message_inner(
             std::process::Stdio::null()
         })
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(&launch.req.workspace);
+        .stderr(std::process::Stdio::piped());
+    // 远程工作区路径在本机不存在 → cwd 落本地当前目录(wsl.exe/ssh 不关心)。
+    if skip_local_cwd {
+        command.current_dir(wsl_transport::fallback_cwd());
+    } else {
+        command.current_dir(&launch.req.workspace);
+    }
     // Own process group so interrupt can kill the whole tree (grandchildren
     // inherit the stdout pipe and would otherwise block EOF forever).
     #[cfg(unix)]
@@ -1786,14 +1795,23 @@ pub async fn send_message_inner(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            // Never strand the staging files build_command wrote (grok).
-            cleanup_staged_files(&launch.built.cleanup_files);
+            // Never strand the staging files build_command wrote (grok) or
+            // the remote-run script marker (wsl transport).
+            for path in &cleanup_files {
+                let _ = std::fs::remove_file(path);
+            }
             return Err(format!("failed to spawn {}: {error}", launch.bin));
         }
     };
 
     spawn_stdin_writer(&mut child, launch.built.stdin_payload);
 
+    let run_id = uuid::Uuid::new_v4().to_string();
+    // Join a kill-on-close job before the run can settle: an orphaned
+    // grandchild (claude's pwsh.exe/conhost.exe) must die with the run's
+    // context, not accumulate outside every tree taskkill can still walk.
+    #[cfg(windows)]
+    let tree_guard = job::assign_kill_on_close(&child);
     let pid = child.id().unwrap_or(0);
     // Detach both pipes while we still own the child outright. A missing pipe
     // after spawn is fatal: kill the child so it cannot run unobserved and
@@ -1804,7 +1822,9 @@ pub async fn send_message_inner(
             Some(pair) => pair,
             None => {
                 let _ = child.start_kill();
-                cleanup_staged_files(&launch.built.cleanup_files);
+                for path in &cleanup_files {
+                    let _ = std::fs::remove_file(path);
+                }
                 return Err("missing stdout/stderr pipe after spawn".to_string());
             }
         }
@@ -1840,7 +1860,8 @@ pub async fn send_message_inner(
         launch
             .req
             .model
-            .clone()
+            .as_deref()
+            .map(models::resolve_claude_launch_model)
             .or_else(|| Some(models::resolve_claude_launch_model("default")))
             .filter(|m| !m.is_empty())
     } else {
@@ -1859,8 +1880,11 @@ pub async fn send_message_inner(
         initial_model,
         child,
         killed,
-        cleanup_files: launch.built.cleanup_files,
+        cleanup_files,
         stderr_buf,
+        stdout_plain_buf: Arc::new(Mutex::new(String::new())),
+        #[cfg(windows)]
+        _tree_guard: tree_guard,
     };
     let reader = tokio::spawn(run_reader(stdout, ctx));
     // Registration order is unchanged (entries land before the task can
@@ -1890,8 +1914,8 @@ async fn send_host_stream(
     state: &crate::AppState,
     launch: Launch,
     engine: String,
-    run_id: String,
 ) -> Result<SendResult, String> {
+    let run_id = uuid::Uuid::new_v4().to_string();
     let pid = next_virtual_pid();
     let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader_abort = Arc::new(std::sync::OnceLock::new());
@@ -1972,7 +1996,6 @@ mod permission_tests {
             service_tier: None,
             permission: permission.map(str::to_string),
             additional_dirs: Vec::new(),
-            provider_id: None,
         }
     }
 
@@ -2088,9 +2111,13 @@ mod permission_tests {
         assert!(auto.contains(&"--permission-mode".to_string()));
         assert!(auto.contains(&"acceptEdits".to_string()));
         assert!(!auto.contains(&"--dangerously-skip-permissions".to_string()));
+        // Headless cannot prompt: auto pre-approves the read-only network
+        // tools acceptEdits does not cover, or every web call is denied.
+        assert!(auto.windows(3).any(|w| w == ["--allowedTools", "WebSearch", "WebFetch"]));
 
         let manual = argv(&e, &req(Some("manual")));
         assert!(manual.contains(&"default".to_string()));
+        assert!(!manual.contains(&"--allowedTools".to_string()));
 
         let plan = argv(&e, &req(Some("plan")));
         assert!(plan.contains(&"plan".to_string()));
@@ -2273,6 +2300,170 @@ mod permission_tests {
 }
 
 #[cfg(test)]
+mod retry_lifecycle_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct CollectingEmitter(Mutex<Vec<Value>>);
+
+    impl event_sink::Emit for CollectingEmitter {
+        fn emit_json(&self, _name: &str, raw_json: &str) {
+            self.0.lock().unwrap().extend(serde_json::from_str::<Vec<Value>>(raw_json).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_error_cannot_be_followed_by_live_retry_events() {
+        let emitter = Arc::new(CollectingEmitter::default());
+        let core = TurnCore {
+            sink: event_sink::EventSink::new(emitter.clone()),
+            registry: Arc::new(ProcessRegistry::default()),
+            engine_id: "omp".to_string(),
+            run_id: "settled-run".to_string(),
+        };
+        let mut state = TurnState::new(Some("session".to_string()));
+        for event in [
+            EngineEvent::Error("retry exhausted".to_string()),
+            EngineEvent::Retry { attempt: 1, max: 50, message: "socket closed".to_string() },
+            EngineEvent::Warn("late request error".to_string()),
+            EngineEvent::Done { session_id: None, usage: None },
+        ] {
+            core.dispatch_event(&mut state, event);
+        }
+        core.sink.flush();
+        let events = emitter.0.lock().unwrap();
+        let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["error"], "a settled run must not send live events");
+    }
+
+    async fn replay_cli_output(lines: &[Value]) -> Vec<Value> {
+        let path = std::env::temp_dir().join(format!("ccgui-retry-{}.jsonl", uuid::Uuid::new_v4()));
+        let mut text = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+        let mut command = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "cat" });
+        if cfg!(windows) {
+            command.args(["/d", "/c", "type"]);
+        }
+        let mut child = command.arg(&path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let emitter = Arc::new(CollectingEmitter::default());
+        let ctx = RunContext {
+            core: TurnCore {
+                sink: event_sink::EventSink::new(emitter.clone()),
+                registry: Arc::new(ProcessRegistry::default()),
+                engine_id: "omp".to_string(),
+                run_id: "pipe-retry-run".to_string(),
+            },
+            engine_impl: Box::new(pi_family::omp()),
+            pid: child.id().unwrap(),
+            preassigned_session_id: Some("session".to_string()),
+            initial_model: None,
+            child: Arc::new(TokioMutex::new(child)),
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cleanup_files: vec![path],
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            stdout_plain_buf: Arc::new(Mutex::new(String::new())),
+        };
+        run_reader(stdout, ctx).await;
+        let events = std::mem::take(&mut *emitter.0.lock().unwrap());
+        events
+    }
+
+    /// Old CLIs print startup failures (usage/config errors, node crashes)
+    /// to stdout as plain text: parse_line drops non-JSON lines, so the
+    /// settle path must fall back to the captured plain tail when stderr
+    /// is empty — otherwise the banner is a bare exit code.
+    #[tokio::test]
+    async fn plain_stdout_tail_surfaces_on_failed_exit_without_stderr() {
+        let mut command =
+            tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["/c", "echo error: unrecognized arguments: --json & exit 1"]);
+        } else {
+            command.args(["-c", "echo 'error: unrecognized arguments: --json'; exit 1"]);
+        }
+        let mut child = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let emitter = Arc::new(CollectingEmitter::default());
+        let ctx = RunContext {
+            core: TurnCore {
+                sink: event_sink::EventSink::new(emitter.clone()),
+                registry: Arc::new(ProcessRegistry::default()),
+                engine_id: "codex".to_string(),
+                run_id: "plain-stdout-run".to_string(),
+            },
+            engine_impl: Box::new(codex::CodexEngine),
+            pid: child.id().unwrap(),
+            preassigned_session_id: None,
+            initial_model: None,
+            child: Arc::new(TokioMutex::new(child)),
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cleanup_files: Vec::new(),
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            stdout_plain_buf: Arc::new(Mutex::new(String::new())),
+        };
+        run_reader(stdout, ctx).await;
+        let events = std::mem::take(&mut *emitter.0.lock().unwrap());
+        let last = events.last().unwrap();
+        assert_eq!(last["kind"], "error");
+        let data = last["data"].as_str().unwrap();
+        assert!(data.contains("codex exited with status"), "{data}");
+        assert!(data.contains("unrecognized arguments"), "{data}");
+    }
+
+    /// The ring truncates by byte count: a naive drain start can land
+    /// mid-CJK and panic (killing the stderr capture task silently).
+    #[test]
+    fn ring_push_snaps_truncation_to_char_boundary() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        ring_push(&buf, &"引擎错误".repeat(1000));
+        // std Mutex stays: ring buffers are deliberately poison-tolerant
+        // (a panicked capture task must not take down error reporting).
+        let kept = buf.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(kept.len() <= 4096);
+        assert!(kept.ends_with("引擎错误"));
+    }
+
+    #[tokio::test]
+    async fn legacy_agent_end_can_retry_and_recover_before_eof() {
+        let events = replay_cli_output(&[
+            serde_json::json!({"type":"turn_end","message":{"role":"assistant","stopReason":"error","errorMessage":"socket closed"}}),
+            serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"socket closed"}]}),
+            serde_json::json!({"type":"auto_retry_start","attempt":1,"maxAttempts":50}),
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"recovered"}}),
+            serde_json::json!({"type":"turn_end","message":{"role":"assistant","stopReason":"stop"}}),
+            serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}),
+        ]).await;
+        let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["retry", "delta", "done"]);
+        assert_eq!(events[1]["data"], "recovered");
+    }
+
+    #[tokio::test]
+    async fn clean_eof_preserves_a_final_model_failure() {
+        for failure in [
+            serde_json::json!({"type":"turn_end","message":{"role":"assistant","stopReason":"error","errorMessage":"401 Invalid token"}}),
+            serde_json::json!({"type":"auto_retry_end","success":false,"finalError":"socket closed"}),
+        ] {
+            let events = replay_cli_output(&[failure]).await;
+            let last = events.last().unwrap();
+            assert_eq!(last["kind"], "error", "clean process exit must not turn a failed request into success");
+            assert!(matches!(last["data"].as_str(), Some("401 Invalid token" | "socket closed")));
+            assert!(!events.iter().any(|event| event["kind"] == "done"));
+        }
+    }
+}
+
+#[cfg(test)]
 mod registry_tests {
     use super::*;
 
@@ -2282,17 +2473,17 @@ mod registry_tests {
     /// moving rekey leaked the child (user pressed Stop, nothing died).
     #[tokio::test]
     async fn rekey_keeps_both_keys_and_kill_routes_by_either() {
-        let child = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
-            .args(if cfg!(windows) {
-                ["/c", "ping -n 30 127.0.0.1"]
-            } else {
-                ["-c", "sleep 30"]
-            })
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn sleep child");
+        let mut child = tokio::process::Command::new(if cfg!(windows) {
+            "cmd"
+        } else {
+            "sh"
+        })
+        .args(if cfg!(windows) { ["/c", "ping -n 30 127.0.0.1"] } else { ["-c", "sleep 30"] })
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sleep child");
         let pid = child.id().unwrap_or(0);
         let entry = ChildEntry {
             child: Some(Arc::new(TokioMutex::new(child))),

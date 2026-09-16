@@ -162,11 +162,18 @@ function onModel(
   });
 }
 
+/** Sessions whose run is inside a provider-retry backoff. Kept out of the
+ *  store read path on purpose: the delta handlers test this set (O(1)) rather
+ *  than reading `bySession` for every streamed token. */
+const retryingKeys = new Set<string>();
+
 function onDelta(
   event: EngineEventPayload,
   key: string,
   deps: EngineEventDeps,
 ) {
+  // Content resumed: a re-issued request succeeded, so the retry chip goes.
+  if (retryingKeys.has(key)) clearRetry(key, deps);
   bufferStreamPart(
     key,
     "delta",
@@ -182,6 +189,8 @@ function onThinking(
   key: string,
   deps: EngineEventDeps,
 ) {
+  // Content resumed: a re-issued request succeeded, so the retry chip goes.
+  if (retryingKeys.has(key)) clearRetry(key, deps);
   bufferStreamPart(
     key,
     "thinking",
@@ -197,6 +206,8 @@ function onMessage(
   key: string,
   deps: EngineEventDeps,
 ) {
+  // Content resumed: a re-issued request succeeded, so the retry chip goes.
+  if (retryingKeys.has(key)) clearRetry(key, deps);
   const data = event.data as {
     role: string;
     text: string;
@@ -445,15 +456,16 @@ export function settleOrphanedRuns(
 ) {
   if (orphaned.length === 0) return;
   for (const [runId] of orphaned) dropRunUsage(runId);
+  for (const [, key] of orphaned) retryingKeys.delete(key);
   set((s) => {
     let streamingByKey = s.streamingByKey;
     let bySession = s.bySession;
     for (const [, key] of orphaned) {
       streamingByKey = setStreamingFlag(streamingByKey, key, false);
       const cur = bySession[key];
-      if (cur?.streaming) {
+      if (cur?.streaming || cur?.retry) {
         if (bySession === s.bySession) bySession = { ...s.bySession };
-        bySession[key] = { ...cur, streaming: false, turnStartedAt: null };
+        bySession[key] = { ...cur, streaming: false, turnStartedAt: null, retry: null };
       }
     }
     return { bySession, streamingByKey };
@@ -467,8 +479,12 @@ function onUsage(
 ) {
   const parsed = parseUsage(event.data);
   const totals = parsed ? addTurnUsage(event.runId, parsed) : null;
+  // A compaction report carries only the new occupancy, so the window is
+  // taken from the last snapshot that had one: the gauge must not drop to
+  // the assumed 200k just because this report is narrower (see mergeUsage).
+  const prev = deps.get().bySession[key]?.usage;
   patchSession(deps.set, key, {
-    usage: mergeUsage(event.data, deps.get().bySession[key]?.usage),
+    usage: mergeUsage(event.data, prev),
     ...(totals ? { turnUsage: usageSnapshot(totals) } : {}),
   });
   if (parsed) recordUsageReport(deps, event, key, parsed);
@@ -549,6 +565,8 @@ function onError(
   key: string,
   deps: EngineEventDeps,
 ) {
+  retryingKeys.delete(key);
+  if (deps.get().bySession[key]?.retry) patchSession(deps.set, key, { retry: null });
   // Fold unflushed chunks into rows and settle them: the turn stops here,
   // and the scheduled flush must not write them in after the fact.
   const prev = deps.get().bySession[key] ?? EMPTY_SESSION;
@@ -708,7 +726,46 @@ function onWarn(event: EngineEventPayload, key: string, deps: EngineEventDeps) {
   patchSession(deps.set, key, { error: event.data as string });
 }
 
+/**
+ * Live provider-retry progress (claude `system/api_retry`, codex
+ * `Reconnecting... n/m`, omp `auto_retry_start`). Shown in the run status
+ * line as "重试中 x/y" — deliberately NOT the error banner: the CLI is
+ * backing off and will re-issue the request, so this is progress. An attempt
+ * of 0 (or a retry-end event) clears it; so does the next content event.
+ */
+function onRetry(event: EngineEventPayload, key: string, deps: EngineEventDeps) {
+  const data = (event.data ?? {}) as {
+    attempt?: unknown;
+    max?: unknown;
+    message?: unknown;
+  };
+  const attempt = typeof data.attempt === "number" ? data.attempt : 0;
+  if (attempt <= 0) {
+    clearRetry(key, deps);
+    return;
+  }
+  retryingKeys.add(key);
+  patchSession(deps.set, key, {
+    retry: {
+      attempt,
+      max: typeof data.max === "number" ? data.max : 0,
+      message: typeof data.message === "string" ? data.message : "",
+    },
+  });
+}
+
+/** Drop the indicator once the re-issued request produces content. A
+ *  recovered retry ends with output, so this lands before any explicit end
+ *  event and the chip never lingers over a healthy stream. */
+function clearRetry(key: string, deps: EngineEventDeps) {
+  retryingKeys.delete(key);
+  if (!deps.get().bySession[key]?.retry) return;
+  patchSession(deps.set, key, { retry: null });
+}
+
 function onDone(event: EngineEventPayload, key: string, deps: EngineEventDeps) {
+  retryingKeys.delete(key);
+  if (deps.get().bySession[key]?.retry) patchSession(deps.set, key, { retry: null });
   const prev = deps.get().bySession[key] ?? EMPTY_SESSION;
   const data = event.data as { usage: unknown };
   // Occupancy for the context meter: the newest single report (claude's one
@@ -794,6 +851,17 @@ function onDone(event: EngineEventPayload, key: string, deps: EngineEventDeps) {
   // stopped the session, the next message is theirs to send.
   if (!prev.interrupted) {
     deps.drainQueue(key);
+    // Claude's result line reports the turn's summed usage (every request of
+    // the turn added up), not the occupancy the meter shows — so re-read the
+    // latest per-message snapshot from the session file once the engine has
+    // settled it. /compact turns need the same re-read on every engine.
+    const lastUser = [...prev.messages].reverse().find((m) => m.role === "user");
+    const compactTurn = Boolean(lastUser?.text.trim().startsWith("/compact"));
+    if (event.engine === "claude" || compactTurn) {
+      setTimeout(() => {
+        deps.refreshSessionUsage?.(key)?.catch(() => {});
+      }, 400);
+    }
   }
 }
 
@@ -839,6 +907,12 @@ function adoptObservedRun(
   }
 }
 
+// Retain terminal run identities after routing is removed. A delayed retry
+// can otherwise fall back to sessionId and masquerade as a new observed run.
+// Bound this history; real new turns always carry a fresh runId.
+const settledRuns = new Map<string, "done" | "error">();
+const MAX_SETTLED_RUNS = 256;
+
 /** Resolve an event's session key (run routing, then session-id match) and
  * dispatch to the per-kind handler. */
 export function handleEngineEvents(
@@ -846,6 +920,10 @@ export function handleEngineEvents(
   deps: EngineEventDeps,
 ) {
   for (const event of events) {
+    const settled = settledRuns.get(event.runId);
+    // EOF stderr/failure can follow Done. Keep that diagnostic, but never
+    // adopt the run again or drain its queue a second time.
+    if (settled && !(settled === "done" && (event.kind === "warn" || event.kind === "error"))) continue;
     const state = deps.get();
     let key = runRouting.get(event.runId) ?? Object.keys(state.bySession).find(
       (candidate) => state.bySession[candidate]?.settledRunIds?.includes(event.runId),
@@ -862,9 +940,16 @@ export function handleEngineEvents(
       }
     }
     if (!key) continue;
+    if (event.kind === "done" || event.kind === "error") {
+      settledRuns.set(event.runId, event.kind);
+      if (settledRuns.size > MAX_SETTLED_RUNS) {
+        settledRuns.delete(settledRuns.keys().next().value!);
+      }
+    }
+
+    // Shutdown diagnostics remain visible, but cannot restart a turn or
+    // overwrite a newer turn's state.
     if (state.bySession[key]?.settledRunIds?.includes(event.runId)) {
-      // Shutdown diagnostics remain visible, but cannot restart a turn or
-      // overwrite a newer turn's state.
       if (event.kind === "warn" && !state.bySession[key]?.streaming) onWarn(event, key, deps);
       continue;
     }
@@ -875,7 +960,7 @@ export function handleEngineEvents(
     // adopt any run still talking, let done/error settle it below. A denial
     // is excluded on purpose: the CLI has stopped to ask, and the grant
     // card's resend has to stay available while it waits.
-    if (event.kind !== "done" && event.kind !== "error" && event.kind !== "permission_denied") {
+    if (!settled && event.kind !== "done" && event.kind !== "error" && event.kind !== "permission_denied") {
       adoptObservedRun(event, key, deps);
     }
 
@@ -896,10 +981,14 @@ export function handleEngineEvents(
         onUsage(event, key, deps);
         break;
       case "error":
-        onError(event, key, deps);
+        if (settled === "done") onWarn(event, key, deps);
+        else onError(event, key, deps);
         break;
       case "warn":
         onWarn(event, key, deps);
+        break;
+      case "retry":
+        onRetry(event, key, deps);
         break;
       case "permission_denied":
         onPermissionDenied(event, key, deps);

@@ -340,7 +340,17 @@ impl Engine for CodexEngine {
             // settled the UI and killed the CLI on the first reconnect, so
             // the turn died at 1/5 instead of continuing.
             "error" => {
-                out.push(EngineEvent::Warn(error_message(&value)));
+                // codex announces every retry as `Reconnecting... N/M (...)`:
+                // that line is live progress for the run status strip, not an
+                // error. The bare error right before `turn.failed` (or any
+                // other line) stays a non-terminal notice — only turn.failed
+                // ends the turn.
+                match parse_reconnect_notice(&value) {
+                    Some((attempt, max, message)) => {
+                        out.push(EngineEvent::Retry { attempt, max, message })
+                    }
+                    None => out.push(EngineEvent::Warn(error_message(&value))),
+                }
             }
             _ => {}
         }
@@ -362,6 +372,24 @@ fn attach_context_window(mut usage: Value, source: &Value) -> Value {
     usage
 }
 
+/// codex's reconnect notice: `Reconnecting... 3/5 (stream disconnected …)`.
+/// Returns `(attempt, max, reason)` so the run status line can show
+/// "重试中 3/5"; `None` for every other error line.
+fn parse_reconnect_notice(value: &Value) -> Option<(u64, u64, String)> {
+    let text = error_message(value);
+    let rest = text.strip_prefix("Reconnecting...")?.trim_start();
+    let (counts, reason) = match rest.split_once('(') {
+        Some((counts, reason)) => (counts.trim(), reason.trim_end_matches(')').trim()),
+        None => (rest.trim(), ""),
+    };
+    let (attempt, max) = counts.split_once('/')?;
+    Some((
+        attempt.trim().parse().ok()?,
+        max.trim().parse().ok()?,
+        reason.to_string(),
+    ))
+}
+
 /// Message text of a codex error payload: `error.message` when nested,
 /// `error` or `message` when flat, with a generic fallback.
 fn error_message(value: &Value) -> String {
@@ -371,6 +399,73 @@ fn error_message(value: &Value) -> String {
         .or_else(|| value.get("message").and_then(Value::as_str))
         .unwrap_or("codex turn failed")
         .to_string()
+}
+
+const UNSUPPORTED_EXEC_MESSAGE: &str = "当前 codex CLI 版本过旧，不支持 codex exec --json 调用方式（v1.0.0 起本应用改用此方式调用 codex）。请升级后重试：npm i -g @openai/codex@latest";
+
+/// Probe outcomes cached per (bin, resuming) pair: re-probing every send
+/// would add a full CLI startup (hundreds of ms through a Windows .cmd
+/// shim) to each message. Only successes are cached — a cached failure
+/// would keep blocking a user who already upgraded until an app restart.
+static PREFLIGHT_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, ()>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Fail fast when the resolved codex binary predates the exec transport
+/// (`codex exec --json`, plus `exec resume` for continuing sessions): such
+/// CLIs exit 1 before emitting any event, which surfaced as a bare
+/// "codex exited with status exit code: 1" banner. Probe flakes (spawn
+/// failure, timeout, non-zero help exit) never block the send — the real
+/// spawn surfaces its own error then.
+pub(crate) async fn check_exec_support(bin: &str, resuming: bool) -> Result<(), String> {
+    let key = format!("{bin}\u{0}{resuming}");
+    if let Ok(cache) = PREFLIGHT_CACHE.lock() {
+        if cache.contains_key(&key) {
+            return Ok(());
+        }
+    }
+    let result = match run_help_probe(bin).await {
+        Some(help) if !exec_help_supported(&help, resuming) => {
+            Err(UNSUPPORTED_EXEC_MESSAGE.to_string())
+        }
+        _ => Ok(()),
+    };
+    if result.is_ok() {
+        if let Ok(mut cache) = PREFLIGHT_CACHE.lock() {
+            cache.insert(key, ());
+        }
+    }
+    result
+}
+
+/// `exec --help` output (stdout+stderr), or None on spawn failure/timeout/
+/// non-zero exit. Verified live: current CLIs render `--json` under Options
+/// and `resume` under Commands.
+async fn run_help_probe(bin: &str) -> Option<String> {
+    let mut cmd = command_for_binary(bin);
+    cmd.args(["exec", "--help"]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    super::hide_console(&mut cmd);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Some(text)
+}
+
+/// `--json` is the hard requirement of the exec transport; continuing a
+/// session additionally needs the `resume` subcommand.
+fn exec_help_supported(help: &str, resuming: bool) -> bool {
+    help.contains("--json") && (!resuming || help.contains("resume"))
 }
 
 #[cfg(test)]
@@ -542,11 +637,18 @@ mod tests {
     /// settled the UI — and killed the CLI — on the first reconnect, so the
     /// turn died at 1/5 instead of continuing to completion.
     #[test]
-    fn reconnect_notice_is_non_terminal() {
+    fn reconnect_notice_is_live_retry_progress() {
         let line = r#"{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)"}"#;
         match &parse(line)[..] {
-            [EngineEvent::Warn(text)] => assert!(text.starts_with("Reconnecting... 1/5")),
-            other => panic!("expected a non-terminal warn, got {other:?}"),
+            [EngineEvent::Retry {
+                attempt,
+                max,
+                message,
+            }] => {
+                assert_eq!((*attempt, *max), (1, 5));
+                assert!(message.contains("stream disconnected"));
+            }
+            other => panic!("expected live retry progress, got {other:?}"),
         }
     }
 
@@ -554,7 +656,7 @@ mod tests {
     /// final message; the terminal signal is the `turn.failed` event itself.
     #[test]
     fn turn_failed_is_the_terminal_error() {
-        // The retry notice must not settle the turn.
+        // A non-reconnect error line is a notice, not retry progress.
         match &parse(
             r#"{"type":"error","message":"unexpected status 401 Unauthorized: Incorrect API key provided: x."}"#,
         )[..]
@@ -581,7 +683,36 @@ mod tests {
             &mut out,
         );
         CodexEngine.parse_line(r#"{"type":"turn.completed","usage":null}"#, &mut out);
-        assert!(matches!(out[0], EngineEvent::Warn(_)));
+        assert!(matches!(out[0], EngineEvent::Retry { .. }));
         assert!(matches!(out[1], EngineEvent::Done { .. }));
+    }
+
+    /// Help shape verified live against codex-cli 0.153.0: `--json` under
+    /// Options, `resume` under Commands.
+    #[test]
+    fn exec_help_gate_requires_json_flag_and_resume() {
+        let current =
+            "Usage: codex exec [OPTIONS] [PROMPT]\n\nCommands:\n  resume  Resume a previous session\n\nOptions:\n      --json";
+        assert!(exec_help_supported(current, false));
+        assert!(exec_help_supported(current, true));
+
+        // Pre-exec-transport CLIs render no --json flag on exec.
+        let legacy = "Usage: codex exec [OPTIONS] [PROMPT]\n\nOptions:\n  --full-auto";
+        assert!(!exec_help_supported(legacy, false));
+
+        // --json without the resume subcommand: new sessions fine,
+        // continuing one must be refused with the upgrade message.
+        let no_resume = "Usage: codex exec [OPTIONS] [PROMPT]\n\nOptions:\n      --json";
+        assert!(exec_help_supported(no_resume, false));
+        assert!(!exec_help_supported(no_resume, true));
+    }
+
+    /// A binary that cannot even be spawned must not be blocked by the
+    /// preflight: the real spawn's own error is clearer than a probe flake.
+    #[tokio::test]
+    async fn preflight_never_blocks_on_probe_flake() {
+        assert!(check_exec_support("/nonexistent/codex-bin-xyz", true)
+            .await
+            .is_ok());
     }
 }

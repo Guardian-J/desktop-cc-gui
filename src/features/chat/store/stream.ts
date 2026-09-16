@@ -36,6 +36,11 @@ export interface SessionState {
   /** Bounded terminal-run history; late events must not revive a finished turn. */
   settledRunIds?: string[];
   error: string | null;
+  /** Live provider-retry progress for the running turn ("重试中 2/5"). The
+   * CLI is backing off and will re-issue the request, so this is progress,
+   * not a failure: it clears on the next content event or when the turn
+   * settles. `null` when nothing is being retried. */
+  retry: { attempt: number; max: number; message: string } | null;
   /** Messages typed while a turn streams; sent FIFO when the turn ends. */
   queue: QueuedMessage[];
   /** Set by interrupt(): the next "done" settles the turn but must not
@@ -56,6 +61,7 @@ export const EMPTY_SESSION: SessionState = {
   usage: null,
   turnUsage: null,
   error: null,
+  retry: null,
   queue: [],
   interrupted: false,
 };
@@ -340,7 +346,9 @@ export function appendToolMessage<T extends BySessionSlice>(
         : messages.slice().reverse().find((m) => m.role === "tool");
       if (target) {
         messages = messages.map((m) =>
-          m.seq === target.seq ? { ...m, result } : m,
+          m.seq === target.seq
+            ? { ...m, result, ...(todos ? { todos } : {}) }
+            : m,
         );
       }
       return { bySession: { ...s.bySession, [key]: { ...prev, messages } } } as Partial<T>;

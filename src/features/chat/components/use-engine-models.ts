@@ -43,6 +43,7 @@ export function useEngineModels(
   pinModels: (updates: Record<string, string>) => Promise<void>,
   /** Session-resolved channel per engine; falls back to `section.current`. */
   providers: Record<string, string> = {},
+  workspacePath?: string,
 ) {
   const { t } = useTranslation();
   const [cliConfig, setCliConfig] = useState<CliConfig | null>(null);
@@ -82,7 +83,7 @@ export function useEngineModels(
       if (engine.id in catalogs) continue;
       setPending((prev) => (prev[engine.id] ? prev : { ...prev, [engine.id]: true }));
       ipc
-        .listEngineModels(engine.id)
+        .listEngineModels(engine.id, workspacePath)
         .then((list) => {
           if (!cancelled) setCatalogs((prev) => ({ ...prev, [engine.id]: list }));
         })
