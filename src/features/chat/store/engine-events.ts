@@ -324,33 +324,21 @@ function onSession(
       ? pendingKey
       : key;
 
-  const sentModel =
-    pendingSessionModels.get(fromKey) ?? pendingSessionModels.get(key);
-  if (sentModel) {
-    pendingSessionModels.delete(fromKey);
-    pendingSessionModels.delete(key);
-    void ipc
-      .rememberSessionModel?.(event.engine, nativeId, sentModel)
-      ?.catch(() => {});
-  }
-  const sentEffort =
-    pendingSessionEfforts.get(fromKey) ?? pendingSessionEfforts.get(key);
-  if (sentEffort) {
-    pendingSessionEfforts.delete(fromKey);
-    pendingSessionEfforts.delete(key);
-    void ipc
-      .rememberSessionEffort?.(event.engine, nativeId, sentEffort)
-      ?.catch(() => {});
-  }
-  const sentProvider =
-    pendingSessionProviders.get(fromKey) ?? pendingSessionProviders.get(key);
-  if (sentProvider) {
-    pendingSessionProviders.delete(fromKey);
-    pendingSessionProviders.delete(key);
-    void ipc
-      .rememberSessionProvider?.(event.engine, nativeId, sentProvider)
-      ?.catch(() => {});
-  }
+  // 统一处理 model/effort/provider 的会话记忆
+  const flushPending = <T>(
+    cache: Map<string, T>,
+    remember: (engine: string, sessionId: string, value: T) => Promise<void> | undefined,
+  ) => {
+    const value = cache.get(fromKey) ?? cache.get(key);
+    if (value) {
+      cache.delete(fromKey);
+      cache.delete(key);
+      void remember(event.engine, nativeId, value)?.catch(() => {});
+    }
+  };
+  flushPending(pendingSessionModels, ipc.rememberSessionModel ?? (() => undefined));
+  flushPending(pendingSessionEfforts, ipc.rememberSessionEffort ?? (() => undefined));
+  flushPending(pendingSessionProviders, ipc.rememberSessionProvider ?? (() => undefined));
 
   settleOrphanedRuns(deps.set, routeRun(event.runId, newKey));
   // Unflushed stream chunks sit under the pre-migration key; move them too.
