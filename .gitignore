@@ -30,7 +30,8 @@ Thumbs.db
 .omo/
 .playwright-mcp/
 .vscode/
+.idea/
 skills-lock.json
 boardui.dev.env
 CLAUDE.md
-.codegraph
+.codegraph/
