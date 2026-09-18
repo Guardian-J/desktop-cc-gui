@@ -168,14 +168,12 @@ body {
   font-style: normal;
 }
 
-/* ---- GitHub-style alerts (`> [!NOTE]` …) become callout cards ----
+/* ---- GitHub-style alerts (`> [!NOTE]` …) render as a minimal left bar ----
  * Class beats the `:where(blockquote)` flatten above (0 specificity), and
  * the accent rides CSS variables so dark mode flips for free. */
 .prose-chat .md-alert {
-  border-left: 3px solid var(--md-alert-accent);
-  background: color-mix(in srgb, var(--md-alert-accent) 8%, var(--color-background-primary-default));
-  border-radius: 8px;
-  padding: 10px 14px;
+  border-left: 2px solid var(--md-alert-accent);
+  padding-left: 12px;
 }
 .prose-chat .md-alert-note {
   --md-alert-accent: var(--md-alert-note);
@@ -193,10 +191,7 @@ body {
   --md-alert-accent: var(--md-alert-caution);
 }
 .prose-chat .md-alert-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.85em;
+  font-size: 0.8em;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--md-alert-accent);
