@@ -222,6 +222,35 @@ describe("compactContext and refreshSessionUsage", () => {
     expect(useChatStore.getState().bySession[key].usage).toEqual({ input_tokens: 91000, model_context_window: 1_000_000 });
   });
 
+  it("a claude turn-sum settles down to the smaller occupancy the file holds", async () => {
+    const key = "claude/turn-sum";
+    // What a claude result line carries: every request of the turn added up
+    // (billing), which is far past the window the meter measures against. The
+    // transcript keeps the last request's prompt — the real occupancy.
+    const turnSum = {
+      input_tokens: 51_755,
+      output_tokens: 5_713,
+      cache_read_input_tokens: 4_900_000,
+      model_context_window: 1_000_000,
+    };
+    useChatStore.setState({ bySession: { [key]: { ...EMPTY_SESSION, usage: turnSum } } });
+    const occupancy = {
+      input_tokens: 600,
+      output_tokens: 927,
+      cache_read_input_tokens: 162_176,
+    };
+    vi.mocked(ipc.loadSessionPage).mockResolvedValueOnce({
+      messages: [{ seq: 1, role: "assistant", text: "hi", ts: "2026-09-18T00:00:00Z", usage: occupancy }],
+    } as any);
+    await useChatStore.getState().refreshSessionUsage(key);
+    // The decrease must land — a re-read is newer than a turn sum, not staler —
+    // while the window only the live report knew survives the swap.
+    expect(useChatStore.getState().bySession[key]?.usage).toEqual({
+      ...occupancy,
+      model_context_window: 1_000_000,
+    });
+  });
+
   it("refreshSessionUsage updates session usage from session history", async () => {
     const tab = { engine: "claude", sessionId: "sess-compact", workspacePath: WS };
     const key = "claude/sess-compact";
