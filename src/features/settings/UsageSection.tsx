@@ -19,7 +19,7 @@ import { CLI_DISPLAY_NAMES } from "@/components/foundations/icons/engine-brands"
 import { ModelBadge } from "@/components/foundations/icons/model-badge";
 import type { EngineIconId } from "@/components/foundations/icons/engine-icon";
 
-type Range = "today" | "week" | "month";
+type Range = "today" | "week" | "month" | "year" | "all";
 
 /** Same affordance the message rows use: bare icon, hover-revealed chrome. */
 const ICON_BUTTON =
@@ -29,7 +29,26 @@ const RANGES: { id: Range; labelKey: string }[] = [
   { id: "today", labelKey: "usage.rangeToday" },
   { id: "week", labelKey: "usage.rangeWeek" },
   { id: "month", labelKey: "usage.rangeMonth" },
+  { id: "year", labelKey: "usage.rangeYear" },
+  { id: "all", labelKey: "usage.rangeAll" },
 ];
+
+/** Ledger days to fetch for a range: enough to cover its start, `0` = the
+ *  whole ledger (总和). The scoped filter then trims to the exact start. */
+function rangeDays(range: Range): number {
+  switch (range) {
+    case "today":
+      return 1;
+    case "week":
+      return 7;
+    case "month":
+      return 31;
+    case "year":
+      return 366;
+    case "all":
+      return 0;
+  }
+}
 
 /** Local "YYYY-MM-DD" for a Date (matches the ledger's day buckets). */
 function dayKey(date: Date): string {
@@ -37,10 +56,13 @@ function dayKey(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-/** First local day of the selected range: today, this week (Monday), or the
- *  1st of this month — the calendar the labels promise. */
+/** First local day of the selected range. `all` returns "" so every row
+ *  passes; the others name today, this week (Monday), the 1st of this month,
+ *  or Jan 1 — the calendar the labels promise. */
 function rangeStart(range: Range, now: Date): string {
+  if (range === "all") return "";
   if (range === "today") return dayKey(now);
+  if (range === "year") return dayKey(new Date(now.getFullYear(), 0, 1));
   if (range === "month") return dayKey(new Date(now.getFullYear(), now.getMonth(), 1));
   const monday = new Date(now);
   // getDay(): 0 = Sunday; step back to the most recent Monday.
@@ -138,15 +160,19 @@ export function UsageSection() {
 
   const refresh = useCallback(async () => {
     try {
-      // 90 days covers the month view with room for the weekly roll-up.
-      const next = await ipc.usageSummary(90, -new Date().getTimezoneOffset());
+      // Fetch a window sized to the range: 总和 (days=0) is the whole ledger,
+      // 本年 needs a full year, the shorter ranges a few days each.
+      const next = await ipc.usageSummary(
+        rangeDays(range),
+        -new Date().getTimezoneOffset(),
+      );
       setRows(next);
     } catch {
       // A failed read keeps the last good snapshot on screen.
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [range]);
 
   useEffect(() => {
     void refresh();
@@ -195,12 +221,18 @@ export function UsageSection() {
     // built from LOCAL parts: `new Date("YYYY-MM-DD")` parses as UTC, which
     // lands later in the day than "now" east of Greenwich and produced an
     // empty series.
-    const [year, month, day] = rangeStart(range, new Date()).split("-").map(Number);
-    const today = dayKey(new Date());
     const byDay = new Map<string, number>();
     for (const row of scoped) {
       byDay.set(row.day, (byDay.get(row.day) ?? 0) + tokensOf(row));
     }
+    const today = dayKey(new Date());
+    // 总和 has no calendar start: draw from the earliest recorded day (today
+    // when the ledger is empty) through today.
+    const start =
+      range === "all"
+        ? scoped.reduce((min, row) => (row.day < min ? row.day : min), today)
+        : rangeStart(range, new Date());
+    const [year, month, day] = start.split("-").map(Number);
     const days: { day: string; tokens: number }[] = [];
     for (const cursor = new Date(year, month - 1, day); ; cursor.setDate(cursor.getDate() + 1)) {
       const key = dayKey(cursor);

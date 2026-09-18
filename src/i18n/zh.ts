@@ -911,6 +911,8 @@ export const zh = {
     rangeToday: "今日",
     rangeWeek: "本周",
     rangeMonth: "本月",
+    rangeYear: "本年",
+    rangeAll: "总和",
     tokens: "Token 累计",
     input: "输入",
     output: "输出",

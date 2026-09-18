@@ -943,6 +943,8 @@ export const en: Messages = {
     rangeToday: "Today",
     rangeWeek: "This week",
     rangeMonth: "This month",
+    rangeYear: "This year",
+    rangeAll: "All time",
     tokens: "Tokens",
     input: "Input",
     output: "Output",

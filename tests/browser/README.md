@@ -89,3 +89,10 @@ agent picker and `!` prompt picker against seeded stores: the agent menu
 groups 我的智能体 then one section per enabled built-in division (flat when
 filtering), and the prompt menu rows carry 工作区/全局 scope badges; both
 end in a fixed "new" row that jumps to Settings. No app, no backend.
+
+Open `/tests/browser/side-panel-overlay.html` to check the right-hand file
+panel on a narrow remote viewport, where it used to spill past the screen and
+only render half-visible. The real ChatSidePanel renders in overlay mode
+inside a 412px row (a stub panel tab stands in for files/changes, so no IPC):
+its right edge must sit on the row's right edge with its left edge inside the
+row, and the document must not scroll horizontally. No app, no backend.
