@@ -1,12 +1,15 @@
 "use client";
 
-import type { ComponentType } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import Globe from "lucide-react/dist/esm/icons/globe";
 import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import PanelLeft from "lucide-react/dist/esm/icons/panel-left";
 import ScanSearch from "lucide-react/dist/esm/icons/scan-search";
 import Settings from "lucide-react/dist/esm/icons/settings";
+import Workflow from "lucide-react/dist/esm/icons/workflow";
+import { Focusable } from "react-aria-components";
+import { Tooltip, TooltipContent } from "@/components/base/tooltip/tooltip";
 import {
   WorkspaceBlankContextMenu,
   WorkspaceContextMenu,
@@ -57,6 +60,64 @@ function NavItem({
       <Icon className="size-4 shrink-0 text-foreground-icon-secondary" aria-hidden />
       <span className="text-body-2-medium whitespace-nowrap text-text-secondary">{label}</span>
     </button>
+  );
+}
+
+/** Grayed-out nav entry for a feature that is not available yet: hover shows
+ *  the tip after the usual delay, click pins it open (same pin/unpin rules as
+ *  InfoTip: outside press, Escape, scroll, or a second click closes it). The
+ *  button stays enabled so the tip stays reachable; `aria-disabled` carries
+ *  the unavailable state. */
+function DisabledNavItem({
+  icon: Icon,
+  label,
+  tip,
+}: {
+  icon: IconComponent;
+  label: string;
+  tip: string;
+}) {
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!pinned) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (triggerRef.current?.contains(e.target as Node)) return;
+      setPinned(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPinned(false);
+    };
+    const onScroll = () => setPinned(false);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [pinned]);
+
+  return (
+    <Tooltip isOpen={pinned || hoverOpen} onOpenChange={setHoverOpen}>
+      <Focusable>
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-label={label}
+          aria-disabled
+          onClick={() => setPinned((p) => !p)}
+          className="flex w-full cursor-not-allowed items-center gap-2 rounded-2lg p-2 opacity-40"
+        >
+          <Icon className="size-4 shrink-0 text-foreground-icon-secondary" aria-hidden />
+          <span className="text-body-2-medium whitespace-nowrap text-text-secondary">{label}</span>
+        </button>
+      </Focusable>
+      <TooltipContent placement="right">{tip}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -141,6 +202,11 @@ export function SidebarPrimaryNav({
       {onNewBrowser && (
         <NavItem icon={Globe} label={t("chat.newBrowser")} onClick={onNewBrowser} />
       )}
+      <DisabledNavItem
+        icon={Workflow}
+        label={t("chat.automation")}
+        tip={t("chat.automationComingSoon")}
+      />
     </nav>
   );
 }

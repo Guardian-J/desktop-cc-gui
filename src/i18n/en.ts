@@ -32,6 +32,8 @@ export const en: Messages = {
     newChat: "New chat",
     newSession: "New session",
     newBrowser: "New browser",
+    automation: "Automation",
+    automationComingSoon: "Coming soon",
     closeAllTabs: "Close All",
     closeInactiveTabs: "Close Others",
     collapseSidebar: "Collapse sidebar",
