@@ -3,16 +3,19 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ThreadMenuState } from "@/components/application/ai-chat/thread-context-menu";
-import type { WorkspaceMenuState } from "@/components/application/ai-chat/workspace-context-menu";
+import type {
+  BlankMenuState,
+  WorkspaceMenuState,
+} from "@/components/application/ai-chat/workspace-context-menu";
 import type { AiChatRepo, AiChatRepoSection } from "./ai-chat-sidebar";
 import type { ThreadAction } from "./sidebar-types";
 import { registerShortcutHandler } from "@/features/shortcuts/runtime";
 
 /**
  * AiChatSidebar state hooks: quick search (⌘L), persisted workspace
- * expansion / group collapse, the right-click workspace menu, and the
- * query-driven filtering of the workspace tree. The sidebar component keeps
- * only the layout; everything stateful lives here.
+ * expansion / group collapse, the right-click workspace + blank-area menus,
+ * and the query-driven filtering of the workspace tree. The sidebar
+ * component keeps only the layout; everything stateful lives here.
  */
 
 /** localStorage key for the collapsed workspace-group id set. */
@@ -164,6 +167,21 @@ export function useWorkspaceMenu(
   const closeWorkspaceMenu = useCallback(() => setWorkspaceMenu(null), []);
   return { workspaceMenu, closeWorkspaceMenu, openWorkspaceMenu, openArchivedMenu };
 }
+
+/** Blank-area right-click menu (the workspace section's empty space): one
+ *  open at a time. Row menus preventDefault on the same event, so a bubbling
+ *  contextmenu with defaultPrevented set already belongs to a row — the
+ *  blank menu stays closed for those. */
+export function useBlankMenu() {
+  const [blankMenu, setBlankMenu] = useState<BlankMenuState | null>(null);
+  const openBlankMenu = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    setBlankMenu({ x: event.clientX, y: event.clientY });
+  }, []);
+  const closeBlankMenu = useCallback(() => setBlankMenu(null), []);
+  return { blankMenu, openBlankMenu, closeBlankMenu };
+}
 /** Thread right-click menu: pointer-anchored, one open at a time. Opens only
  *  when at least one entry has a handler. */
 export function useThreadMenu(
@@ -235,7 +253,7 @@ function matchRepo(repo: AiChatRepo, normalizedQuery: string): AiChatRepo | null
 
 /** The query filter applied to the whole workspace tree: flat repos, grouped
  *  sections (groups with no matches drop out while searching; empty groups
- *  stay when not searching so they can render as mid-drag drop targets; the
+ *  stay when not searching so a freshly created group is visible; the
  *  ungrouped section always stays), and the 已归档 labels (label match only
  *  — archived rows carry no threads). */
 export function useFilteredWorkspaces(

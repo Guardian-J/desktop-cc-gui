@@ -10,6 +10,7 @@ import {
   useFilteredWorkspaces,
   useSidebarSearch,
   useWorkspaceMenu,
+  useBlankMenu,
   useThreadMenu,
 } from "@/components/application/ai-chat/use-sidebar-state";
 import { ArchivedSection, WorkspaceSection } from "@/components/application/ai-chat/workspace-sections";
@@ -44,6 +45,7 @@ export function AiChatSidebar({
   onThreadSelect,
   onNewSessionInWorkspace,
   onNewSession,
+  onNewBrowser,
   onReorderWorkspaces,
   onThreadAction,
   onCopyThreadId,
@@ -52,6 +54,7 @@ export function AiChatSidebar({
   onWorkspaceAlias,
   onSetWorkspaceArchived,
   onDropWorkspaceToSection,
+  onCreateGroup,
   onOpenSettings,
   onClose,
   flat = false,
@@ -84,8 +87,13 @@ export function AiChatSidebar({
   /** Workspace row dropped onto a section container: group id, the archived
    *  sentinel (drop on 已归档), or null (ungrouped). */
   onDropWorkspaceToSection?: (workspaceId: string, targetSectionId: string | null) => void;
+  /** Blank-area menu「新建分组」commit: returns a localized validation error
+   *  (keeps the composer open), or null when the name was accepted. */
+  onCreateGroup?: (name: string) => string | null;
   /** 新建会话 nav entry: start a new chat in the current workspace. */
   onNewSession?: () => void;
+  /** 新建浏览器 nav entry (desktop only): open a browser tab. */
+  onNewBrowser?: () => void;
   onOpenSettings?: () => void;
   onClose?: () => void;
   flat?: boolean;
@@ -108,6 +116,18 @@ export function AiChatSidebar({
   const { isRepoExpanded, toggleRepoExpanded } = useExpandedWorkspaces(allRepos, activeThreadId);
   const { workspaceMenu, closeWorkspaceMenu, openWorkspaceMenu, openArchivedMenu } =
     useWorkspaceMenu(onWorkspaceAlias, onSetWorkspaceArchived);
+  const { blankMenu, openBlankMenu, closeBlankMenu } = useBlankMenu();
+  // Blank-area menu「新建分组」: the inline composer lives at the end of the
+  // workspace section until the name commits or the edit is cancelled.
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const handleCreateGroupCommit = useCallback(
+    (name: string): string | null => {
+      const error = onCreateGroup?.(name) ?? null;
+      if (!error) setCreatingGroup(false);
+      return error;
+    },
+    [onCreateGroup],
+  );
   const { threadMenu, openThreadMenu, closeThreadMenu } = useThreadMenu(
     onThreadAction,
     onCopyThreadId,
@@ -118,8 +138,8 @@ export function AiChatSidebar({
     archivedRepos,
     normalizedQuery,
   );
-  // Mid-drag the sidebar reveals every drop target: empty group headers and
-  // the 已归档 section mount even when they have no rows.
+  // Mid-drag the sidebar reveals the 已归档 section even when empty so it
+  // can accept a dropped workspace row.
   const [workspaceDragging, setWorkspaceDragging] = useState(false);
   const handleDropWorkspaceToSection = useCallback(
     (workspaceId: string, target: string | null) => {
@@ -148,7 +168,10 @@ export function AiChatSidebar({
       <div className="flex min-h-0 w-full flex-1 flex-col gap-3 p-3">
         {flat && <SidebarBrandRow />}
 
-        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto scrollbar-none">
+        <div
+          className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto scrollbar-none"
+          onContextMenu={onCreateGroup ? openBlankMenu : undefined}
+        >
           <SidebarPrimaryNav
             searchActive={searchActive}
             query={query}
@@ -157,6 +180,7 @@ export function AiChatSidebar({
             onActivateSearch={activateSearch}
             searchInputRef={searchInputRef}
             onNewSession={onNewSession}
+            onNewBrowser={onNewBrowser}
           />
 
           <WorkspaceSection
@@ -176,9 +200,11 @@ export function AiChatSidebar({
             onReorderWorkspaces={onReorderWorkspaces}
             onToggleGroup={toggleGroup}
             onRepoContextMenu={openWorkspaceMenu}
-            workspaceDragging={workspaceDragging}
             onWorkspaceDragActiveChange={setWorkspaceDragging}
             onDropWorkspaceToSection={handleDropWorkspaceToSection}
+            creatingGroup={creatingGroup}
+            onCreateGroup={onCreateGroup && handleCreateGroupCommit}
+            onCreateGroupCancel={() => setCreatingGroup(false)}
           />
           {(filteredArchivedRepos.length > 0 || workspaceDragging) && (
             <ArchivedSection
@@ -200,8 +226,11 @@ export function AiChatSidebar({
       <SidebarContextMenus
         workspaceMenu={workspaceMenu}
         threadMenu={threadMenu}
+        blankMenu={blankMenu}
         onCloseWorkspaceMenu={closeWorkspaceMenu}
         onCloseThreadMenu={closeThreadMenu}
+        onCloseBlankMenu={closeBlankMenu}
+        onCreateGroup={onCreateGroup ? () => setCreatingGroup(true) : undefined}
         onWorkspaceAlias={onWorkspaceAlias}
         onSetWorkspaceArchived={onSetWorkspaceArchived}
         onThreadAction={onThreadAction}

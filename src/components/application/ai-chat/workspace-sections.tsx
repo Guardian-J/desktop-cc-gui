@@ -1,6 +1,7 @@
 "use client";
 
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
 import FolderPlus from "lucide-react/dist/esm/icons/folder-plus";
@@ -11,6 +12,7 @@ import {
 } from "@/components/application/ai-chat/workspace-sortable-list";
 import { ARCHIVED_SECTION_ID } from "@/components/application/ai-chat/use-sidebar-state";
 import { isWeb } from "@/lib/platform";
+import { Input } from "@/components/base/input/input";
 import { RepoItem } from "@/components/application/ai-chat/repo-tree";
 import type { AiChatRepo, AiChatRepoSection, ThreadAction } from "@/components/application/ai-chat/sidebar-types";
 import { cx } from "@/utils/cx";
@@ -51,6 +53,56 @@ function GroupHeaderRow({
         {name}
       </span>
     </button>
+  );
+}
+
+/** Inline composer for creating a group straight from the sidebar (blank-area
+ *  right-click → 新建分组). Enter commits — validation errors stay inline and
+ *  keep the row open; Escape or leaving the field cancels. Same rules as the
+ *  settings page's GroupNameEditor, minus the confirm button the narrow
+ *  sidebar row has no room for. */
+function GroupComposerRow({
+  placeholder,
+  onCommit,
+  onCancel,
+}: {
+  placeholder: string;
+  /** Returns a localized validation error, or null when the name was accepted. */
+  onCommit: (name: string) => string | null;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [hint, setHint] = useState<string | null>(null);
+  return (
+    <div className="flex w-full items-center gap-1 rounded-2lg px-1 py-[5px]">
+      <ChevronRight className="size-3.5 shrink-0 text-foreground-icon-secondary" aria-hidden />
+      <Input
+        autoFocus
+        size="small"
+        className="min-w-0 flex-1"
+        placeholder={placeholder}
+        isInvalid={Boolean(hint)}
+        hint={hint ?? undefined}
+        value={value}
+        onChange={(v) => {
+          setValue(v);
+          if (hint) setHint(null);
+        }}
+        onKeyDown={(e) => {
+          // Enter/Escape during IME composition (e.g. picking a Chinese
+          // candidate) belong to the IME — never submit or cancel.
+          if (e.nativeEvent.isComposing) return;
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setHint(onCommit(value));
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        onBlur={onCancel}
+      />
+    </div>
   );
 }
 
@@ -143,9 +195,11 @@ export function WorkspaceSection({
   onReorderWorkspaces,
   onToggleGroup,
   onRepoContextMenu,
-  workspaceDragging = false,
   onWorkspaceDragActiveChange,
   onDropWorkspaceToSection,
+  creatingGroup = false,
+  onCreateGroup,
+  onCreateGroupCancel,
 }: {
   filteredRepos: AiChatRepo[];
   /** Grouped repo tree; absent/empty = legacy flat list. */
@@ -167,12 +221,17 @@ export function WorkspaceSection({
   onToggleGroup?: (groupId: string) => void;
   /** Right-click on a repo header row (workspace context menu). */
   onRepoContextMenu?: (event: ReactMouseEvent<HTMLElement>, workspaceId: string) => void;
-  /** A workspace drag is in flight: empty groups render as drop targets. */
-  workspaceDragging?: boolean;
   onWorkspaceDragActiveChange?: (active: boolean) => void;
   /** Drop of a workspace row onto a section container (group id, the
    *  archived sentinel, or null = ungrouped). */
   onDropWorkspaceToSection?: (workspaceId: string, targetSectionId: string | null) => void;
+  /** Blank-area menu「新建分组」is pending: render the inline name composer
+   *  at the end of the section. */
+  creatingGroup?: boolean;
+  /** Composer commit: returns a localized validation error to keep the row
+   *  open, or null when the name was accepted. */
+  onCreateGroup?: (name: string) => string | null;
+  onCreateGroupCancel?: () => void;
 }) {
   const { t } = useTranslation();
   const hasGroups = Boolean(sections?.some((section) => section.id !== null));
@@ -254,21 +313,27 @@ export function WorkspaceSection({
               {renderRepoList(section.repos, null)}
             </div>
           ) : (
-            // Empty groups hide at rest (matches the reference sidebar) but
-            // stay mounted mid-drag so they can accept a dropped row.
-            (section.repos.length > 0 || workspaceDragging) && (
-              <div key={section.id} {...{ [WORKSPACE_DROP_TARGET_ATTR]: section.id }} className={dropTargetClasses}>
-                <GroupHeaderRow
-                  name={section.name}
-                  collapsed={!searching && collapsedGroups.has(section.id)}
-                  onToggle={() => onToggleGroup?.(section.id!)}
-                />
-                {(searching || !collapsedGroups.has(section.id)) &&
-                  renderRepoList(section.repos, section.id)}
-              </div>
-            )
+            // Empty groups stay visible: the sidebar is where groups are
+            // created now, so a fresh group must show up before it has
+            // members.
+            <div key={section.id} {...{ [WORKSPACE_DROP_TARGET_ATTR]: section.id }} className={dropTargetClasses}>
+              <GroupHeaderRow
+                name={section.name}
+                collapsed={!searching && collapsedGroups.has(section.id)}
+                onToggle={() => onToggleGroup?.(section.id!)}
+              />
+              {(searching || !collapsedGroups.has(section.id)) &&
+                renderRepoList(section.repos, section.id)}
+            </div>
           ),
         )}
+      {creatingGroup && onCreateGroup && (
+        <GroupComposerRow
+          placeholder={t("settings.newGroupPlaceholder")}
+          onCommit={onCreateGroup}
+          onCancel={onCreateGroupCancel ?? (() => {})}
+        />
+      )}
     </div>
   );
 }

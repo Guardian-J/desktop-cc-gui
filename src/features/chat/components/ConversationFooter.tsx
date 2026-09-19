@@ -10,7 +10,9 @@ import type { ContextSegment } from "@/components/application/agent-limits/agent
 import type { BranchInfo, Workspace } from "@/lib/ipc";
 import type { ActiveSession, QueuedMessage } from "../store";
 import { useChatStore } from "../store";
-import { ImageLightbox } from "./MessageImages";
+import { ImageLightbox } from "@/components/base/image-lightbox";
+import { imageMetaText } from "@/utils/image-meta";
+import type { AttachmentPreview } from "./use-composer-images";
 import { RunStatusStrip } from "./RunStatusStrip";
 import { QuestionDock, usePendingQuestion } from "./QuestionDock";
 import { ErrorBanner } from "./ErrorBanner";
@@ -41,12 +43,13 @@ function AttachmentChip({
   onZoom,
 }: {
   path: string;
-  preview: { url: string; name: string } | undefined;
+  preview: AttachmentPreview | undefined;
   onRemove: (path: string) => void;
   onZoom: (zoom: NonNullable<ZoomImage>) => void;
 }) {
   const { t } = useTranslation();
   const name = preview?.name ?? baseName(path);
+  const meta = preview ? imageMetaText(preview) : "";
   return (
     <span
       className="inline-flex items-center rounded-full bg-background-tertiary-default text-caption-1-medium text-text-secondary"
@@ -67,6 +70,11 @@ function AttachmentChip({
           />
         )}
         <span className="max-w-48 truncate">{name}</span>
+        {meta && (
+          <span className="shrink-0 whitespace-nowrap text-text-tertiary">
+            {meta}
+          </span>
+        )}
       </button>
       <button
         type="button"
@@ -88,7 +96,7 @@ function AttachmentChips({
   onZoomImage,
 }: {
   images: string[];
-  previews: Record<string, { url: string; name: string }>;
+  previews: Record<string, AttachmentPreview>;
   onRemoveImage: (path: string) => void;
   onZoomImage: (zoom: NonNullable<ZoomImage>) => void;
 }) {
@@ -345,7 +353,7 @@ export function ConversationFooter({
   onDismissImageError: () => void;
   onDismissBranchError: () => void;
   images: string[];
-  previews: Record<string, { url: string; name: string }>;
+  previews: Record<string, AttachmentPreview>;
   onRemoveImage: (path: string) => void;
   draft: string;
   onDraftChange: (value: string) => void;

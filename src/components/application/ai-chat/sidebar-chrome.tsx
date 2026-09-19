@@ -2,13 +2,16 @@
 
 import type { ComponentType, RefObject } from "react";
 import { useTranslation } from "react-i18next";
+import Globe from "lucide-react/dist/esm/icons/globe";
 import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import PanelLeft from "lucide-react/dist/esm/icons/panel-left";
 import ScanSearch from "lucide-react/dist/esm/icons/scan-search";
 import Settings from "lucide-react/dist/esm/icons/settings";
 import { CloseButton } from "@/components/base/buttons/close-button";
 import {
+  WorkspaceBlankContextMenu,
   WorkspaceContextMenu,
+  type BlankMenuState,
   type WorkspaceMenuState,
 } from "@/components/application/ai-chat/workspace-context-menu";
 import {
@@ -138,7 +141,7 @@ export function SidebarBrandRow() {
   );
 }
 
-/** Primary actions: quick-search (field swap when active) + 新建会话. */
+/** Primary actions: quick-search (field swap when active) + 新建会话/浏览器. */
 export function SidebarPrimaryNav({
   searchActive,
   query,
@@ -147,6 +150,7 @@ export function SidebarPrimaryNav({
   onActivateSearch,
   searchInputRef,
   onNewSession,
+  onNewBrowser,
 }: {
   searchActive: boolean;
   query: string;
@@ -155,6 +159,7 @@ export function SidebarPrimaryNav({
   onActivateSearch: () => void;
   searchInputRef: RefObject<HTMLInputElement>;
   onNewSession?: () => void;
+  onNewBrowser?: () => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -170,6 +175,9 @@ export function SidebarPrimaryNav({
         <NavItem icon={ScanSearch} label={t("common.search")} onClick={onActivateSearch} />
       )}
       <NavItem icon={MessageSquarePlus} label={t("chat.newSession")} onClick={onNewSession} />
+      {onNewBrowser && (
+        <NavItem icon={Globe} label={t("chat.newBrowser")} onClick={onNewBrowser} />
+      )}
     </nav>
   );
 }
@@ -202,24 +210,30 @@ export function SidebarFooter({ onOpenSettings }: { onOpenSettings?: () => void 
   );
 }
 
-/** Workspace + thread right-click menus; each mounts only while its state
- *  is open and at least one entry has a handler. */
+/** Workspace, thread, and blank-area right-click menus; each mounts only
+ *  while its state is open and at least one entry has a handler. */
 export function SidebarContextMenus({
   workspaceMenu,
   threadMenu,
+  blankMenu,
   onCloseWorkspaceMenu,
   onCloseThreadMenu,
+  onCloseBlankMenu,
   onWorkspaceAlias,
   onSetWorkspaceArchived,
+  onCreateGroup,
   onThreadAction,
   onCopyThreadId,
 }: {
   workspaceMenu: WorkspaceMenuState | null;
   threadMenu: ThreadMenuState | null;
+  blankMenu: BlankMenuState | null;
   onCloseWorkspaceMenu: () => void;
   onCloseThreadMenu: () => void;
+  onCloseBlankMenu: () => void;
   onWorkspaceAlias?: (id: string) => void;
   onSetWorkspaceArchived?: (id: string, archived: boolean) => void;
+  onCreateGroup?: () => void;
   onThreadAction?: (id: string, action: ThreadAction) => void;
   onCopyThreadId?: (id: string) => void;
 }) {
@@ -231,6 +245,13 @@ export function SidebarContextMenus({
           onClose={onCloseWorkspaceMenu}
           onSetAlias={onWorkspaceAlias}
           onSetArchived={onSetWorkspaceArchived}
+        />
+      )}
+      {blankMenu && onCreateGroup && (
+        <WorkspaceBlankContextMenu
+          menu={blankMenu}
+          onClose={onCloseBlankMenu}
+          onCreateGroup={onCreateGroup}
         />
       )}
       {threadMenu && (onThreadAction || onCopyThreadId) && (
