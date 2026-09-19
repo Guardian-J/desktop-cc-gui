@@ -205,7 +205,7 @@ async function rightClick(row: HTMLElement) {
   });
 }
 
-it("shows archive between rename and delete in the hover actions", async () => {
+it("keeps hover actions to pin / rename / delete (archive is context-menu only)", async () => {
   const onThreadAction = vi.fn();
   await act(async () => {
     root.render(
@@ -226,18 +226,11 @@ it("shows archive between rename and delete in the hover actions", async () => {
   const actionLabels = [...threadRow("悬浮操作").querySelectorAll("button[aria-label]")].map(
     (button) => button.getAttribute("aria-label"),
   );
-  expect(actionLabels).toEqual([
-    "chat.pin",
-    "chat.renameSession",
-    "chat.archiveSession",
-    "chat.deleteSession",
-  ]);
+  expect(actionLabels).toEqual(["chat.pin", "chat.renameSession", "chat.deleteSession"]);
 
-  const archive = threadRow("悬浮操作").querySelector<HTMLButtonElement>(
-    'button[aria-label="chat.archiveSession"]',
-  );
-  if (!archive) throw new Error("no hover archive action");
-  await act(async () => archive.click());
+  await rightClick(threadRow("悬浮操作"));
+  const menu = openMenu();
+  await act(async () => menuItem(menu, "chat.archiveSession").click());
   expect(onThreadAction).toHaveBeenCalledWith("claude/hover-1", "archive");
 });
 
