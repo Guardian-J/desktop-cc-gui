@@ -28,6 +28,8 @@ export const zh = {
     newChat: "新对话",
     newSession: "新建会话",
     newBrowser: "新建浏览器",
+    automation: "自动化",
+    automationComingSoon: "即将开放",
     closeAllTabs: "全部关闭",
     closeInactiveTabs: "关闭非活跃窗口",
     collapseSidebar: "收起侧边栏",
