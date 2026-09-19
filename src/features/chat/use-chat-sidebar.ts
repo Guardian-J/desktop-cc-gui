@@ -42,7 +42,7 @@ export function useChatSidebar({
     })),
   );
   // Store actions are stable references — one shallow subscription for all.
-  const { selectSession, startNewChat, addWorkspace, reorderWorkspaces, pinSession, setWorkspaceArchived, assignWorkspaceGroup, focusTab, closeTab } =
+  const { selectSession, startNewChat, addWorkspace, reorderWorkspaces, pinSession, archiveSession, setWorkspaceArchived, assignWorkspaceGroup, focusTab, closeTab } =
     useChatStore(
       useShallow((s) => ({
         selectSession: s.selectSession,
@@ -50,6 +50,7 @@ export function useChatSidebar({
         addWorkspace: s.addWorkspace,
         reorderWorkspaces: s.reorderWorkspaces,
         pinSession: s.pinSession,
+        archiveSession: s.archiveSession,
         setWorkspaceArchived: s.setWorkspaceArchived,
         assignWorkspaceGroup: s.assignWorkspaceGroup,
         focusTab: s.focusTab,
@@ -202,6 +203,8 @@ export function useChatSidebar({
           void pinSession(session.engine, session.sessionId, !session.pinned);
         } else if (action === "rename") {
           setDialog({ kind: "rename", session });
+        } else if (action === "archive") {
+          void archiveSession(session);
         } else if (action === "delete") {
           setDialog({ kind: "delete", session });
         }
@@ -212,7 +215,7 @@ export function useChatSidebar({
         closeTab(draft.engine, null, draft.workspacePath);
       }
     },
-    [sessionById, pinSession, setDialog, closeTab],
+    [sessionById, pinSession, archiveSession, setDialog, closeTab],
   );
   // 右键菜单「复制 ID」:写入原生会话 uuid(CLI --resume 可用的那个),与
   // 文件树「复制路径」一致——静默写剪贴板,失败不打扰。

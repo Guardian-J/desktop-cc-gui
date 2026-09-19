@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import FolderOpen from "lucide-react/dist/esm/icons/folder-open";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
 import Menu from "lucide-react/dist/esm/icons/menu";
+import Archive from "lucide-react/dist/esm/icons/archive";
 import Pencil from "lucide-react/dist/esm/icons/pencil";
 import Pin from "lucide-react/dist/esm/icons/pin";
 import Plus from "lucide-react/dist/esm/icons/plus";
@@ -17,7 +18,7 @@ import type { AiChatRepo, AiChatThread, ThreadAction } from "@/components/applic
 import { cx } from "@/utils/cx";
 
 /** Chat row under an open repo — indented 36px, relative-time chip on the
- *  right, hover action icons (pin / rename / delete). */
+ *  right, hover action icons (pin / rename / archive / delete). */
 function ThreadItem({
   id,
   label,
@@ -122,6 +123,19 @@ function ThreadItem({
               className="text-foreground-icon-secondary hover:text-foreground-icon-primary"
             >
               <Pencil className="size-3.5" aria-hidden />
+            </button>
+          )}
+          {!isDraft && (
+            <button
+              type="button"
+              aria-label={t("chat.archiveSession")}
+              onClick={(event) => {
+                event.stopPropagation();
+                onAction(id, "archive");
+              }}
+              className="text-foreground-icon-secondary hover:text-foreground-icon-primary"
+            >
+              <Archive className="size-3.5" aria-hidden />
             </button>
           )}
           <button
