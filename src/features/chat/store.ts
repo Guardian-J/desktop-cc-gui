@@ -1845,6 +1845,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         // outright — live data wins and the file catches up on a later
         // refresh; patching it back would resurrect the stale totals and drop
         // the live context window.
+        //
+        // "Newer" is decided by object identity, not by comparing totals: a
+        // claude result line carries the turn's *summed* billing (every
+        // request of the turn added up), so the settled value is always
+        // larger than the file's occupancy snapshot. A magnitude test would
+        // therefore read every claude re-read as stale and leave the meter
+        // parked on the sum, far past the window it is measured against.
         for (let attempt = 0; attempt < 3; attempt += 1) {
           const page = await loadHistoryPage(
             engine,
@@ -1856,15 +1863,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             [...page.messages].reverse().find((m) => m.usage)?.usage ?? null;
           if (!latestUsage) return;
           const current = get().bySession[targetKey]?.usage;
+          // A report that landed while this read was in flight replaced the
+          // usage object; anything else left it untouched (patches spread the
+          // session and pass `usage` through by reference).
+          if (current !== before.usage) return;
           const latestTotal = parseUsage(latestUsage)?.total ?? null;
-          const currentTotal = parseUsage(current)?.total ?? null;
-          if (
-            latestTotal !== null &&
-            currentTotal !== null &&
-            latestTotal < currentTotal
-          ) {
-            return;
-          }
           if (beforeTotal !== null && latestTotal === beforeTotal && attempt < 2) {
             const wait = Promise.withResolvers<void>();
             setTimeout(wait.resolve, 300);
