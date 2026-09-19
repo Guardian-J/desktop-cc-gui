@@ -1,13 +1,12 @@
 "use client";
 
-import type { ComponentType, RefObject } from "react";
+import type { ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import Globe from "lucide-react/dist/esm/icons/globe";
 import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import PanelLeft from "lucide-react/dist/esm/icons/panel-left";
 import ScanSearch from "lucide-react/dist/esm/icons/scan-search";
 import Settings from "lucide-react/dist/esm/icons/settings";
-import { CloseButton } from "@/components/base/buttons/close-button";
 import {
   WorkspaceBlankContextMenu,
   WorkspaceContextMenu,
@@ -61,51 +60,33 @@ function NavItem({
   );
 }
 
-/** The active quick-search row: filter field replacing the "Search" nav
- *  item, ⌘L-focusable, Escape exits. */
-function SearchField({
-  query,
-  onQueryChange,
-  onDeactivate,
-  inputRef,
-}: {
-  query: string;
-  onQueryChange: (value: string) => void;
-  onDeactivate: () => void;
-  inputRef: RefObject<HTMLInputElement>;
-}) {
+/** Icon button opening the session search palette (⌘L); shared by the drag
+ *  strip and the flat variant's brand row. */
+function SearchPaletteButton({ onOpen }: { onOpen?: () => void }) {
   const { t } = useTranslation();
   return (
-    <div className="flex w-full items-center gap-2 rounded-2lg bg-background-tertiary-default p-2 ring-2 ring-inset ring-border-focus-ring">
-      <ScanSearch className="size-4 shrink-0 text-foreground-icon-secondary" aria-hidden />
-      <input
-        ref={inputRef}
-        type="search"
-        aria-label={t("chat.searchSessions")}
-        value={query}
-        onChange={(event) => onQueryChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onDeactivate();
-          }
-        }}
-        placeholder={t("chat.searchSessions")}
-        className="min-w-0 flex-1 bg-transparent text-body-2-medium text-text-primary outline-none placeholder:text-text-tertiary"
-      />
-      <CloseButton
-        size="xs"
-        aria-label={t("common.close")}
-        onClick={onDeactivate}
-      />
-    </div>
+    <button
+      type="button"
+      aria-label={t("chat.searchSessions")}
+      title={t("chat.searchSessions")}
+      onClick={onOpen}
+      className={headerButtonClasses}
+    >
+      <ScanSearch className="size-4" aria-hidden />
+    </button>
   );
 }
 
 /** Window drag strip reaching the overlay titlebar: macOS traffic lights
  *  float over its left edge, action icons pin right. Windows 仿 mac 模式在
  *  这里放自绘三色按钮。 */
-export function SidebarDragStrip({ onClose }: { onClose?: () => void }) {
+export function SidebarDragStrip({
+  onClose,
+  onOpenSearch,
+}: {
+  onClose?: () => void;
+  onOpenSearch?: () => void;
+}) {
   const { t } = useTranslation();
   const titlebarStyle = useTitlebarStyle();
   return (
@@ -116,64 +97,46 @@ export function SidebarDragStrip({ onClose }: { onClose?: () => void }) {
       <div className="flex min-w-0 items-center">
         {needsWindowControls(titlebarStyle) && <WindowControls />}
       </div>
-      <button
-        type="button"
-        aria-label={t("chat.collapseSidebar")}
-        title={t("chat.collapseSidebar")}
-        onClick={onClose}
-        className={headerButtonClasses}
-      >
-        <PanelLeft className="size-4 -scale-x-100" aria-hidden />
-      </button>
+      <div className="flex items-center gap-1">
+        <SearchPaletteButton onOpen={onOpenSearch} />
+        <button
+          type="button"
+          aria-label={t("chat.collapseSidebar")}
+          title={t("chat.collapseSidebar")}
+          onClick={onClose}
+          className={headerButtonClasses}
+        >
+          <PanelLeft className="size-4 -scale-x-100" aria-hidden />
+        </button>
+      </div>
     </div>
   );
 }
 
 /** App identity row (flat/embedded variant only). */
-export function SidebarBrandRow() {
+export function SidebarBrandRow({ onOpenSearch }: { onOpenSearch?: () => void }) {
   return (
     <div className="flex w-full flex-row items-center justify-between">
       <span className="flex items-center gap-2 px-1">
         <img src="/app-icon.png" alt="CC GUI" className="size-7 rounded-lg" />
         <span className="text-headline-medium text-text-primary">CC GUI</span>
       </span>
+      <SearchPaletteButton onOpen={onOpenSearch} />
     </div>
   );
 }
 
-/** Primary actions: quick-search (field swap when active) + 新建会话/浏览器. */
+/** Primary actions: 新建会话/浏览器 (会话搜索在顶栏图标 + ⌘L 弹窗). */
 export function SidebarPrimaryNav({
-  searchActive,
-  query,
-  onQueryChange,
-  onDeactivateSearch,
-  onActivateSearch,
-  searchInputRef,
   onNewSession,
   onNewBrowser,
 }: {
-  searchActive: boolean;
-  query: string;
-  onQueryChange: (value: string) => void;
-  onDeactivateSearch: () => void;
-  onActivateSearch: () => void;
-  searchInputRef: RefObject<HTMLInputElement>;
   onNewSession?: () => void;
   onNewBrowser?: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <nav className="flex w-full shrink-0 flex-col gap-1">
-      {searchActive ? (
-        <SearchField
-          query={query}
-          onQueryChange={onQueryChange}
-          onDeactivate={onDeactivateSearch}
-          inputRef={searchInputRef}
-        />
-      ) : (
-        <NavItem icon={ScanSearch} label={t("common.search")} onClick={onActivateSearch} />
-      )}
       <NavItem icon={MessageSquarePlus} label={t("chat.newSession")} onClick={onNewSession} />
       {onNewBrowser && (
         <NavItem icon={Globe} label={t("chat.newBrowser")} onClick={onNewBrowser} />

@@ -7,8 +7,7 @@ import {
   ARCHIVED_SECTION_ID,
   useCollapsedGroups,
   useExpandedWorkspaces,
-  useFilteredWorkspaces,
-  useSidebarSearch,
+  useSearchPalette,
   useWorkspaceMenu,
   useBlankMenu,
   useThreadMenu,
@@ -21,6 +20,7 @@ import {
   SidebarFooter,
   SidebarPrimaryNav,
 } from "@/components/application/ai-chat/sidebar-chrome";
+import { SessionSearchPalette } from "@/components/application/ai-chat/session-search-palette";
 import type { AiChatRepo, AiChatRepoSection, ThreadAction } from "@/components/application/ai-chat/sidebar-types";
 import { cx } from "@/utils/cx";
 
@@ -99,15 +99,7 @@ export function AiChatSidebar({
   flat?: boolean;
 } = {}) {
   const { t } = useTranslation();
-  const {
-    searchActive,
-    query,
-    setQuery,
-    normalizedQuery,
-    searchInputRef,
-    activateSearch,
-    deactivateSearch,
-  } = useSidebarSearch();
+  const { searchOpen, openSearch, closeSearch } = useSearchPalette();
   const { collapsedGroups, toggleGroup } = useCollapsedGroups();
   const allRepos = useMemo(
     () => (sections ? sections.flatMap((section) => section.repos) : repos),
@@ -131,12 +123,6 @@ export function AiChatSidebar({
   const { threadMenu, openThreadMenu, closeThreadMenu } = useThreadMenu(
     onThreadAction,
     onCopyThreadId,
-  );
-  const { filteredRepos, filteredSections, filteredArchivedRepos } = useFilteredWorkspaces(
-    repos,
-    sections,
-    archivedRepos,
-    normalizedQuery,
   );
   // Mid-drag the sidebar reveals the 已归档 section even when empty so it
   // can accept a dropped workspace row.
@@ -164,29 +150,19 @@ export function AiChatSidebar({
         className,
       )}
     >
-      {!flat && <SidebarDragStrip onClose={onClose} />}
+      {!flat && <SidebarDragStrip onClose={onClose} onOpenSearch={openSearch} />}
       <div className="flex min-h-0 w-full flex-1 flex-col gap-3 p-3">
-        {flat && <SidebarBrandRow />}
+        {flat && <SidebarBrandRow onOpenSearch={openSearch} />}
 
         <div
           className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto scrollbar-none"
           onContextMenu={onCreateGroup ? openBlankMenu : undefined}
         >
-          <SidebarPrimaryNav
-            searchActive={searchActive}
-            query={query}
-            onQueryChange={setQuery}
-            onDeactivateSearch={deactivateSearch}
-            onActivateSearch={activateSearch}
-            searchInputRef={searchInputRef}
-            onNewSession={onNewSession}
-            onNewBrowser={onNewBrowser}
-          />
+          <SidebarPrimaryNav onNewSession={onNewSession} onNewBrowser={onNewBrowser} />
 
           <WorkspaceSection
-            filteredRepos={filteredRepos}
-            sections={filteredSections}
-            searching={Boolean(normalizedQuery)}
+            repos={repos}
+            sections={sections}
             collapsedGroups={collapsedGroups}
             isRepoExpanded={isRepoExpanded}
             onToggleRepo={toggleRepoExpanded}
@@ -206,22 +182,28 @@ export function AiChatSidebar({
             onCreateGroup={onCreateGroup && handleCreateGroupCommit}
             onCreateGroupCancel={() => setCreatingGroup(false)}
           />
-          {(filteredArchivedRepos.length > 0 || workspaceDragging) && (
+          {(archivedRepos.length > 0 || workspaceDragging) && (
             <ArchivedSection
-              repos={filteredArchivedRepos}
-              searching={Boolean(normalizedQuery)}
+              repos={archivedRepos}
               collapsed={collapsedGroups.has(ARCHIVED_SECTION_ID)}
               onToggle={() => toggleGroup(ARCHIVED_SECTION_ID)}
               onRepoContextMenu={openArchivedMenu}
             />
           )}
-          {filteredRepos.length === 0 && (
+          {allRepos.length === 0 && (
             <p className="px-2 text-body-regular text-text-tertiary">{t("chat.noSessions")}</p>
           )}
         </div>
       </div>
 
       <SidebarFooter onOpenSettings={onOpenSettings} />
+
+      <SessionSearchPalette
+        open={searchOpen}
+        repos={allRepos}
+        onClose={closeSearch}
+        onThreadSelect={onThreadSelect}
+      />
 
       <SidebarContextMenus
         workspaceMenu={workspaceMenu}

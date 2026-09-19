@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ReactNode } from "react";
 import { needsWindowControls, useTitlebarStyle } from "@/features/settings/titlebar";
+import { IS_MAC } from "@/lib/platform";
 import { WindowControls } from "@/components/application/window-controls";
 import { ContextMenu } from "@/components/context-menu";
 import { cx } from "@/utils/cx";
@@ -14,11 +15,6 @@ import { useTabStripChrome } from "./use-tab-strip-chrome";
 import { TabStripContextMenu } from "./TabStripContextMenu";
 
 export type { SessionTabItem };
-
-// Overlay titlebar leaves the native traffic lights floating over the
-// strip's left edge on macOS; other platforms keep their own titlebar.
-const IS_MAC =
-  typeof navigator !== "undefined" && /macintosh|mac os x/i.test(navigator.userAgent);
 
 interface SessionTabStripProps {
   tabs: SessionTabItem[];

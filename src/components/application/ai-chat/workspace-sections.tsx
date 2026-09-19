@@ -137,13 +137,11 @@ function ArchivedRepoRow({
  *  group header (same persisted collapse set), rows are plain grayed labels. */
 export function ArchivedSection({
   repos,
-  searching,
   collapsed,
   onToggle,
   onRepoContextMenu,
 }: {
   repos: AiChatRepo[];
-  searching: boolean;
   collapsed: boolean;
   onToggle: () => void;
   onRepoContextMenu?: (event: ReactMouseEvent<HTMLElement>, workspaceId: string) => void;
@@ -153,10 +151,10 @@ export function ArchivedSection({
     <div {...{ [WORKSPACE_DROP_TARGET_ATTR]: ARCHIVED_SECTION_ID }} className={dropTargetClasses}>
       <GroupHeaderRow
         name={t("chat.archivedWorkspaces", { count: repos.length })}
-        collapsed={!searching && collapsed}
+        collapsed={collapsed}
         onToggle={onToggle}
       />
-      {(searching || !collapsed) && (
+      {!collapsed && (
         <div className="flex w-full flex-col gap-1">
           {repos.map((repo) => (
             <ArchivedRepoRow
@@ -179,9 +177,8 @@ export function ArchivedSection({
  *  With workspace groups configured, repos render under collapsible group
  *  headers (工作区二级分类); otherwise the flat list renders unchanged. */
 export function WorkspaceSection({
-  filteredRepos,
+  repos,
   sections,
-  searching,
   collapsedGroups,
   isRepoExpanded,
   onToggleRepo,
@@ -201,10 +198,9 @@ export function WorkspaceSection({
   onCreateGroup,
   onCreateGroupCancel,
 }: {
-  filteredRepos: AiChatRepo[];
+  repos: AiChatRepo[];
   /** Grouped repo tree; absent/empty = legacy flat list. */
   sections?: AiChatRepoSection[];
-  searching: boolean;
   collapsedGroups: Set<string>;
   /** Sidebar-owned so expansion survives restarts. */
   isRepoExpanded: (repo: AiChatRepo) => boolean;
@@ -241,7 +237,6 @@ export function WorkspaceSection({
       <WorkspaceSortableList
         items={repos}
         sectionId={sectionId}
-        disabled={searching}
         onDropToSection={onDropWorkspaceToSection}
         onDragActiveChange={onWorkspaceDragActiveChange}
         onReorder={
@@ -249,7 +244,7 @@ export function WorkspaceSection({
             ? (orderedIds) => {
                 // Rebuild the global order: other sections keep theirs, the
                 // dragged section takes the new one.
-                const all = (sections ?? [{ id: null, name: "", repos: filteredRepos }]).flatMap(
+                const all = (sections ?? [{ id: null, name: "", repos }]).flatMap(
                   (section) =>
                     section.id === sectionId
                       ? orderedIds
@@ -265,7 +260,6 @@ export function WorkspaceSection({
             repo={repo}
             open={isRepoExpanded(repo)}
             onToggleOpen={() => onToggleRepo(repo)}
-            forceOpen={searching}
             activeThreadId={activeThreadId}
             onThreadSelect={onThreadSelect}
             onThreadAction={onThreadAction}
@@ -305,7 +299,7 @@ export function WorkspaceSection({
           </button>
         )}
       </div>
-      {!hasGroups && renderRepoList(filteredRepos, null)}
+      {!hasGroups && renderRepoList(repos, null)}
       {hasGroups &&
         sections!.map((section) =>
           section.id === null ? (
@@ -319,10 +313,10 @@ export function WorkspaceSection({
             <div key={section.id} {...{ [WORKSPACE_DROP_TARGET_ATTR]: section.id }} className={dropTargetClasses}>
               <GroupHeaderRow
                 name={section.name}
-                collapsed={!searching && collapsedGroups.has(section.id)}
+                collapsed={collapsedGroups.has(section.id)}
                 onToggle={() => onToggleGroup?.(section.id!)}
               />
-              {(searching || !collapsedGroups.has(section.id)) &&
+              {!collapsedGroups.has(section.id) &&
                 renderRepoList(section.repos, section.id)}
             </div>
           ),
