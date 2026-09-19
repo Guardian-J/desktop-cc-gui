@@ -85,6 +85,9 @@ export function upsertSessionMetaInto(
   meta: SessionMeta,
 ) {
   set((s) => {
+    if (s.archivedSessionKeys[sessionKey(meta.engine, meta.sessionId, meta.workspacePath)]) {
+      return {};
+    }
     const idx = s.sessions.findIndex(
       (x) => x.engine === meta.engine && x.sessionId === meta.sessionId,
     );
@@ -647,6 +650,8 @@ function onError(
   runRouting.delete(event.runId);
   untrackRun(event.runId);
   dropRunUsage(event.runId);
+  // Failed turns can still create a transcript; index it just as onDone does.
+  ipc.rescanSessions().catch(() => {});
   deps.markUnseenIfBackground(key);
   void deps.refreshSessionUsage?.(key).catch(() => {});
   // An error settles the turn exactly like done does — the messages typed

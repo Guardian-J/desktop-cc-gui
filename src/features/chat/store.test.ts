@@ -11,6 +11,9 @@ vi.mock("@/lib/ipc", () => ({
     rememberSessionModel: vi.fn(async () => {}),
     rememberSessionEffort: vi.fn(async () => {}),
     listSessions: vi.fn(async () => []),
+    listArchivedSessions: vi.fn(async () => []),
+    archiveSession: vi.fn(async () => {}),
+    restoreSession: vi.fn(async () => {}),
     loadSessionPage: vi.fn(async () => ({ messages: [], nextBefore: null, subagentHistory: [] })),
     loadRemoteSessionPage: vi.fn(async () => ({ messages: [], nextBefore: null, subagentHistory: [] })),
     deleteSession: vi.fn(async () => {}),
@@ -31,12 +34,15 @@ function resetStore() {
   localStorage.clear();
   vi.mocked(ipc.sendMessage).mockClear();
   vi.mocked(ipc.interruptSession).mockClear();
+  vi.mocked(ipc.archiveSession).mockClear();
+  vi.mocked(ipc.listArchivedSessions).mockResolvedValue([]);
   useChatStore.setState({
     openTabs: [],
     active: null,
     activeEngine: "claude",
     models: { omp: "kimi-k3" },
     efforts: {},
+    archivedSessionKeys: {},
     bySession: {},
     streamingByKey: {},
     unseen: {},
@@ -222,6 +228,35 @@ describe("compactContext and refreshSessionUsage", () => {
     expect(useChatStore.getState().bySession[key].usage).toEqual({ input_tokens: 91000, model_context_window: 1_000_000 });
   });
 
+  it("a claude turn-sum settles down to the smaller occupancy the file holds", async () => {
+    const key = "claude/turn-sum";
+    // What a claude result line carries: every request of the turn added up
+    // (billing), which is far past the window the meter measures against. The
+    // transcript keeps the last request's prompt — the real occupancy.
+    const turnSum = {
+      input_tokens: 51_755,
+      output_tokens: 5_713,
+      cache_read_input_tokens: 4_900_000,
+      model_context_window: 1_000_000,
+    };
+    useChatStore.setState({ bySession: { [key]: { ...EMPTY_SESSION, usage: turnSum } } });
+    const occupancy = {
+      input_tokens: 600,
+      output_tokens: 927,
+      cache_read_input_tokens: 162_176,
+    };
+    vi.mocked(ipc.loadSessionPage).mockResolvedValueOnce({
+      messages: [{ seq: 1, role: "assistant", text: "hi", ts: "2026-09-18T00:00:00Z", usage: occupancy }],
+    } as any);
+    await useChatStore.getState().refreshSessionUsage(key);
+    // The decrease must land — a re-read is newer than a turn sum, not staler —
+    // while the window only the live report knew survives the swap.
+    expect(useChatStore.getState().bySession[key]?.usage).toEqual({
+      ...occupancy,
+      model_context_window: 1_000_000,
+    });
+  });
+
   it("refreshSessionUsage updates session usage from session history", async () => {
     const tab = { engine: "claude", sessionId: "sess-compact", workspacePath: WS };
     const key = "claude/sess-compact";
@@ -315,6 +350,40 @@ describe("compactContext and refreshSessionUsage", () => {
     await useChatStore.getState().deleteSession("omp", "local-1");
     expect(ipc.deleteSession).toHaveBeenCalledWith("omp", "local-1");
     expect(useChatStore.getState().sessions).toEqual([]);
+  });
+
+  it("archiveSession hides the row, closes its tab, and remembers the key", async () => {
+    const meta: SessionMeta = {
+      engine: "codex",
+      sessionId: "archive-1",
+      workspacePath: WS,
+      filePath: "/tmp/archive-1.jsonl",
+      fileSize: 1,
+      fileMtimeMs: 1,
+      title: "archive me",
+      preview: "",
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      pinned: false,
+      customTitle: null,
+    };
+    const tab = { engine: meta.engine, sessionId: meta.sessionId, workspacePath: WS };
+    useChatStore.setState({
+      sessions: [meta],
+      openTabs: [tab],
+      active: tab,
+      bySession: { "codex/archive-1": { ...EMPTY_SESSION } },
+    });
+
+    await useChatStore.getState().archiveSession(meta);
+
+    expect(ipc.archiveSession).toHaveBeenCalledWith(meta);
+    expect(useChatStore.getState().sessions).toEqual([]);
+    expect(useChatStore.getState().openTabs).toEqual([]);
+    expect(useChatStore.getState().active).toBeNull();
+    expect(useChatStore.getState().archivedSessionKeys["codex/archive-1"]).toBe(true);
+    expect(useChatStore.getState().bySession["codex/archive-1"]).toBeUndefined();
   });
 
   it("pinModels(updates, false) 只更新内存 models,不触碰 persisted 默认", async () => {
@@ -605,6 +674,25 @@ describe("refreshSessions and the not-yet-scanned session", () => {
       title: "VPN 一直超时",
       filePath: "s.jsonl",
     });
+  });
+
+  it("does not preserve an archived live row and closes its open tab", async () => {
+    const archived = meta("s-archived");
+    const tab = { engine: "omp", sessionId: "s-archived", workspacePath: WS };
+    useChatStore.setState({
+      sessions: [archived],
+      openTabs: [tab],
+      active: tab,
+      bySession: { "omp/s-archived": { ...EMPTY_SESSION } },
+    });
+    vi.mocked(ipc.listArchivedSessions).mockResolvedValue([archived]);
+
+    await useChatStore.getState().refreshSessions();
+
+    expect(useChatStore.getState().sessions).toEqual([]);
+    expect(useChatStore.getState().openTabs).toEqual([]);
+    expect(useChatStore.getState().active).toBeNull();
+    expect(useChatStore.getState().bySession["omp/s-archived"]).toBeUndefined();
   });
 });
 

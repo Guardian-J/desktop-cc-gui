@@ -1,7 +1,7 @@
 "use client";
 
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import FolderOpen from "lucide-react/dist/esm/icons/folder-open";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
@@ -17,7 +17,8 @@ import type { AiChatRepo, AiChatThread, ThreadAction } from "@/components/applic
 import { cx } from "@/utils/cx";
 
 /** Chat row under an open repo — indented 36px, relative-time chip on the
- *  right, hover action icons (pin / rename / delete). */
+ *  right, hover action icons (pin / rename / delete; archive lives in the
+ *  right-click menu only). */
 function ThreadItem({
   id,
   label,
@@ -333,15 +334,24 @@ function RepoHeaderRow({
   );
 }
 
+/** Keep the list mounted through the close animation, then drop it so the
+ *  next expand remounts at page 0. Instant unmount + opacity fade left a
+ *  compositor ghost over the workspace rows below. */
+const THREAD_LIST_COLLAPSE_MS = 300;
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 /** The collapsible thread area under a repo row: the wrapper owns the
- *  grid-rows collapse animation; the paged content only mounts while
- *  expanded, so collapsing unmounts it and the next expand restarts at
- *  page 0 — a short recent list again, matching Codex / Cursor folders. */
+ *  grid-rows collapse animation. Content stays mounted while the height
+ *  clips shut (no opacity fade — fading the last paint leaves a ghost). */
 function RepoThreadList({
   expanded,
   threads,
   threadLimit,
-  forceShowAll,
   activeThreadId,
   onThreadSelect,
   onThreadAction,
@@ -350,27 +360,40 @@ function RepoThreadList({
   expanded: boolean;
   threads: AiChatThread[];
   threadLimit?: number;
-  /** Query-driven filtering pins the list open and shows every thread. */
-  forceShowAll: boolean;
   activeThreadId?: string;
   onThreadSelect?: (id: string) => void;
   onThreadAction?: (id: string, action: ThreadAction) => void;
   onThreadContextMenu?: (event: ReactMouseEvent<HTMLElement>, id: string) => void;
 }) {
+  const [mounted, setMounted] = useState(expanded);
+  useLayoutEffect(() => {
+    if (expanded) {
+      setMounted(true);
+      return;
+    }
+    if (prefersReducedMotion()) {
+      setMounted(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setMounted(false), THREAD_LIST_COLLAPSE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [expanded]);
+
   return (
     <div
       aria-hidden={!expanded}
+      {...(!expanded ? { inert: "" } : {})}
       className={cx(
-        "grid transition-[grid-template-rows,opacity] duration-300 ease-in-out",
-        expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+        "grid transition-[grid-template-rows] duration-300 ease-in-out motion-reduce:transition-none",
+        expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
       )}
     >
-      <div className="overflow-hidden">
-        {expanded ? (
+      <div className="min-h-0 overflow-hidden">
+        {mounted ? (
           <PagedThreadList
+            expanded={expanded}
             threads={threads}
             threadLimit={threadLimit}
-            forceShowAll={forceShowAll}
             activeThreadId={activeThreadId}
             onThreadSelect={onThreadSelect}
             onThreadAction={onThreadAction}
@@ -383,20 +406,20 @@ function RepoThreadList({
 }
 
 /** Paged thread rows with the tree connector and the show-more/fewer
- *  pagination buttons. Owns the page state; it only exists while the repo
- *  is expanded, so remounting on expand naturally resets to page 0. */
+ *  pagination buttons. Stays mounted through the close animation; page
+ *  resets on collapse so a remount or a quick re-expand both start at 0. */
 function PagedThreadList({
+  expanded,
   threads,
   threadLimit,
-  forceShowAll,
   activeThreadId,
   onThreadSelect,
   onThreadAction,
   onThreadContextMenu,
 }: {
+  expanded: boolean;
   threads: AiChatThread[];
   threadLimit?: number;
-  forceShowAll: boolean;
   activeThreadId?: string;
   onThreadSelect?: (id: string) => void;
   onThreadAction?: (id: string, action: ThreadAction) => void;
@@ -405,9 +428,12 @@ function PagedThreadList({
   const { t } = useTranslation();
   // Pagination: 0 = 初始 limit 条, 1 = +50 条, 2 = 全部。
   const [page, setPage] = useState(0);
-  const { visibleThreads, hiddenCount } = forceShowAll
-    ? { visibleThreads: threads, hiddenCount: 0 }
-    : paginateThreads(threads, threadLimit, page);
+  // Reset immediately on collapse so a quick re-expand (before unmount)
+  // still restarts as a short recent list.
+  useEffect(() => {
+    if (!expanded) setPage(0);
+  }, [expanded]);
+  const { visibleThreads, hiddenCount } = paginateThreads(threads, threadLimit, page);
   const pageButtonClasses =
     "flex w-full cursor-pointer items-center rounded-2lg py-[5px] pr-2 pl-4 text-caption-1-medium text-text-tertiary transition-colors duration-150 ease hover:bg-background-secondary-hover hover:text-text-secondary";
   return (
@@ -452,7 +478,6 @@ export function RepoItem({
   repo,
   open,
   onToggleOpen,
-  forceOpen = false,
   activeThreadId,
   onThreadSelect,
   onThreadAction,
@@ -467,8 +492,6 @@ export function RepoItem({
   /** Expanded state, owned by the sidebar so it can persist across restarts. */
   open: boolean;
   onToggleOpen?: () => void;
-  /** Query-driven filtering pins the thread list open while searching. */
-  forceOpen?: boolean;
   activeThreadId?: string;
   onThreadSelect?: (id: string) => void;
   onThreadAction?: (id: string, action: ThreadAction) => void;
@@ -485,7 +508,7 @@ export function RepoItem({
   dragHandleProps?: DragHandleProps | null;
 }) {
   const dragDownPos = useRef<{ x: number; y: number } | null>(null);
-  const expanded = open || forceOpen;
+  const expanded = open;
   const toggleOpen = useCallback(() => onToggleOpen?.(), [onToggleOpen]);
   const hasHoverActions = Boolean(
     (repo.id && onNewSession) || dragHandleProps || (repo.id && onRemove),
@@ -509,7 +532,6 @@ export function RepoItem({
         expanded={expanded}
         threads={repo.threads}
         threadLimit={repo.threadLimit}
-        forceShowAll={forceOpen}
         activeThreadId={activeThreadId}
         onThreadSelect={onThreadSelect}
         onThreadAction={onThreadAction}

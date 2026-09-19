@@ -132,6 +132,8 @@ export default function ChatPage() {
     threadStreaming,
     openFiles,
     activeFilePath,
+    browserTabs,
+    activeBrowserId,
     diffView,
     closeDiff,
   } = useChatTabs({ setDialog });
@@ -154,8 +156,10 @@ export default function ChatPage() {
     handleSetWorkspaceArchived,
     handleNewSession,
     handleNewSessionInWorkspace,
+    handleNewBrowser,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
+    handleCreateGroup,
   } = useChatSidebar({
     sessionById,
     threadStreaming,
@@ -208,8 +212,10 @@ export default function ChatPage() {
         archivedRepos={archivedRepos}
         onNewSessionInWorkspace={handleNewSessionInWorkspace}
         onNewSession={handleNewSession}
+        onNewBrowser={isWeb ? undefined : handleNewBrowser}
         onReorderWorkspaces={handleReorderWorkspaces}
         onDropWorkspaceToSection={handleDropWorkspaceToSection}
+        onCreateGroup={handleCreateGroup}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background-primary-default md:rounded-l-[14px] md:border-l md:border-separator-border">
         <SessionTabStrip
@@ -222,6 +228,7 @@ export default function ChatPage() {
           closeLabel={t("common.close")}
           onReorder={handleTabReorder}
           onNew={handleNewSession}
+          onNewBrowser={isWeb ? undefined : handleNewBrowser}
           trafficLightInset={sidebarCollapsed && !isWeb}
           leading={
             sidebarCollapsed ? (
@@ -274,6 +281,8 @@ export default function ChatPage() {
             composerInputRef={composerInputRef}
             openFiles={openFiles}
             activeFilePath={activeFilePath}
+            browserTabs={browserTabs}
+            activeBrowserId={activeBrowserId}
             diffView={diffView}
             diffStatus={diffStatus}
             closeDiff={closeDiff}

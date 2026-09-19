@@ -6,7 +6,7 @@
  * 插件仓用法（包未发布 npm 前的过渡方案）：复制本文件为插件仓的
  * `src/ccgui-plugin.d.ts`，首行版本戳必须与所用宿主 SDK 一致。
  *
- * @ccgui/plugin-sdk v0.3.10
+ * @ccgui/plugin-sdk v0.3.11
  */
 
 /** 宿主实现的 SDK 契约版本。 */
@@ -107,7 +107,9 @@ export interface PluginContext {
       icon?: ComponentLike<{ className?: string }>;
       onSelect: () => void;
     }): Disposer;
-    /** Composer 工具栏插槽额外控件（权限 ui:composer）。 */
+    /** Composer 工具栏插槽额外控件（权限 ui:composer-status；历史上曾要求
+     *  不存在的 `ui:composer`，1.0.4 及更早版本据此拒绝一切声明，现已随
+     *  spec/permissions.json 收敛为同一权限字符串）。 */
     registerComposerSlot(def: {
       slot: ComposerSlotId;
       key?: string;
