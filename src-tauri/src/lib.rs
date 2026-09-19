@@ -26,6 +26,7 @@ pub mod usage;
 pub mod slash_commands;
 pub mod terminal;
 pub mod relay;
+pub mod updater;
 pub mod web;
 
 use std::sync::Arc;
@@ -256,6 +257,8 @@ pub fn run() {
             settings::get_app_settings,
             settings::update_app_settings,
             settings::set_window_theme,
+            // updater
+            updater::fetch_latest_release_info,
             // plugins
             plugins::plugin_list,
             plugins::plugin_install_from_path,
