@@ -96,6 +96,26 @@ function Test() {
         panelHeight: Math.round(flyout.getBoundingClientRect().height),
       };
 
+      // Header filter: the panel's own field narrows the channel list and
+      // holds it open while it holds text.
+      channelTrigger.click();
+      const filter = await waitFor(
+        () => flyout.querySelector<HTMLInputElement>("input"),
+        "the header channel filter",
+      );
+      const type = (value: string) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        setter.call(filter, value);
+        filter.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+      type("agentrouter");
+      const filtered = await waitFor(
+        () => (channelRows().length === 1 ? { rows: channelRows().length } : null),
+        "the filter to narrow the list to one channel",
+      );
+      const filteredText = Array.from(channelRows()).map((row) => row.textContent?.trim());
+      if (cancelled) return;
+
       const pick = [...flyout.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
         button.textContent?.trim().startsWith("agentrouter"),
       )!;
@@ -111,6 +131,7 @@ function Test() {
         picked: observed.picked,
         rows: channelRows().length,
         triggerText: channelTrigger.textContent ?? "",
+        filterCleared: filter.value === "",
         panelHeight: Math.round(flyout.getBoundingClientRect().height),
       };
 
@@ -120,10 +141,14 @@ function Test() {
         opened.rows === CHANNELS.length &&
         opened.clientHeight <= 200 &&
         opened.scrollHeight > opened.clientHeight &&
+        filtered.rows === 1 &&
+        filteredText.length === 1 &&
+        filteredText[0] === "agentrouter" &&
         closed.picked === "agentrouter" &&
-        closed.rows === 0;
+        closed.rows === 0 &&
+        closed.filterCleared;
       document.querySelector("#result")!.textContent = JSON.stringify(
-        { status: pass ? "PASS" : "FAIL", collapsed, opened, closed },
+        { status: pass ? "PASS" : "FAIL", collapsed, opened, filtered: { rows: filtered.rows, text: filteredText }, closed },
         null,
         2,
       );

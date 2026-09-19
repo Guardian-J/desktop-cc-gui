@@ -72,6 +72,27 @@ function ChannelRow({
   );
 }
 
+/** Header field narrowing the channel list. While it holds text the dropdown
+ *  stays open, so the matches are visible without a second click. */
+function ChannelFilterField({
+  query,
+  onQueryChange,
+}: {
+  query: string;
+  onQueryChange: (value: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <input
+      value={query}
+      onChange={(event) => onQueryChange(event.target.value)}
+      placeholder={t("chat.channelFilterPlaceholder")}
+      aria-label={t("chat.channelFilterPlaceholder")}
+      className="h-6 w-[104px] shrink-0 rounded-md border border-separator-border bg-background-secondary-default px-1.5 text-caption-1-regular text-text-primary outline-none placeholder:text-text-tertiary focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+    />
+  );
+}
+
 /** Provider dropdown: collapsed to the current channel until opened, then a
  *  height-bounded scroll list. The old inline list rendered every channel at
  *  once, so a machine with a dozen relays pushed the model list — the part
@@ -81,22 +102,45 @@ function ChannelPicker({
   selectedChannelId,
   engineId,
   onPickChannel,
+  query,
+  onQueryChange,
 }: {
   channels: ChannelOption[];
   selectedChannelId: string;
   engineId: string;
   onPickChannel: (engine: string, id: string) => void;
+  /** Header filter text; a non-empty filter also holds the list open. */
+  query: string;
+  onQueryChange: (value: string) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   if (channels.length === 0) return null;
+  const needle = query.trim().toLowerCase();
+  // Match the id too: the visible label is the channel's name, but people
+  // search by the slug they pasted into the provider dialog.
+  const visible = needle
+    ? channels.filter((channel) =>
+        `${channel.label} ${channel.id}`.toLowerCase().includes(needle),
+      )
+    : channels;
+  const expanded = open || needle.length > 0;
   const selected = channels.find((channel) => channel.id === selectedChannelId);
   return (
     <div className="flex w-full flex-col">
       <button
         type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={expanded}
+        onClick={() => {
+          // Filtered? The arrow clears the filter instead of hiding the list
+          // the text is still narrowing.
+          if (needle) {
+            onQueryChange("");
+            setOpen(false);
+            return;
+          }
+          setOpen((prev) => !prev);
+        }}
         className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-background-primary-hover focus-visible:bg-background-primary-hover"
       >
         <span className="shrink-0 text-body-2-medium text-text-tertiary">
@@ -108,17 +152,17 @@ function ChannelPicker({
         <ChevronDownSmall
           className={cx(
             "ml-auto size-4 shrink-0 text-foreground-icon-secondary transition-transform duration-200 ease",
-            open && "rotate-180",
+            expanded && "rotate-180",
           )}
         />
       </button>
-      {open && (
+      {expanded && (
         <div
           role="radiogroup"
           aria-label={t("chat.channelPicker")}
           className="flex max-h-[200px] w-full flex-col overflow-y-auto"
         >
-          {channels.map((channel) => (
+          {visible.map((channel) => (
             <ChannelRow
               key={channel.id}
               option={channel}
@@ -126,10 +170,16 @@ function ChannelPicker({
               engineId={engineId}
               onPick={(engine, id) => {
                 onPickChannel(engine, id);
+                onQueryChange("");
                 setOpen(false);
               }}
             />
           ))}
+          {visible.length === 0 && (
+            <span className="px-2 py-1.5 text-body-2-regular text-text-tertiary">
+              {t("chat.noMatchingChannels")}
+            </span>
+          )}
         </div>
       )}
       <div aria-hidden className="-mx-1 mt-1 mb-1 h-px bg-border-button-default" />
@@ -506,15 +556,20 @@ export function EngineModelPanel({
 }) {
   const { t } = useTranslation();
   const { groups, empty } = useOrderedModelGroups(models, query, selectedModelId);
+  // Header channel filter (empty = the full channel list).
+  const [channelQuery, setChannelQuery] = useState("");
 
   return (
     <div className="flex w-full flex-col gap-1.5">
       <div className="flex items-center justify-between gap-1">
-        <span className="truncate px-2 py-1.5 text-body-medium text-text-secondary">
+        <span className="min-w-0 flex-1 truncate px-2 py-1.5 text-body-medium text-text-secondary">
           {t("chat.engineHeader", {
             name: CLI_DISPLAY_NAMES[option.id] ?? option.label,
           })}
         </span>
+        {channels && onPickChannel && (
+          <ChannelFilterField query={channelQuery} onQueryChange={setChannelQuery} />
+        )}
         <PanelActions onRefresh={onRefresh} onClose={onClose} />
       </div>
       {channels && onPickChannel && (
@@ -523,6 +578,8 @@ export function EngineModelPanel({
           selectedChannelId={selectedChannelId ?? ""}
           engineId={option.id}
           onPickChannel={onPickChannel}
+          query={channelQuery}
+          onQueryChange={setChannelQuery}
         />
       )}
       <ModelSearchField query={query} onQueryChange={onQueryChange} />

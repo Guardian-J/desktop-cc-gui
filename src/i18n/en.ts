@@ -205,6 +205,8 @@ export const en: Messages = {
     modelsLoading: "Loading models…",
       noMatchingModels: "No matching models",
     channelPicker: "Channel",
+    channelFilterPlaceholder: "Filter channels…",
+    noMatchingChannels: "No matching channels",
     effort: "Effort",
     effortLow: "low",
     effortMedium: "medium",

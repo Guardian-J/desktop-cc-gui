@@ -108,5 +108,7 @@ Open `/tests/browser/cli-channel-dropdown.html` to check the composer's
 provider picker with a dozen relays. The flyout must show the current channel
 as one dropdown row — no provider names in the DOM until it is opened — and
 the opened list must be height-capped (clientHeight ≤ 200 with a taller
-scrollHeight), then close again after a pick. The fixture drives the real
-CliMenu and reports PASS/FAIL with the measured heights. No app, no backend.
+scrollHeight). The header's channel filter must narrow that list to the
+matching rows while holding it open, and a pick must clear the filter and
+close the list. The fixture drives the real CliMenu and reports PASS/FAIL
+with the measured heights. No app, no backend.

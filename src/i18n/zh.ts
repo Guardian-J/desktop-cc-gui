@@ -195,6 +195,8 @@ export const zh = {
     modelsLoading: "正在获取模型列表…",
       noMatchingModels: "无匹配模型",
     channelPicker: "渠道",
+    channelFilterPlaceholder: "筛选渠道…",
+    noMatchingChannels: "无匹配渠道",
     effort: "推理强度",
     effortLow: "low",
     effortMedium: "medium",
