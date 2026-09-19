@@ -164,7 +164,7 @@ describe("createPluginContext", () => {
 
   it.each([
     [
-      "ui:composer",
+      "ui:composer-status",
       (ctx: PluginContext) =>
         ctx.ui.registerComposerSlot({ slot: "addMenu", component: () => null }),
       composerSlotRegistry,
