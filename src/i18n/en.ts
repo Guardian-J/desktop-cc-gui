@@ -135,6 +135,7 @@ export const en: Messages = {
     imagesUnsupported: "This engine does not support images",
     imagePasteFailed: "Failed to paste image: {{message}}",
     imageImportFailed: "Failed to import attachment: {{message}}",
+    dropFilesHint: "Drop to add: images become attachments, other files become @mentions",
     planUsageLimits: "Plan usage limits",
     managePlan: "Manage plan",
     confirmDeleteSession:

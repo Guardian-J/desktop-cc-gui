@@ -18,6 +18,7 @@ import { sessionKey } from "../store";
 import { ComposerSlotExtras } from "@/features/plugins/boundary/composer-slot-extras";
 import { COMPOSER_DRAFT_TOPIC, pluginBus } from "@/features/plugins/runtime/events";
 import { USAGE_PART_LABEL_KEYS, usageBreakdown } from "./usage-breakdown";
+import { useComposerFileDrop } from "./use-composer-file-drop";
 
 /** Path → trailing name (folder or file) for status-bar and chip labels.
  *  Both separators: workspace/attachment paths are native — backslashes on
@@ -323,6 +324,8 @@ export function ConversationFooter({
   permissionMenu,
   supportsImages,
   onPasteImages,
+  onDropPaths,
+  onDropFiles,
   sessionUsage,
   contextMax,
   branch,
@@ -357,6 +360,11 @@ export function ConversationFooter({
   permissionMenu: ReactNode;
   supportsImages: boolean;
   onPasteImages: (files: File[]) => void;
+  /** OS files dropped on the composer (desktop: absolute paths). Absent =
+   *  no active session: drops stay ignored. */
+  onDropPaths?: (paths: string[]) => void;
+  /** Web-bridge drop: image File blobs only (browsers expose no path). */
+  onDropFiles?: (files: File[]) => void;
   sessionUsage: unknown;
   contextMax: number;
   branch: string | undefined;
@@ -378,11 +386,28 @@ export function ConversationFooter({
     pluginBus.emit(COMPOSER_DRAFT_TOPIC, { text: draft });
   }, [draft]);
 
+  const { t } = useTranslation();
+  // OS file drop target: the whole footer column (chips + composer + status
+  // bar). Images become attachments, other files @mentions at the caret.
+  const { dropRef, isDragOver } = useComposerFileDrop({
+    disabled: !onDropPaths,
+    onDropPaths,
+    onDropFiles,
+  });
+
   return (
     <>
       <div
-        className="flex w-full flex-col gap-2.5 bg-background-primary-default px-4 pt-2.5 pb-2"
+        ref={dropRef}
+        className="relative flex w-full flex-col gap-2.5 bg-background-primary-default px-4 pt-2.5 pb-2"
       >
+        {isDragOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-border-focus-ring bg-background-primary-default/85">
+            <span className="text-body-medium text-text-secondary">
+              {t("chat.dropFilesHint")}
+            </span>
+          </div>
+        )}
         <MessageQueue queue={queue} onRemove={onRemoveQueued} onSendNow={onSendQueuedNow} onClear={onClearQueued} className="mx-auto w-full max-w-3xl" />
         <ErrorBanner message={imageError} onDismiss={onDismissImageError} />
         <ErrorBanner message={branchError} onDismiss={onDismissBranchError} />

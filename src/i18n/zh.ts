@@ -128,6 +128,7 @@ export const zh = {
     imagesUnsupported: "该引擎不支持图片",
     imagePasteFailed: "图片粘贴失败：{{message}}",
     imageImportFailed: "附件导入失败：{{message}}",
+    dropFilesHint: "松开以添加：图片作为附件，其他文件作为 @引用",
     planUsageLimits: "套餐用量上限",
     managePlan: "管理套餐",
     confirmDeleteSession: "确定删除该会话？原生会话文件将被删除。",
