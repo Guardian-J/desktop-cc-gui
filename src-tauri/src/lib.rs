@@ -274,6 +274,9 @@ pub fn run() {
             engine::images::import_attachments,
             // history
             history::reader::list_sessions,
+            history::reader::list_archived_sessions,
+            history::reader::archive_session,
+            history::reader::restore_session,
             usage::usage_record,
             usage::usage_summary,
             usage::usage_clear,

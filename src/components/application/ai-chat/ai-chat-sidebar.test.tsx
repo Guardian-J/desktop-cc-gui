@@ -205,6 +205,42 @@ async function rightClick(row: HTMLElement) {
   });
 }
 
+it("shows archive between rename and delete in the hover actions", async () => {
+  const onThreadAction = vi.fn();
+  await act(async () => {
+    root.render(
+      <AiChatSidebar
+        repos={[
+          {
+            id: "a",
+            label: "a",
+            defaultOpen: true,
+            threads: [{ id: "claude/hover-1", label: "悬浮操作", time: "刚刚" }],
+          },
+        ]}
+        onThreadAction={onThreadAction}
+      />,
+    );
+  });
+
+  const actionLabels = [...threadRow("悬浮操作").querySelectorAll("button[aria-label]")].map(
+    (button) => button.getAttribute("aria-label"),
+  );
+  expect(actionLabels).toEqual([
+    "chat.pin",
+    "chat.renameSession",
+    "chat.archiveSession",
+    "chat.deleteSession",
+  ]);
+
+  const archive = threadRow("悬浮操作").querySelector<HTMLButtonElement>(
+    'button[aria-label="chat.archiveSession"]',
+  );
+  if (!archive) throw new Error("no hover archive action");
+  await act(async () => archive.click());
+  expect(onThreadAction).toHaveBeenCalledWith("claude/hover-1", "archive");
+});
+
 it("opens the thread context menu on right-click and dispatches its entries", async () => {
   const onThreadAction = vi.fn();
   const onCopyThreadId = vi.fn();
@@ -229,6 +265,11 @@ it("opens the thread context menu on right-click and dispatches its entries", as
   menu = openMenu();
   await act(async () => menuItem(menu, "chat.copySessionId").click());
   expect(onCopyThreadId).toHaveBeenCalledWith("claude/abc-123");
+
+  await rightClick(threadRow("整理发布脚本"));
+  menu = openMenu();
+  await act(async () => menuItem(menu, "chat.archiveSession").click());
+  expect(onThreadAction).toHaveBeenCalledWith("claude/abc-123", "archive");
 
   await rightClick(threadRow("整理发布脚本"));
   menu = openMenu();

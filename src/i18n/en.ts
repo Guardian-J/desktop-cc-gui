@@ -100,6 +100,8 @@ export const en: Messages = {
     pin: "Pin",
     unpin: "Unpin",
     deleteSession: "Delete session",
+    archiveSession: "Archive session",
+    archiveRunning: "Stop the running session before archiving it.",
     renameSession: "Rename session",
     copySessionId: "Copy ID",
     loadEarlier: "Load earlier messages",
@@ -321,6 +323,16 @@ export const en: Messages = {
     proxyDisabledSuccess:
       "Network proxy disabled; new requests will connect directly.",
     workspaces: "Workspaces",
+    archivedSessions: "Archive Management",
+    archivedSessionsDesc:
+      "Archived sessions stay out of the main window. View them by workspace, restore them, or delete them permanently here.",
+    archivedWorkspaceFilter: "Workspace",
+    archivedAllWorkspaces: "All workspaces",
+    archivedEmpty: "No archived sessions",
+    archivedUnknownWorkspace: "Unregistered workspace",
+    restoreSession: "Restore",
+    confirmDeleteArchivedSession:
+      'Permanently delete session "{{name}}"? Its native session file will be removed.',
     workspaceGroups: "Groups",
     workspaceGroupsDesc:
       "Create groups for related projects; the sidebar nests them under collapsible headers",

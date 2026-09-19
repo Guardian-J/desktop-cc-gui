@@ -99,6 +99,25 @@ function omitKey(rec: Record<string, boolean>, key: string) {
   return next;
 }
 
+function archivedKeyMap(sessions: SessionMeta[]): Record<string, true> {
+  return Object.fromEntries(
+    sessions.map((session) => [
+      sessionKey(session.engine, session.sessionId, session.workspacePath),
+      true as const,
+    ]),
+  );
+}
+
+function withoutArchived(
+  sessions: SessionMeta[],
+  archived: Record<string, true>,
+): SessionMeta[] {
+  return sessions.filter(
+    (session) =>
+      !archived[sessionKey(session.engine, session.sessionId, session.workspacePath)],
+  );
+}
+
 /** Load a page of session history, routing remote (plugin-fed, e.g. WSL
  *  distro CLI) transcripts through the host's remote fetch instead of the
  *  local db lookup. `meta` is looked up from the current session catalog
@@ -579,6 +598,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   return {
     workspaces: [],
     sessions: [],
+    archivedSessionKeys: {},
     engines: [],
     active: null,
     openTabs: [],
@@ -630,9 +650,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       eventTeardowns.push(() =>
         window.removeEventListener(CLI_CONFIG_CHANGED_EVENT, onCliConfigChanged),
       );
-      const [workspaces, sessions, engines] = await Promise.all([
+      const [workspaces, sessions, archivedSessions, engines] = await Promise.all([
         ipc.listWorkspaces().catch(() => [] as Workspace[]),
         ipc.listSessions().catch(() => [] as SessionMeta[]),
+        ipc.listArchivedSessions().catch(() => [] as SessionMeta[]),
         ipc.listEngines().catch(() => [] as EngineInfo[]),
       ]);
       // Plugin session sources (remote/容器内 CLI) merge under the local
@@ -640,14 +661,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // 此会话”被清掉。
       setSessionSourcesChangedCallback(() => void get().refreshSessions());
       const external = await listExternalSessionMetas();
-      const allSessions = mergeExternalSessions(
-        sessions,
-        external,
-        workspaces.map((w) => w.path),
+      const archivedSessionKeys = archivedKeyMap(archivedSessions);
+      const allSessions = withoutArchived(
+        mergeExternalSessions(sessions, external, workspaces.map((w) => w.path)),
+        archivedSessionKeys,
       );
       set({
         workspaces,
         sessions: visibleSessions(allSessions, engines),
+        archivedSessionKeys,
         engines,
       });
       ensureUsableEngine(engines);
@@ -706,22 +728,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     refreshSessions: async () => {
-      const [sessions, external] = await Promise.all([
+      const [sessions, external, archivedSessions] = await Promise.all([
         ipc.listSessions().catch(() => null),
         listExternalSessionMetas(),
+        ipc.listArchivedSessions().catch(() => null),
       ]);
-      if (!sessions) return;
-      const merged = mergeExternalSessions(
-        sessions,
-        external,
-        get().workspaces.map((w) => w.path),
+      if (!sessions || !archivedSessions) return;
+      const archivedSessionKeys = archivedKeyMap(archivedSessions);
+      const merged = withoutArchived(
+        mergeExternalSessions(sessions, external, get().workspaces.map((w) => w.path)),
+        archivedSessionKeys,
       );
       set((s) => {
         const visible = visibleSessions(
-          preserveUnscannedSessions(merged, s.sessions, s.bySession),
+          withoutArchived(
+            preserveUnscannedSessions(merged, s.sessions, s.bySession),
+            archivedSessionKeys,
+          ),
           s.engines,
         );
         const bySession = { ...s.bySession };
+        const drafts = { ...s.drafts };
+        const unseen = { ...s.unseen };
+        const streamingByKey = { ...s.streamingByKey };
+        for (const key of Object.keys(archivedSessionKeys)) {
+          delete bySession[key];
+          delete drafts[key];
+          delete unseen[key];
+          delete streamingByKey[key];
+        }
         for (const meta of merged) {
           const key = sessionKey(meta.engine, meta.sessionId, meta.workspacePath);
           const current = bySession[key];
@@ -733,38 +768,70 @@ export const useChatStore = create<ChatStore>((set, get) => {
             activeProvider: meta.provider ?? current.activeProvider,
           };
         }
-        return { sessions: visible, bySession };
+        const openTabs = s.openTabs.filter(
+          (tab) =>
+            tab.sessionId === null ||
+            !archivedSessionKeys[sessionKey(tab.engine, tab.sessionId, tab.workspacePath)],
+        );
+        const active =
+          s.active?.sessionId &&
+          archivedSessionKeys[
+            sessionKey(s.active.engine, s.active.sessionId, s.active.workspacePath)
+          ]
+            ? (openTabs[0] ?? null)
+            : s.active;
+        persistTabs(openTabs, active);
+        return {
+          sessions: visible,
+          archivedSessionKeys,
+          bySession,
+          drafts,
+          unseen,
+          streamingByKey,
+          openTabs,
+          active,
+        };
       });
     },
 
     refreshEngines: async () => {
-      const [engines, sessions, external, config] = await Promise.all([
+      const [engines, sessions, external, archivedSessions, config] = await Promise.all([
         ipc.listEngines().catch(() => null),
         ipc.listSessions().catch(() => null),
         listExternalSessionMetas(),
+        ipc.listArchivedSessions().catch(() => null),
         ipc.getCliConfig?.().catch(() => null) ?? Promise.resolve(null),
       ]);
       if (!engines) return;
-      set((s) => ({
-        engines,
-        ...(sessions
-          ? {
-              sessions: visibleSessions(
-                preserveUnscannedSessions(
-                  mergeExternalSessions(
-                    sessions,
-                    external,
-                    s.workspaces.map((w) => w.path),
+      set((s) => {
+        const keys = archivedSessions
+          ? archivedKeyMap(archivedSessions)
+          : s.archivedSessionKeys;
+        return {
+          engines,
+          archivedSessionKeys: keys,
+          ...(sessions
+            ? {
+                sessions: visibleSessions(
+                  withoutArchived(
+                    preserveUnscannedSessions(
+                      mergeExternalSessions(
+                        sessions,
+                        external,
+                        s.workspaces.map((w) => w.path),
+                      ),
+                      s.sessions,
+                      s.bySession,
+                    ),
+                    keys,
                   ),
-                  s.sessions,
-                  s.bySession,
+                  engines,
                 ),
-                engines,
-              ),
-            }
-          : {}),
-        ...(config ? { providers: engineCurrents(config) } : {}),
-      }));
+              }
+            : {}),
+          ...(config ? { providers: engineCurrents(config) } : {}),
+        };
+      });
       ensureUsableEngine(engines);
     },
 
@@ -1559,6 +1626,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // backoff, and Stop must complete immediately (every other caller
       // fires and forgets).
       void get().refreshSessionUsage(key);
+    },
+
+    archiveSession: async (session) => {
+      const { engine, sessionId, workspacePath } = session;
+      const key = sessionKey(engine, sessionId, workspacePath);
+      if (get().streamingByKey[key]) {
+        set({ actionError: i18n.t("chat.archiveRunning") });
+        return;
+      }
+      try {
+        await ipc.archiveSession(session);
+      } catch (error) {
+        set({ actionError: errorText(error) });
+        return;
+      }
+      set((s) => {
+        const bySession = { ...s.bySession };
+        const drafts = { ...s.drafts };
+        delete bySession[key];
+        delete drafts[key];
+        return {
+          sessions: s.sessions.filter(
+            (item) => !(item.engine === engine && item.sessionId === sessionId),
+          ),
+          archivedSessionKeys: { ...s.archivedSessionKeys, [key]: true },
+          bySession,
+          drafts,
+          unseen: omitKey(s.unseen, key),
+          actionError: null,
+        };
+      });
+      const cacheIdx = closedTabCache.indexOf(key);
+      if (cacheIdx >= 0) closedTabCache.splice(cacheIdx, 1);
+      const tab = get().openTabs.find(
+        (item) => item.engine === engine && item.sessionId === sessionId,
+      );
+      if (tab) removeTab(engine, sessionId, tab.workspacePath);
     },
 
     deleteSession: async (engine, sessionId) => {
