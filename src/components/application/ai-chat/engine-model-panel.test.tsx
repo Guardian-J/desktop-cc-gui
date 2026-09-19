@@ -132,4 +132,32 @@ describe("EngineModelPanel channel picker", () => {
     expect(trigger()?.getAttribute("aria-expanded")).toBe("false");
     expect(filterInput()?.value).toBe("");
   });
+
+  it("shows no channel UI for an engine without channels", () => {
+    // omp until a channel is added in settings: an empty channels array is
+    // still truthy, and the filter box used to render narrowing nothing.
+    act(() => {
+      root.render(
+        <EngineModelPanel
+          option={{ id: "omp", label: "OMP" }}
+          models={[]}
+          selectedModelId=""
+          query=""
+          onQueryChange={() => {}}
+          effort="medium"
+          onPickModel={() => {}}
+          onEffortChange={() => {}}
+          channels={[]}
+          selectedChannelId=""
+          onPickChannel={onPickChannel}
+          ompServiceTier={null}
+          onOmpServiceTierChange={async () => {}}
+          codexServiceTier={null}
+          onCodexServiceTierChange={async () => {}}
+        />,
+      );
+    });
+    expect(filterInput()).toBeNull();
+    expect(trigger()).toBeNull();
+  });
 });

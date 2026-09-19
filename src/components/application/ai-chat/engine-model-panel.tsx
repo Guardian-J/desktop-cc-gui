@@ -556,8 +556,13 @@ export function EngineModelPanel({
 }) {
   const { t } = useTranslation();
   const { groups, empty } = useOrderedModelGroups(models, query, selectedModelId);
-  // Header channel filter (empty = the full channel list).
+  // Header channel filter (empty = the full channel list). Engines without
+  // channels (omp until one is added in settings) get no channel UI at all —
+  // an empty-array channels prop is still truthy, and a filter box that
+  // narrows nothing is worse than none.
   const [channelQuery, setChannelQuery] = useState("");
+  const engineChannels = channels ?? [];
+  const hasChannels = engineChannels.length > 0;
 
   return (
     <div className="flex w-full flex-col gap-1.5">
@@ -567,14 +572,14 @@ export function EngineModelPanel({
             name: CLI_DISPLAY_NAMES[option.id] ?? option.label,
           })}
         </span>
-        {channels && onPickChannel && (
+        {hasChannels && onPickChannel && (
           <ChannelFilterField query={channelQuery} onQueryChange={setChannelQuery} />
         )}
         <PanelActions onRefresh={onRefresh} onClose={onClose} />
       </div>
-      {channels && onPickChannel && (
+      {hasChannels && onPickChannel && (
         <ChannelPicker
-          channels={channels}
+          channels={engineChannels}
           selectedChannelId={selectedChannelId ?? ""}
           engineId={option.id}
           onPickChannel={onPickChannel}
