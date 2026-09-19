@@ -9,6 +9,7 @@ import Search from "lucide-react/dist/esm/icons/search";
 import X from "lucide-react/dist/esm/icons/x";
 import { m } from "motion/react";
 import { CLI_DISPLAY_NAMES, inferModelEngine } from "@/components/foundations/icons/engine-brands";
+import { ChevronDownSmall } from "@/components/foundations/icons/chevrons";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { supportsOmpFastMode, type OmpServiceTier } from "@/lib/omp-service-tier";
 import { cx } from "@/utils/cx";
@@ -71,7 +72,11 @@ function ChannelRow({
   );
 }
 
-function ChannelList({
+/** Provider dropdown: collapsed to the current channel until opened, then a
+ *  height-bounded scroll list. The old inline list rendered every channel at
+ *  once, so a machine with a dozen relays pushed the model list — the part
+ *  the panel exists for — off the flyout. */
+function ChannelPicker({
   channels,
   selectedChannelId,
   engineId,
@@ -83,21 +88,50 @@ function ChannelList({
   onPickChannel: (engine: string, id: string) => void;
 }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
   if (channels.length === 0) return null;
+  const selected = channels.find((channel) => channel.id === selectedChannelId);
   return (
-    <div className="flex w-full flex-col" role="radiogroup" aria-label={t("chat.channelPicker")}>
-      <span className="px-2 pt-0.5 pb-0.5 text-body-2-medium text-text-tertiary">
-        {t("chat.channelPicker")}
-      </span>
-      {channels.map((channel) => (
-        <ChannelRow
-          key={channel.id}
-          option={channel}
-          selected={channel.id === selectedChannelId}
-          engineId={engineId}
-          onPick={onPickChannel}
+    <div className="flex w-full flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-background-primary-hover focus-visible:bg-background-primary-hover"
+      >
+        <span className="shrink-0 text-body-2-medium text-text-tertiary">
+          {t("chat.channelPicker")}
+        </span>
+        <span className="min-w-0 truncate text-body-medium text-text-primary">
+          {selected?.label ?? channels[0].label}
+        </span>
+        <ChevronDownSmall
+          className={cx(
+            "ml-auto size-4 shrink-0 text-foreground-icon-secondary transition-transform duration-200 ease",
+            open && "rotate-180",
+          )}
         />
-      ))}
+      </button>
+      {open && (
+        <div
+          role="radiogroup"
+          aria-label={t("chat.channelPicker")}
+          className="flex max-h-[200px] w-full flex-col overflow-y-auto"
+        >
+          {channels.map((channel) => (
+            <ChannelRow
+              key={channel.id}
+              option={channel}
+              selected={channel.id === selectedChannelId}
+              engineId={engineId}
+              onPick={(engine, id) => {
+                onPickChannel(engine, id);
+                setOpen(false);
+              }}
+            />
+          ))}
+        </div>
+      )}
       <div aria-hidden className="-mx-1 mt-1 mb-1 h-px bg-border-button-default" />
     </div>
   );
@@ -484,7 +518,7 @@ export function EngineModelPanel({
         <PanelActions onRefresh={onRefresh} onClose={onClose} />
       </div>
       {channels && onPickChannel && (
-        <ChannelList
+        <ChannelPicker
           channels={channels}
           selectedChannelId={selectedChannelId ?? ""}
           engineId={option.id}

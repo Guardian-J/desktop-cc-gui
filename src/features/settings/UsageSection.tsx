@@ -13,6 +13,12 @@ import {
 import { UsageChart } from "./UsageChart";
 import { modelDisplayName } from "./usage-model";
 import { tokensOf } from "./usage-totals";
+import {
+  cliBuckets,
+  dayBuckets,
+  monthBuckets,
+  type UsageBucket,
+} from "./usage-buckets";
 import { formatTokens } from "@/utils/format-tokens";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { CLI_DISPLAY_NAMES } from "@/components/foundations/icons/engine-brands";
@@ -216,31 +222,52 @@ export function UsageSection() {
     );
   }, [scoped]);
   const totals = useMemo(() => sum(byEngine), [byEngine]);
-  const perDay = useMemo(() => {
-    // One point per local day in the range, gaps filled with 0. The cursor is
-    // built from LOCAL parts: `new Date("YYYY-MM-DD")` parses as UTC, which
-    // lands later in the day than "now" east of Greenwich and produced an
-    // empty series.
-    const byDay = new Map<string, number>();
-    for (const row of scoped) {
-      byDay.set(row.day, (byDay.get(row.day) ?? 0) + tokensOf(row));
-    }
+  // Chart columns per range: the short ranges keep one column per local day,
+  // 本年 rolls the ledger up per month, and 总和 has no calendar axis at all —
+  // one column per CLI (the same list 详细数据 shows).
+  const dayList = useMemo(() => {
+    if (range === "year" || range === "all") return [];
     const today = dayKey(new Date());
-    // 总和 has no calendar start: draw from the earliest recorded day (today
-    // when the ledger is empty) through today.
-    const start =
-      range === "all"
-        ? scoped.reduce((min, row) => (row.day < min ? row.day : min), today)
-        : rangeStart(range, new Date());
-    const [year, month, day] = start.split("-").map(Number);
-    const days: { day: string; tokens: number }[] = [];
+    const [year, month, day] = rangeStart(range, new Date()).split("-").map(Number);
+    const days: string[] = [];
     for (const cursor = new Date(year, month - 1, day); ; cursor.setDate(cursor.getDate() + 1)) {
       const key = dayKey(cursor);
       if (key > today) break;
-      days.push({ day: key, tokens: byDay.get(key) ?? 0 });
+      days.push(key);
     }
     return days;
-  }, [scoped, range]);
+  }, [range]);
+
+  const buckets = useMemo<UsageBucket[]>(() => {
+    if (range === "all") {
+      return cliBuckets(
+        byCli.map((cli) => ({
+          engine: cli.engine,
+          label: CLI_DISPLAY_NAMES[cli.engine] ?? cli.engine,
+        })),
+      );
+    }
+    if (range === "year") {
+      return monthBuckets(rangeStart("year", new Date()), dayKey(new Date()));
+    }
+    return dayBuckets(dayList);
+  }, [byCli, dayList, range]);
+
+  const bucketOf = useCallback(
+    (row: UsageRow) => {
+      if (range === "all") return row.engine;
+      if (range === "year") return row.day.slice(0, 7);
+      return row.day;
+    },
+    [range],
+  );
+
+  const bucketTotalLabel =
+    range === "year"
+      ? t("usage.tooltipMonth")
+      : range === "all"
+        ? t("usage.tooltipCli")
+        : t("usage.tooltipTotal");
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -340,9 +367,11 @@ export function UsageSection() {
           </div>
           <UsageChart
             rows={scoped}
-            days={perDay.map((point) => point.day)}
+            buckets={buckets}
+            bucketOf={bucketOf}
             formatTokens={formatTokens}
             axisLabel={t(RANGES.find((item) => item.id === range)?.labelKey ?? "usage.rangeToday")}
+            bucketTotalLabel={bucketTotalLabel}
           />
         </div>
       </SettingsCard>

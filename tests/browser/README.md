@@ -103,3 +103,10 @@ only render half-visible. The real ChatSidePanel renders in overlay mode
 inside a 412px row (a stub panel tab stands in for files/changes, so no IPC):
 its right edge must sit on the row's right edge with its left edge inside the
 row, and the document must not scroll horizontally. No app, no backend.
+
+Open `/tests/browser/cli-channel-dropdown.html` to check the composer's
+provider picker with a dozen relays. The flyout must show the current channel
+as one dropdown row — no provider names in the DOM until it is opened — and
+the opened list must be height-capped (clientHeight ≤ 200 with a taller
+scrollHeight), then close again after a pick. The fixture drives the real
+CliMenu and reports PASS/FAIL with the measured heights. No app, no backend.
