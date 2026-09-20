@@ -35,6 +35,14 @@
     },
     "createUpdaterArtifacts": true,
     "targets": "all",
+    "linux": {
+      "rpm": {
+        "compression": {
+          "type": "zstd",
+          "level": 3
+        }
+      }
+    },
     "macOS": {
       "signingIdentity": "Developer ID Application: kunpeng zhu (RLHBM56QRH)"
     },
