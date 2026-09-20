@@ -305,6 +305,9 @@ const FileRow = memo(function FileRow({
   const sepIdx = Math.max(entry.path.lastIndexOf("/"), entry.path.lastIndexOf("\\"));
   const dirPart = sepIdx > 0 ? entry.path.slice(0, sepIdx + 1) : "";
   const filePart = sepIdx >= 0 ? entry.path.slice(sepIdx + 1) : entry.path;
+  // Full diffstat for the truncated fixed-width stats column (title fallback).
+  const statsTitle =
+    entry.additions !== undefined ? `+${entry.additions} −${entry.deletions ?? 0}` : undefined;
   return (
     <li className="group grid min-h-8 grid-cols-[1rem_minmax(0,1fr)_4.5rem_0.75rem_1.25rem] items-center gap-1.5 px-3 hover:bg-background-secondary-hover">
       <span
@@ -320,10 +323,12 @@ const FileRow = memo(function FileRow({
           <button
             type="button"
             onClick={() => onOpen(entry.path)}
+            aria-label={isNew ? `${entry.path} (${t("git.newFile")})` : undefined}
             className="flex min-w-0 items-baseline overflow-hidden text-left font-mono text-xs"
           >
             {/* Directory truncates from the left (…/foo/bar) so the filename
-                — the most important part — is always fully visible; the tooltip
+                — the most important part — stays visible as long as possible;
+                it right-truncates only when it alone overflows. The tooltip
                 below shows the full path on hover. */}
             {dirPart && (
               <span dir="rtl" className="min-w-0 truncate text-left text-text-tertiary">
@@ -335,7 +340,10 @@ const FileRow = memo(function FileRow({
         </Focusable>
         <TooltipContent className="break-all font-mono">{entry.path}</TooltipContent>
       </Tooltip>
-      <span className="flex min-w-0 items-center justify-end gap-1 font-mono text-xs tabular-nums">
+      <span
+        className="flex min-w-0 items-center justify-end gap-1 font-mono text-xs tabular-nums"
+        title={statsTitle}
+      >
         {entry.additions !== undefined && (
           <span className="truncate text-state-success-text">+{entry.additions}</span>
         )}
@@ -348,10 +356,8 @@ const FileRow = memo(function FileRow({
           <Tooltip>
             <Focusable>
               <span
-                role="img"
-                tabIndex={0}
+                aria-hidden="true"
                 className="size-1.5 rounded-full bg-notification-success-foreground"
-                aria-label={t("git.newFile")}
               />
             </Focusable>
             <TooltipContent>{t("git.newFile")}</TooltipContent>

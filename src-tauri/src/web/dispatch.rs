@@ -872,7 +872,7 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         "git_diff" => {
             let a: GitDiffArgs = parse_args(&raw)?;
-            ser(crate::git::git_diff(a.path, a.file, a.staged))
+            ser(crate::git::git_diff(a.path, a.file, a.staged).await)
         }
         "git_stage" => {
             let a: GitFilesArgs = parse_args(&raw)?;
