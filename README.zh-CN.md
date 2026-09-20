@@ -121,7 +121,7 @@
 | --- | --- |
 | macOS（M 系列芯片，已签名） | `aarch64.dmg` |
 | Windows | `.exe`（NSIS）安装包 |
-| Linux | `.AppImage` |
+| Linux | `.AppImage`、`.rpm` |
 
 装好之后，打开设置，为要用的 CLI 配置供应商渠道（或直接登录），添加一个项目文件夹，就可以开始聊了。
 

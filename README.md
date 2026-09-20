@@ -121,7 +121,7 @@ Grab the installer for your platform from the [Releases page](https://github.com
 | --- | --- |
 | macOS (Apple Silicon, signed) | `aarch64.dmg` |
 | Windows | `.exe` (NSIS) |
-| Linux | `.AppImage` |
+| Linux | `.AppImage`, `.rpm` |
 
 After installing, open Settings, configure a provider channel for the CLI you want (or sign in), add a project folder, and start chatting.
 
