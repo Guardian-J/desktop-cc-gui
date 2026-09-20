@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Plus from "lucide-react/dist/esm/icons/plus";
 import Search from "lucide-react/dist/esm/icons/search";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
+import Check from "lucide-react/dist/esm/icons/check";
 import CloudDownload from "lucide-react/dist/esm/icons/cloud-download";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
@@ -35,6 +36,48 @@ interface ChangesPanelHeaderProps {
   onDismissError: () => void;
 }
 
+type RefreshFeedback = "idle" | "spinning" | "success";
+
+/** One spin lap; mirrors --animate-refresh-spin in theme.css. */
+const SPIN_MS = 600;
+/** How long the success check stays before reverting to the refresh arrow. */
+const SUCCESS_MS = 900;
+
+/** Refresh arrow with click feedback: spins while the refresh runs, flashes a
+ * check on success, then fades back to the arrow. The spin lives on the inner
+ * span and the cross-fade on the outer one — a single transform would fight
+ * the spin keyframes and snap when the animation class is removed. */
+function RefreshFeedbackIcon({ feedback }: { feedback: RefreshFeedback }) {
+  return (
+    <span
+      aria-hidden
+      className="relative inline-flex size-4 shrink-0 items-center justify-center"
+    >
+      <span
+        className={cx(
+          "inline-flex transition-[opacity,transform] duration-150 ease-out",
+          feedback === "success" ? "scale-50 opacity-0" : "scale-100 opacity-100",
+        )}
+      >
+        <RefreshCw
+          className={cx(
+            "size-4",
+            feedback === "spinning" && "animate-refresh-spin",
+          )}
+        />
+      </span>
+      <Check
+        className={cx(
+          "absolute size-4 text-notification-success-foreground transition-[opacity,transform]",
+          feedback === "success"
+            ? "scale-100 opacity-100 duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+            : "scale-50 opacity-0 duration-150 ease-out",
+        )}
+      />
+    </span>
+  );
+}
+
 /** Title row with refresh/pull/push, the branch picker, and the new-branch form. */
 export function ChangesPanelHeader({
   workspacePath,
@@ -53,6 +96,44 @@ export function ChangesPanelHeader({
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
+  // Spin → check → idle click feedback for the refresh button.
+  const [refreshFeedback, setRefreshFeedback] = useState<RefreshFeedback>("idle");
+  const refreshTimers = useRef<number[]>([]);
+  useEffect(() => {
+    const timers = refreshTimers.current;
+    return () => timers.forEach((id) => window.clearTimeout(id));
+  }, []);
+
+  const handleRefresh = () => {
+    if (refreshFeedback === "spinning") return;
+    // A click during the success flash restarts the cycle immediately.
+    refreshTimers.current.forEach((id) => window.clearTimeout(id));
+    refreshTimers.current = [];
+    setRefreshFeedback("spinning");
+    const startedAt = performance.now();
+    run("refresh", async () => {
+      await useGitStore.getState().refresh(workspacePath, true);
+      const state = useGitStore.getState();
+      const failed =
+        state.errorByWorkspace[workspacePath] != null ||
+        state.notRepoByWorkspace[workspacePath] === true;
+      // Finish the current lap (and always complete at least one full turn)
+      // before swapping icons, so the arrow is upright when the check lands.
+      const elapsed = performance.now() - startedAt;
+      const lapEnd =
+        elapsed < SPIN_MS ? SPIN_MS - elapsed : (SPIN_MS - (elapsed % SPIN_MS)) % SPIN_MS;
+      refreshTimers.current.push(
+        window.setTimeout(() => {
+          setRefreshFeedback(failed ? "idle" : "success");
+          if (!failed) {
+            refreshTimers.current.push(
+              window.setTimeout(() => setRefreshFeedback("idle"), SUCCESS_MS),
+            );
+          }
+        }, lapEnd),
+      );
+    });
+  };
 
   // Stale filter text must not survive into the next open.
   useEffect(() => {
@@ -82,10 +163,10 @@ export function ChangesPanelHeader({
             aria-label={t("common.refresh")}
             title={t("common.refresh")}
             disabled={pending.refresh === true}
-            onClick={() =>
-              run("refresh", () => useGitStore.getState().refresh(workspacePath, true))
-            }
-          />
+            onClick={handleRefresh}
+          >
+            <RefreshFeedbackIcon feedback={refreshFeedback} />
+          </IconButton>
           <IconButton
             icon={CloudDownload}
             size="small"

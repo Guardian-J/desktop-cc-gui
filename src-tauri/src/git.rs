@@ -582,9 +582,9 @@ fn map_remote_error(e: git2::Error) -> String {
 }
 /// Credentials for network remotes, resolved the way the git CLI resolves
 /// them: gitconfig credential helpers first (HTTPS: osxkeychain / manager /
-/// store…), then ssh-agent, then libgit2's defaults (agent + ~/.ssh key
-/// paths). Without this callback libgit2 fails every auth-required remote
-/// with "remote authentication required but no callback set".
+/// store…), then ssh-agent. Without this callback libgit2 fails every
+/// auth-required remote with "remote authentication required but no callback
+/// set".
 fn remote_callbacks(config: git2::Config) -> git2::RemoteCallbacks<'static> {
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
@@ -599,9 +599,39 @@ fn remote_callbacks(config: git2::Config) -> git2::RemoteCallbacks<'static> {
                 return Ok(cred);
             }
         }
-        git2::Cred::default()
+        // Do not fall back to Cred::default(): its DEFAULT credtype never
+        // intersects the allowed set, git2-rs maps that to GIT_PASSTHROUGH,
+        // and libgit2 then reports the misleading "authentication required
+        // but no callback set". Fail with an actionable message instead.
+        Err(git2::Error::from_str(&format!(
+            "no usable credentials for {url}: configure a git credential helper (HTTPS) or add your key to ssh-agent (SSH)"
+        )))
     });
     callbacks
+}
+
+/// Config used to resolve remote credentials. libgit2 only reads
+/// `/etc/gitconfig` as the system config, but Apple git (Command Line Tools)
+/// keeps its system config — including `credential.helper osxkeychain` —
+/// under the CLT directory. Append it at system level so credential helper
+/// discovery matches the git CLI; without it HTTPS push/pull on a stock
+/// macOS machine finds no helper and fails authentication.
+fn remote_config(repo: &Repository) -> Result<git2::Config, String> {
+    let mut config = repo.config().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        const APPLE_SYSTEM_CONFIG: &str =
+            "/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig";
+        let path = Path::new(APPLE_SYSTEM_CONFIG);
+        // The System level slot is taken once /etc/gitconfig exists; only
+        // fill it from Apple's file when libgit2 found no system config.
+        if path.exists() && !Path::new("/etc/gitconfig").exists() {
+            config
+                .add_file(path, git2::ConfigLevel::System, false)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(config)
 }
 
 fn push_options(config: git2::Config) -> git2::PushOptions<'static> {
@@ -624,7 +654,7 @@ pub async fn git_push(path: String) -> Result<(), String> {
         let mut remote = repo
             .find_remote("origin")
             .map_err(|e| format!("no origin remote: {e}"))?;
-        let config = repo.config().map_err(|e| e.to_string())?;
+        let config = remote_config(&repo)?;
         let mut opts = push_options(config);
         remote
             .push(
@@ -683,7 +713,7 @@ fn git_pull_blocking(path: &str) -> Result<(), String> {
     let mut remote = repo
         .find_remote("origin")
         .map_err(|e| format!("no origin remote: {e}"))?;
-    let config = repo.config().map_err(|e| e.to_string())?;
+    let config = remote_config(&repo)?;
     let mut opts = fetch_options(config);
     remote
         .fetch(std::slice::from_ref(&branch), Some(&mut opts), None)
@@ -876,6 +906,26 @@ mod tests {
             assert_eq!(std::fs::read_to_string(local_path.join("shared.txt")).unwrap(), "local\n");
             assert!(error.contains("shared.txt"), "{error}");
         }
+    }
+
+    /// HTTPS push/pull on stock macOS relies on `credential.helper
+    /// osxkeychain`, which lives in Apple's CLT system gitconfig — a path
+    /// libgit2 does not read on its own. `remote_config` must surface it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn remote_config_resolves_apple_system_credential_helper() {
+        let apple = Path::new("/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig");
+        if !apple.exists() || Path::new("/etc/gitconfig").exists() {
+            // No Apple system config on this machine; nothing to resolve.
+            return;
+        }
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let config = remote_config(&repo).unwrap();
+        let helper = config
+            .get_string("credential.helper")
+            .expect("credential.helper from Apple's system gitconfig must be visible");
+        assert!(!helper.trim().is_empty());
     }
 
     #[test]
