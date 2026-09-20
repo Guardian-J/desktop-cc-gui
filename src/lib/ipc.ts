@@ -501,7 +501,6 @@ export type FileTreeColor = "modified" | "untracked" | "repository";
 
 export interface BranchInfo {
   name: string;
-  isCurrent: boolean;
 }
 export interface AppMetrics {
   /** Resident memory of the app process, bytes. */

@@ -106,7 +106,15 @@ export function ChangesPanelHeader({
       </div>
       {!notRepo && (
         <div className="flex items-center gap-1">
-          <Dropdown isOpen={branchOpen} onOpenChange={setBranchOpen}>
+          <Dropdown
+            isOpen={branchOpen}
+            onOpenChange={(open) => {
+              setBranchOpen(open);
+              // The cached list goes stale when branches change outside the
+              // app (CLI checkout/switch); reload on every open.
+              if (open) void useGitStore.getState().loadBranches(workspacePath);
+            }}
+          >
             <DropdownTrigger
               className={cx(
                 "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border-button-default",
@@ -151,11 +159,14 @@ export function ChangesPanelHeader({
               {filteredBranches.map((b) => (
                 <DropdownItem
                   key={b.name}
-                  selected={b.isCurrent}
+                  selected={b.name === branch}
                   className="px-2 py-1.5"
                   onSelect={() => {
                     setBranchOpen(false);
-                    if (!b.isCurrent) {
+                    // "Current" must come from the same source as the trigger
+                    // label (status.branch): the cached list's isCurrent lags
+                    // behind external checkouts and would no-op the click.
+                    if (b.name !== branch) {
                       run("checkout", () =>
                         useGitStore.getState().checkout(workspacePath, b.name),
                       );

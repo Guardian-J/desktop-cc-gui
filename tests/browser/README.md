@@ -96,3 +96,12 @@ pointer-anchored popover (not the centered modal) next to the click point
 with 确认 focused; Escape and outside press cancel without deleting, 确认
 fires the store's deleteSession once. Real AiChatSidebar, ThreadContextMenu
 and ChatPageDialogs; only deleteSession is stubbed. No app, no backend.
+
+Open `/tests/browser/branch-picker.html` to check the changes-panel branch
+dropdown: filtering to `1.0.6` and clicking the `v1.0.6` row must run the
+store's checkout for `v1.0.6` while the panel displays
+`fix/git-changes-preview-layout` as current. Regression for the stale
+`isCurrent` no-op: the cached branch list used to decide "current" from a
+snapshot that lagged behind external (CLI) checkouts, silently swallowing
+the click. Real ChangesPanelHeader; only the store's checkout is stubbed.
+No app, no backend.

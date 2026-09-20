@@ -748,17 +748,13 @@ fn current_branch_name(repo: &Repository) -> Result<String, String> {
 #[serde(rename_all = "camelCase")]
 pub struct BranchInfo {
     pub name: String,
-    pub is_current: bool,
 }
 
 #[tauri::command]
 pub fn git_branches(path: String) -> Result<Vec<BranchInfo>, String> {
     let repo = open_repo(&path)?;
-    let current = repo
-        .head()
-        .ok()
-        .and_then(|h| h.shorthand().map(str::to_string))
-        .unwrap_or_default();
+    // No is_current flag: consumers compare against the live status branch —
+    // a cached flag here goes stale on external (CLI) checkouts.
     let mut out = Vec::new();
     let branches = repo
         .branches(Some(git2::BranchType::Local))
@@ -768,7 +764,6 @@ pub fn git_branches(path: String) -> Result<Vec<BranchInfo>, String> {
         if let Ok(Some(name)) = b.name() {
             out.push(BranchInfo {
                 name: name.to_string(),
-                is_current: name == current,
             });
         }
     }
