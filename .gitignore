@@ -36,3 +36,6 @@ CLAUDE.md
 .codegraph
 .workflow
 .idea
+# Local verification artifacts (CI bundles, screenshots) — distribute via
+# CI artifact attachments or release assets, never the git history.
+artifacts/
