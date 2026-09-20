@@ -202,6 +202,16 @@ impl Engine for ClaudeEngine {
                 {
                     out.push(EngineEvent::Model(model.to_string()));
                 }
+                if let Some(effort) = value
+                    .get("message")
+                    .and_then(|m| m.get("thinking_effort"))
+                    .or_else(|| value.get("thinking_effort"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    out.push(EngineEvent::Effort(effort.to_string()));
+                }
             }
             "user" => {
                 // tool_result blocks carry permission denials as is_error

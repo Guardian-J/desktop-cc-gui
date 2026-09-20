@@ -166,6 +166,25 @@ function onModel(
   });
 }
 
+function onEffort(
+  event: EngineEventPayload,
+  key: string,
+  deps: EngineEventDeps,
+) {
+  const reported = typeof event.data === "string" ? event.data.trim() : "";
+  if (!reported) return;
+  deps.set((s) => {
+    const cur = s.bySession[key];
+    if (!cur) return {};
+    return {
+      bySession: {
+        ...s.bySession,
+        [key]: { ...cur, activeEffort: reported },
+      },
+    };
+  });
+}
+
 /** Sessions whose run is inside a provider-retry backoff. Kept out of the
  *  store read path on purpose: the delta handlers test this set (O(1)) rather
  *  than reading `bySession` for every streamed token. */
@@ -1172,6 +1191,9 @@ export function handleEngineEvents(
         break;
       case "model":
         onModel(event, key, deps);
+        break;
+      case "effort":
+        onEffort(event, key, deps);
         break;
     }
   }

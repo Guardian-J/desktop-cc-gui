@@ -98,6 +98,8 @@ pub enum EngineEvent {
     },
     /// Actual model ID emitted by the engine or resolved at launch.
     Model(String),
+    /// Reasoning effort level resolved at launch.
+    Effort(String),
 }
 /// One todo entry carried to the frontend.
 #[derive(Debug, Clone, Serialize)]

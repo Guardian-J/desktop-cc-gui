@@ -3,7 +3,7 @@
 
 use super::events::EngineEvent;
 use super::codex_usage;
-use super::registry::{ProcessRegistry, kill_process_group};
+use super::registry::ProcessRegistry;
 use super::Engine;
 #[cfg(windows)]
 use super::job;
@@ -444,6 +444,15 @@ impl TurnCore {
                     Value::String(model),
                 );
             }
+            EngineEvent::Effort(effort) => {
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "effort",
+                    Value::String(effort),
+                );
+            }
             EngineEvent::Done { session_id, usage } => {
                 state.saw_done = true;
                 if let Some(id) = session_id {
@@ -471,6 +480,7 @@ pub(crate) struct RunContext {
     /// Session id fixed before spawn (grok `-s`); seeds TurnState.
     pub(crate) preassigned_session_id: Option<String>,
     pub(crate) initial_model: Option<String>,
+    pub(crate) initial_effort: Option<String>,
     pub(crate) child: Arc<TokioMutex<Child>>,
     pub(crate) killed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) cleanup_files: Vec<PathBuf>,
@@ -610,11 +620,14 @@ pub(crate) async fn read_line_capped(
     }
 }
 /// Read NDJSON stdout until EOF, dispatch events, then settle the turn:
-/// registry cleanup, temp-file cleanup, and the terminal done/error event.
+/// registry cleanup, temp-file cleanup, and the terminal done/error terminal.
 pub(crate) async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
     let mut state = TurnState::new(ctx.preassigned_session_id.clone());
     if let Some(model) = ctx.initial_model.clone() {
         ctx.dispatch_event(&mut state, EngineEvent::Model(model));
+    }
+    if let Some(effort) = ctx.initial_effort.clone() {
+        ctx.dispatch_event(&mut state, EngineEvent::Effort(effort));
     }
     // codex reports usage into its own session log instead of the stdout
     // stream (the stream only carries it with `turn.completed`), so a long
@@ -903,7 +916,7 @@ mod staging_tests {
             let ctx = RunContext {
                 core: TurnCore {sink: event_sink::EventSink::new(Arc::new(Noop)), registry: Arc::new(ProcessRegistry::default()), engine_id: "grok".into(), run_id: "test".into()},
                 engine_impl: Box::new(grok::GrokEngine), pid: 0,
-                preassigned_session_id: None, initial_model: None,
+                preassigned_session_id: None, initial_model: None, initial_effort: None,
                 child: Arc::new(TokioMutex::new(child)), killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 cleanup_files: vec![directory.clone()], stderr_buf: Arc::new(Mutex::new(String::new())),
                 stdout_plain_buf: Arc::new(Mutex::new(String::new())),
