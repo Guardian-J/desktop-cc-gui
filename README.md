@@ -123,6 +123,8 @@ Grab the installer for your platform from the [Releases page](https://github.com
 | Windows | `.exe` (NSIS) |
 | Linux | `.AppImage`, `.rpm` |
 
+The `.rpm` is zstd-compressed and requires rpm ≥ 4.14 (Fedora 28+, RHEL 8+); on older rpm-based systems use the AppImage instead.
+
 After installing, open Settings, configure a provider channel for the CLI you want (or sign in), add a project folder, and start chatting.
 
 ### Using DeepSeek Harness (DSH)
