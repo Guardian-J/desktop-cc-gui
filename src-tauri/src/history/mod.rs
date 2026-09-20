@@ -4,6 +4,7 @@ pub(crate) mod discovery;
 mod extract;
 pub mod reader;
 pub mod scanner;
+pub mod search;
 
 pub use extract::{parse_session_file, scan_summary_file, ParsedSession, ScanSummary};
 

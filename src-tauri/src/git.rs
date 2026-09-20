@@ -451,11 +451,29 @@ pub async fn git_status(path: String) -> Result<GitStatus, String> {
         .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub fn git_diff(path: String, file: String, staged: bool) -> Result<String, String> {
-    let repo = open_repo(&path)?;
+/// Hard cap on the patch text handed to the frontend — with untracked content
+/// included, an arbitrarily large new file (build artifact, log) would
+/// otherwise be expanded into a full-content patch crossing IPC, while the
+/// frontend only ever renders the first DIFF_TRUNCATE_LINES lines.
+const MAX_DIFF_PATCH_BYTES: usize = 2 * 1024 * 1024;
+/// Appended when MAX_DIFF_PATCH_BYTES cuts the patch short, so the preview
+/// shows an explicit boundary instead of silently ending mid-file.
+const DIFF_TRUNCATED_MARKER: &str = "[... diff truncated: file too large to preview ...]\n";
+
+/// Sync body of `git_diff` — with untracked content included, a large new
+/// file turns into a full-content patch; far too heavy for the IPC main
+/// thread, same rationale as `git_status_blocking`.
+fn git_diff_blocking(path: &str, file: &str, staged: bool) -> Result<String, String> {
+    let repo = open_repo(path)?;
     let mut opts = git2::DiffOptions::new();
-    opts.pathspec(&file);
+    opts.pathspec(file);
+    if !staged {
+        // Worktree diffs exclude untracked files by default. Include their
+        // content so a newly created file produces a real patch for preview.
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+    }
     let diff = if staged {
         let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
@@ -464,16 +482,40 @@ pub fn git_diff(path: String, file: String, staged: bool) -> Result<String, Stri
     }
     .map_err(|e| e.to_string())?;
     let mut text = String::new();
-    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+    let mut truncated = false;
+    let print_result = diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let content = line.content();
+        if text.len() + content.len() + 1 > MAX_DIFF_PATCH_BYTES {
+            truncated = true;
+            return false;
+        }
         let origin = line.origin();
         if origin == '+' || origin == '-' || origin == ' ' {
             text.push(origin);
         }
-        text.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+        text.push_str(std::str::from_utf8(content).unwrap_or(""));
         true
-    })
-    .map_err(|e| e.to_string())?;
+    });
+    match print_result {
+        Ok(()) => {}
+        // Our own truncation stop: git2 maps a `false` callback to GIT_EUSER.
+        Err(e) if truncated && e.code() == git2::ErrorCode::User => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    if truncated {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(DIFF_TRUNCATED_MARKER);
+    }
     Ok(text)
+}
+
+#[tauri::command]
+pub async fn git_diff(path: String, file: String, staged: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || git_diff_blocking(&path, &file, staged))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -582,9 +624,9 @@ fn map_remote_error(e: git2::Error) -> String {
 }
 /// Credentials for network remotes, resolved the way the git CLI resolves
 /// them: gitconfig credential helpers first (HTTPS: osxkeychain / manager /
-/// store…), then ssh-agent, then libgit2's defaults (agent + ~/.ssh key
-/// paths). Without this callback libgit2 fails every auth-required remote
-/// with "remote authentication required but no callback set".
+/// store…), then ssh-agent. Without this callback libgit2 fails every
+/// auth-required remote with "remote authentication required but no callback
+/// set".
 fn remote_callbacks(config: git2::Config) -> git2::RemoteCallbacks<'static> {
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
@@ -599,9 +641,39 @@ fn remote_callbacks(config: git2::Config) -> git2::RemoteCallbacks<'static> {
                 return Ok(cred);
             }
         }
-        git2::Cred::default()
+        // Do not fall back to Cred::default(): its DEFAULT credtype never
+        // intersects the allowed set, git2-rs maps that to GIT_PASSTHROUGH,
+        // and libgit2 then reports the misleading "authentication required
+        // but no callback set". Fail with an actionable message instead.
+        Err(git2::Error::from_str(&format!(
+            "no usable credentials for {url}: configure a git credential helper (HTTPS) or add your key to ssh-agent (SSH)"
+        )))
     });
     callbacks
+}
+
+/// Config used to resolve remote credentials. libgit2 only reads
+/// `/etc/gitconfig` as the system config, but Apple git (Command Line Tools)
+/// keeps its system config — including `credential.helper osxkeychain` —
+/// under the CLT directory. Append it at system level so credential helper
+/// discovery matches the git CLI; without it HTTPS push/pull on a stock
+/// macOS machine finds no helper and fails authentication.
+fn remote_config(repo: &Repository) -> Result<git2::Config, String> {
+    let mut config = repo.config().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        const APPLE_SYSTEM_CONFIG: &str =
+            "/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig";
+        let path = Path::new(APPLE_SYSTEM_CONFIG);
+        // The System level slot is taken once /etc/gitconfig exists; only
+        // fill it from Apple's file when libgit2 found no system config.
+        if path.exists() && !Path::new("/etc/gitconfig").exists() {
+            config
+                .add_file(path, git2::ConfigLevel::System, false)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(config)
 }
 
 fn push_options(config: git2::Config) -> git2::PushOptions<'static> {
@@ -624,7 +696,7 @@ pub async fn git_push(path: String) -> Result<(), String> {
         let mut remote = repo
             .find_remote("origin")
             .map_err(|e| format!("no origin remote: {e}"))?;
-        let config = repo.config().map_err(|e| e.to_string())?;
+        let config = remote_config(&repo)?;
         let mut opts = push_options(config);
         remote
             .push(
@@ -683,7 +755,7 @@ fn git_pull_blocking(path: &str) -> Result<(), String> {
     let mut remote = repo
         .find_remote("origin")
         .map_err(|e| format!("no origin remote: {e}"))?;
-    let config = repo.config().map_err(|e| e.to_string())?;
+    let config = remote_config(&repo)?;
     let mut opts = fetch_options(config);
     remote
         .fetch(std::slice::from_ref(&branch), Some(&mut opts), None)
@@ -748,17 +820,13 @@ fn current_branch_name(repo: &Repository) -> Result<String, String> {
 #[serde(rename_all = "camelCase")]
 pub struct BranchInfo {
     pub name: String,
-    pub is_current: bool,
 }
 
 #[tauri::command]
 pub fn git_branches(path: String) -> Result<Vec<BranchInfo>, String> {
     let repo = open_repo(&path)?;
-    let current = repo
-        .head()
-        .ok()
-        .and_then(|h| h.shorthand().map(str::to_string))
-        .unwrap_or_default();
+    // No is_current flag: consumers compare against the live status branch —
+    // a cached flag here goes stale on external (CLI) checkouts.
     let mut out = Vec::new();
     let branches = repo
         .branches(Some(git2::BranchType::Local))
@@ -768,7 +836,6 @@ pub fn git_branches(path: String) -> Result<Vec<BranchInfo>, String> {
         if let Ok(Some(name)) = b.name() {
             out.push(BranchInfo {
                 name: name.to_string(),
-                is_current: name == current,
             });
         }
     }
@@ -840,6 +907,51 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn diff_includes_untracked_file_content() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        std::fs::write(scratch.0.join("new.txt"), "hello\n").unwrap();
+        // Regression: worktree diffs used to return empty for untracked files.
+        let unstaged = git_diff_blocking(scratch.0.to_str().unwrap(), "new.txt", false).unwrap();
+        assert!(unstaged.contains("+hello"), "unstaged patch: {unstaged}");
+        let staged = git_diff_blocking(scratch.0.to_str().unwrap(), "new.txt", true).unwrap();
+        assert!(!staged.contains("+hello"), "staged must not leak untracked: {staged}");
+    }
+
+    #[test]
+    fn binary_untracked_file_shows_marker_not_content() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        let mut data = vec![0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0xff, 0xfe];
+        data.extend(std::iter::repeat(0u8).take(64));
+        std::fs::write(scratch.0.join("bin.dat"), &data).unwrap();
+        let text = git_diff_blocking(scratch.0.to_str().unwrap(), "bin.dat", false).unwrap();
+        assert!(
+            text.contains("Binary files /dev/null and b/bin.dat differ"),
+            "binary patch shows libgit2 marker: {text}"
+        );
+    }
+
+    #[test]
+    fn diff_is_capped_with_explicit_truncation_marker() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        let line = "x".repeat(1024);
+        let mut content = String::new();
+        while content.len() <= MAX_DIFF_PATCH_BYTES {
+            content.push_str(&line);
+            content.push('\n');
+        }
+        std::fs::write(scratch.0.join("big.log"), &content).unwrap();
+        let text = git_diff_blocking(scratch.0.to_str().unwrap(), "big.log", false).unwrap();
+        assert!(text.contains(DIFF_TRUNCATED_MARKER), "marker in: {} bytes", text.len());
+        assert!(
+            text.len() <= MAX_DIFF_PATCH_BYTES + DIFF_TRUNCATED_MARKER.len() + 1,
+            "output bounded: {} bytes",
+            text.len()
+        );
+    }
 
     fn commit_file(repo: &Repository, relative: &str, content: &str) {
         let workdir = repo.workdir().unwrap();
@@ -881,6 +993,26 @@ mod tests {
             assert_eq!(std::fs::read_to_string(local_path.join("shared.txt")).unwrap(), "local\n");
             assert!(error.contains("shared.txt"), "{error}");
         }
+    }
+
+    /// HTTPS push/pull on stock macOS relies on `credential.helper
+    /// osxkeychain`, which lives in Apple's CLT system gitconfig — a path
+    /// libgit2 does not read on its own. `remote_config` must surface it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn remote_config_resolves_apple_system_credential_helper() {
+        let apple = Path::new("/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig");
+        if !apple.exists() || Path::new("/etc/gitconfig").exists() {
+            // No Apple system config on this machine; nothing to resolve.
+            return;
+        }
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let config = remote_config(&repo).unwrap();
+        let helper = config
+            .get_string("credential.helper")
+            .expect("credential.helper from Apple's system gitconfig must be visible");
+        assert!(!helper.trim().is_empty());
     }
 
     #[test]

@@ -299,6 +299,18 @@ impl TurnCore {
                 let run_id = self.run_id.clone();
                 tokio::task::spawn_blocking(move || registry.kill(&run_id));
             }
+            EngineEvent::Compaction { active, reason } => {
+                // Not terminal: compaction is a mid-turn pause while the CLI
+                // summarizes; the UI swaps its status label until the end
+                // event (or turn settle) clears it.
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "compaction",
+                    serde_json::json!({ "active": active, "reason": reason }),
+                );
+            }
             EngineEvent::Warn(error) => {
                 // Not terminal: no saw_error — EOF settle still decides the
                 // turn's fate if the CLI gives up after this notice.
@@ -366,6 +378,19 @@ impl TurnCore {
                         "input": input,
                     }),
                 );
+            }
+            EngineEvent::AgentSettled => {
+                // 等价一次性模式的 EOF 收尾(见下方 finalize):未恢复的尝试
+                // 错误按 Error 落定,否则正常 Done。Done 分支会关掉 stdin,
+                // rpc 进程随之 drain 退出,EOF 收尾看到 saw_done 自然空转。
+                let event = match state.attempt_error.take() {
+                    Some(error) => EngineEvent::Error(error),
+                    None => EngineEvent::Done {
+                        session_id: None,
+                        usage: None,
+                    },
+                };
+                self.dispatch_event(state, event);
             }
             EngineEvent::QuestionSettled { request_id } => {
                 if let Some(entry) = self.registry.get(&self.run_id) {
