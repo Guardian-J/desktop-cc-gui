@@ -222,6 +222,14 @@ pub fn generate_pair_key() -> String {
 
 impl Default for AppSettings {
     fn default() -> Self {
+        let mut default_efforts = HashMap::new();
+        // 为支持推理强度的引擎设置默认值为 "medium"
+        default_efforts.insert("claude".to_string(), "medium".to_string());
+        default_efforts.insert("pi".to_string(), "medium".to_string());
+        default_efforts.insert("omp".to_string(), "medium".to_string());
+        default_efforts.insert("agy".to_string(), "medium".to_string());
+        default_efforts.insert("codex".to_string(), "medium".to_string());
+
         Self {
             theme: default_theme(),
             titlebar: default_titlebar(),
@@ -237,7 +245,7 @@ impl Default for AppSettings {
             language: default_language(),
             default_models: HashMap::new(),
             custom_models: HashMap::new(),
-            default_efforts: HashMap::new(),
+            default_efforts,
             omp_openai_service_tier: None,
             codex_service_tier: None,
             codex_home: None,
