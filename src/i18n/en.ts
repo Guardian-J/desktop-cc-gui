@@ -220,6 +220,7 @@ export const en: Messages = {
     modelsLoading: "Loading models…",
     noMatchingModels: "No matching models",
     channelPicker: "Channel",
+    channelUnselected: "No channel",
     channelFilterPlaceholder: "Filter channels…",
     noMatchingChannels: "No matching channels",
     customFamilyModel: "Custom {{family}} model",

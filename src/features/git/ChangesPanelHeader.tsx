@@ -23,6 +23,10 @@ import { useGitStore } from "./store";
 
 interface ChangesPanelHeaderProps {
   workspacePath: string;
+  /** Set when the panel follows the file tree's selection into a repository
+   *  other than the workspace root: rendered as a badge so the user can see
+   *  which repo stage/commit/pull/push will act on. */
+  followedRepoPath?: string;
   notRepo: boolean;
   branch: string | undefined;
   /** Commits ahead of / behind the upstream; undefined hides the indicator. */
@@ -150,6 +154,7 @@ function ActionFeedbackIcon({
 /** Title row with refresh/pull/push, the branch picker, and the new-branch form. */
 export function ChangesPanelHeader({
   workspacePath,
+  followedRepoPath,
   notRepo,
   branch,
   ahead,
@@ -204,6 +209,14 @@ export function ChangesPanelHeader({
     <div className="flex flex-col gap-2 border-b border-separator-border px-3 py-2.5">
       <div className="flex items-center gap-1.5">
         <span className="text-body-medium text-text-primary">{t("git.changes")}</span>
+        {followedRepoPath && (
+          <span
+            className="max-w-32 truncate rounded-md bg-background-secondary-default px-1.5 py-0.5 text-caption-1-regular text-text-tertiary"
+            title={followedRepoPath}
+          >
+            {followedRepoPath.split(/[\\/]/).filter(Boolean).at(-1) ?? followedRepoPath}
+          </span>
+        )}
         {ahead !== undefined && behind !== undefined && (
           <span className="text-xs text-text-tertiary">
             ↑{ahead} ↓{behind}

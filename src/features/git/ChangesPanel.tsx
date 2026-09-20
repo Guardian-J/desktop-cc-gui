@@ -102,6 +102,14 @@ export function ChangesPanel({
   const header = (
     <ChangesPanelHeader
       workspacePath={gitWorkspacePath}
+      // Name the repository when the panel followed the file tree's
+      // selection into a nested repo — otherwise a commit there looks
+      // identical to one against the workspace root.
+      followedRepoPath={
+        repoPath === undefined && gitWorkspacePath !== workspacePath
+          ? gitWorkspacePath
+          : undefined
+      }
       notRepo={notRepo}
       branch={status?.branch}
       ahead={status?.ahead}

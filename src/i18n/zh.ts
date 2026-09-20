@@ -210,6 +210,7 @@ export const zh = {
     modelsLoading: "正在获取模型列表…",
     noMatchingModels: "无匹配模型",
     channelPicker: "渠道",
+    channelUnselected: "未选择渠道",
     channelFilterPlaceholder: "筛选渠道…",
     noMatchingChannels: "无匹配渠道",
     customFamilyModel: "自定义 {{family}} 模型",
