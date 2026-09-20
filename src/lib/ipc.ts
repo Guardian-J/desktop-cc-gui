@@ -262,6 +262,7 @@ export interface AppSettings {
   interruptShortcut?: string | null;
   commandPaletteShortcut?: string | null;
   sidebarSearchShortcut?: string | null;
+  chatSearchShortcut?: string | null;
   toggleTerminalShortcut?: string | null;
   toggleSidebarShortcut?: string | null;
   toggleSidePanelShortcut?: string | null;
@@ -361,8 +362,10 @@ export interface FileIndexEntry {
 /** What a `/` picker entry is. Commands (`.claude/commands/*.md`) and
  *  skills (`.claude/skills/<name>/SKILL.md`) share the picker but stay
  *  distinct: the menu keys icons/badges/section grouping off this field,
- *  and per-kind merging lets a command and a skill share a name. */
-export type SlashEntryKind = "command" | "skill";
+ *  and per-kind merging lets a command and a skill share a name. "app" is
+ *  frontend-only: injected by the picker for ccgui's own intercepted
+ *  commands (/new, /compact), never emitted by the backend catalog. */
+export type SlashEntryKind = "command" | "skill" | "app";
 
 /** A `/` picker entry (`list_slash_commands`): workspace entries shadow
  *  global ones of the same name and kind. */

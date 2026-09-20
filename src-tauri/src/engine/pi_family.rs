@@ -524,6 +524,8 @@ fn parse_pi_family_line(line: &str, out: &mut Vec<EngineEvent>) {
             | "agent_end"
             | "auto_retry_start"
             | "auto_retry_end"
+            | "auto_compaction_start"
+            | "auto_compaction_end"
             | "agent_settled"
             | "response"
             | "extension_ui_request"
@@ -620,6 +622,26 @@ fn parse_pi_family_line(line: &str, out: &mut Vec<EngineEvent>) {
             if let Some(error) = nested_error_text(&value, &["message"]) {
                 out.push(EngineEvent::Warn(error));
             }
+        }
+        "auto_compaction_start" => {
+            // Forwarded by rpc-ui (omp) only — pi's rpc whitelist carries
+            // just the end event, which harmlessly clears a never-shown
+            // indicator.
+            out.push(EngineEvent::Compaction {
+                active: true,
+                reason: value
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            });
+        }
+        "auto_compaction_end" => {
+            out.push(EngineEvent::Compaction {
+                active: false,
+                reason: None,
+            });
         }
         "auto_retry_start" => {
             // The CLI is backing off before re-issuing the request (provider
@@ -906,6 +928,32 @@ mod tests {
             &mut out,
         );
         assert!(out.is_empty(), "got {out:?}");
+    }
+
+    #[test]
+    fn auto_compaction_events_map_to_compaction_progress() {
+        let mut out = Vec::new();
+        parse_pi_family_line(
+            &serde_json::json!({
+                "type": "auto_compaction_start", "reason": "threshold", "action": "compact",
+            })
+            .to_string(),
+            &mut out,
+        );
+        assert!(
+            matches!(&out[..], [EngineEvent::Compaction { active: true, reason }] if reason.as_deref() == Some("threshold")),
+            "got {out:?}"
+        );
+
+        let mut out = Vec::new();
+        parse_pi_family_line(
+            &serde_json::json!({ "type": "auto_compaction_end" }).to_string(),
+            &mut out,
+        );
+        assert!(
+            matches!(&out[..], [EngineEvent::Compaction { active: false, .. }]),
+            "got {out:?}"
+        );
     }
 
     #[test]

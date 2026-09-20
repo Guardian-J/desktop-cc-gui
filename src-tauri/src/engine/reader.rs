@@ -299,6 +299,18 @@ impl TurnCore {
                 let run_id = self.run_id.clone();
                 tokio::task::spawn_blocking(move || registry.kill(&run_id));
             }
+            EngineEvent::Compaction { active, reason } => {
+                // Not terminal: compaction is a mid-turn pause while the CLI
+                // summarizes; the UI swaps its status label until the end
+                // event (or turn settle) clears it.
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "compaction",
+                    serde_json::json!({ "active": active, "reason": reason }),
+                );
+            }
             EngineEvent::Warn(error) => {
                 // Not terminal: no saw_error — EOF settle still decides the
                 // turn's fate if the CLI gives up after this notice.
