@@ -324,6 +324,33 @@ export interface SearchHit {
   line: number;
   text: string;
 }
+/** One render-safe snippet segment (`search_messages`): `marked` spans are
+ *  the query match, everything else is plain message text. */
+export interface SnippetPart {
+  text: string;
+  marked: boolean;
+}
+
+/** One message-content search hit: the best-matching message of a session. */
+export interface MessageSearchHit {
+  engine: string;
+  sessionId: string;
+  workspacePath: string;
+  workspaceName: string | null;
+  title: string;
+  customTitle: string | null;
+  updatedAt: number | null;
+  role: string;
+  snippet: SnippetPart[];
+}
+
+export interface MessageSearchPage {
+  hits: MessageSearchHit[];
+  hasMore: boolean;
+  /** Sessions still awaiting (re)indexing at query time; >0 means the
+   *  hit list can grow without the query changing. */
+  pending: number;
+}
 /** One entry of the workspace file index (`list_file_index`). */
 export interface FileIndexEntry {
   /** Workspace-relative path, "/" separators. */
@@ -818,6 +845,15 @@ export const ipc = {
     limit?: number,
     beforeSeq?: number | null,
   ) => invoke<SessionPage>("load_session_page", { engine, sessionId, limit, beforeSeq }),
+  /** Full-text search over message bodies (⌘L palette). FTS5 trigram when
+   *  every token is ≥3 chars, exact AND-substring LIKE otherwise. */
+  searchMessages: (
+    query: string,
+    sort?: "relevance" | "recency",
+    limit?: number,
+    offset?: number,
+  ) =>
+    invoke<MessageSearchPage>("search_messages", { query, sort, limit, offset }),
   /** Remote (WSL distro) transcript: host fetches the jsonl over the ssh
    *  channel, caches it locally, and parses with the same engine reader. */
   loadRemoteSessionPage: (

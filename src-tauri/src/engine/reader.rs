@@ -367,6 +367,19 @@ impl TurnCore {
                     }),
                 );
             }
+            EngineEvent::AgentSettled => {
+                // 等价一次性模式的 EOF 收尾(见下方 finalize):未恢复的尝试
+                // 错误按 Error 落定,否则正常 Done。Done 分支会关掉 stdin,
+                // rpc 进程随之 drain 退出,EOF 收尾看到 saw_done 自然空转。
+                let event = match state.attempt_error.take() {
+                    Some(error) => EngineEvent::Error(error),
+                    None => EngineEvent::Done {
+                        session_id: None,
+                        usage: None,
+                    },
+                };
+                self.dispatch_event(state, event);
+            }
             EngineEvent::QuestionSettled { request_id } => {
                 if let Some(entry) = self.registry.get(&self.run_id) {
                     if let Ok(mut questions) = entry.questions.lock() {

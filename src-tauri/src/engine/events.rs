@@ -71,6 +71,11 @@ pub enum EngineEvent {
     /// A parked question no longer needs an answer (the CLI cancelled it or
     /// the run settled): the UI resolves the card without a choice.
     QuestionSettled { request_id: String },
+    /// pi rpc 模式的完全落定信号(omp 用 isTerminal agent_end;pi 的
+    /// agent_end 没有 isTerminal,结果在 print 模式里本来到 EOF 才定论,而
+    /// rpc 长驻进程没有 EOF)。语义等价 EOF 收尾:有未恢复的尝试错误按
+    /// Error 落定,否则 Done —— 由 dispatch 侧读 TurnState 决定。
+    AgentSettled,
     /// A control-protocol permission ask for any other tool. This client has
     /// no approval UI, so the runner denies it in place — the same net
     /// behavior as before the control protocol (headless cannot prompt).
