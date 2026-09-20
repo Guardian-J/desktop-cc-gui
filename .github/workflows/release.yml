@@ -233,34 +233,21 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       # Compile once, unbundled, so a cold Rust build is never killed by the
-      # bundling timeout below.
+      # bundling timeouts below.
       - name: Build application
         env:
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: pnpm exec tauri build --no-bundle
 
-      # AppImage + RPM in a single `tauri bundle` invocation: the bundler
-      # patches the main binary with per-bundle-type updater metadata, so a
-      # second bundle run in the same workspace would re-patch an
-      # already-patched binary. The RPM bundler's in-process rpm-rs
-      # compression is known to occasionally stall on CI
-      # (tauri-apps/tauri#11478, #15698), so cap each attempt and retry
-      # instead of letting the job hang for hours.
-      - name: Bundle AppImage and RPM
+      # AppImage and RPM are separate invocations. tauri-bundler restores the
+      # unpatched binary after each package type (tauri-bundler/src/bundle.rs),
+      # so a later run starts from the `..._UNK` token again and patches
+      # cleanly.
+      - name: Bundle AppImage
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if timeout --kill-after=30s 25m \
-              pnpm exec tauri bundle --bundles appimage,rpm; then
-              exit 0
-            fi
-            echo "::warning::linux bundling attempt $attempt failed; retrying"
-          done
-          echo "::error::linux bundling failed after 3 attempts"
-          exit 1
+        run: pnpm exec tauri bundle --bundles appimage
 
       # Bundled Wayland client libs crash the AppImage on hosts whose system
       # libwayland differs; prune and repack, then the build-time .sig is
@@ -300,6 +287,26 @@ jobs:
             -f "$HOME/.tauri/ccgui.key" \
             -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
             "$APPIMAGE"
+
+      # The RPM bundler's in-process rpm-rs compression is known to
+      # occasionally stall on CI (tauri-apps/tauri#11478, #15698) and the
+      # stall never self-resolves, so cap each attempt and retry instead of
+      # letting the job hang for hours.
+      - name: Bundle RPM
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout --kill-after=30s 25m \
+              pnpm exec tauri bundle --bundles rpm; then
+              exit 0
+            fi
+            echo "::warning::rpm bundling attempt $attempt failed; retrying"
+          done
+          echo "::error::rpm bundling failed after 3 attempts"
+          exit 1
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
