@@ -356,7 +356,8 @@ const FileRow = memo(function FileRow({
           <Tooltip>
             <Focusable>
               <span
-                aria-hidden="true"
+                role="img"
+                aria-label={t("git.newFile")}
                 className="size-1.5 rounded-full bg-notification-success-foreground"
               />
             </Focusable>

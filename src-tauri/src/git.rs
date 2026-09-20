@@ -451,6 +451,15 @@ pub async fn git_status(path: String) -> Result<GitStatus, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Hard cap on the patch text handed to the frontend — with untracked content
+/// included, an arbitrarily large new file (build artifact, log) would
+/// otherwise be expanded into a full-content patch crossing IPC, while the
+/// frontend only ever renders the first DIFF_TRUNCATE_LINES lines.
+const MAX_DIFF_PATCH_BYTES: usize = 2 * 1024 * 1024;
+/// Appended when MAX_DIFF_PATCH_BYTES cuts the patch short, so the preview
+/// shows an explicit boundary instead of silently ending mid-file.
+const DIFF_TRUNCATED_MARKER: &str = "[... diff truncated: file too large to preview ...]\n";
+
 /// Sync body of `git_diff` — with untracked content included, a large new
 /// file turns into a full-content patch; far too heavy for the IPC main
 /// thread, same rationale as `git_status_blocking`.
@@ -473,15 +482,32 @@ fn git_diff_blocking(path: &str, file: &str, staged: bool) -> Result<String, Str
     }
     .map_err(|e| e.to_string())?;
     let mut text = String::new();
-    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+    let mut truncated = false;
+    let print_result = diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let content = line.content();
+        if text.len() + content.len() + 1 > MAX_DIFF_PATCH_BYTES {
+            truncated = true;
+            return false;
+        }
         let origin = line.origin();
         if origin == '+' || origin == '-' || origin == ' ' {
             text.push(origin);
         }
-        text.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+        text.push_str(std::str::from_utf8(content).unwrap_or(""));
         true
-    })
-    .map_err(|e| e.to_string())?;
+    });
+    match print_result {
+        Ok(()) => {}
+        // Our own truncation stop: git2 maps a `false` callback to GIT_EUSER.
+        Err(e) if truncated && e.code() == git2::ErrorCode::User => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    if truncated {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(DIFF_TRUNCATED_MARKER);
+    }
     Ok(text)
 }
 
@@ -880,6 +906,51 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn diff_includes_untracked_file_content() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        std::fs::write(scratch.0.join("new.txt"), "hello\n").unwrap();
+        // Regression: worktree diffs used to return empty for untracked files.
+        let unstaged = git_diff_blocking(scratch.0.to_str().unwrap(), "new.txt", false).unwrap();
+        assert!(unstaged.contains("+hello"), "unstaged patch: {unstaged}");
+        let staged = git_diff_blocking(scratch.0.to_str().unwrap(), "new.txt", true).unwrap();
+        assert!(!staged.contains("+hello"), "staged must not leak untracked: {staged}");
+    }
+
+    #[test]
+    fn binary_untracked_file_shows_marker_not_content() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        let mut data = vec![0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0xff, 0xfe];
+        data.extend(std::iter::repeat(0u8).take(64));
+        std::fs::write(scratch.0.join("bin.dat"), &data).unwrap();
+        let text = git_diff_blocking(scratch.0.to_str().unwrap(), "bin.dat", false).unwrap();
+        assert!(
+            text.contains("Binary files /dev/null and b/bin.dat differ"),
+            "binary patch shows libgit2 marker: {text}"
+        );
+    }
+
+    #[test]
+    fn diff_is_capped_with_explicit_truncation_marker() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        let line = "x".repeat(1024);
+        let mut content = String::new();
+        while content.len() <= MAX_DIFF_PATCH_BYTES {
+            content.push_str(&line);
+            content.push('\n');
+        }
+        std::fs::write(scratch.0.join("big.log"), &content).unwrap();
+        let text = git_diff_blocking(scratch.0.to_str().unwrap(), "big.log", false).unwrap();
+        assert!(text.contains(DIFF_TRUNCATED_MARKER), "marker in: {} bytes", text.len());
+        assert!(
+            text.len() <= MAX_DIFF_PATCH_BYTES + DIFF_TRUNCATED_MARKER.len() + 1,
+            "output bounded: {} bytes",
+            text.len()
+        );
     }
 
     fn commit_file(repo: &Repository, relative: &str, content: &str) {
