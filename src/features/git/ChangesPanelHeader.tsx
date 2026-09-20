@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import Plus from "lucide-react/dist/esm/icons/plus";
 import Search from "lucide-react/dist/esm/icons/search";
@@ -36,18 +36,87 @@ interface ChangesPanelHeaderProps {
   onDismissError: () => void;
 }
 
-type RefreshFeedback = "idle" | "spinning" | "success";
+type ActionFeedback = "idle" | "running" | "success";
+
+type IconComponent = ComponentType<{ className?: string }>;
 
 /** One spin lap; mirrors --animate-refresh-spin in theme.css. */
 const SPIN_MS = 600;
-/** How long the success check stays before reverting to the refresh arrow. */
+/** How long the success check stays before reverting to the action icon. */
 const SUCCESS_MS = 900;
 
-/** Refresh arrow with click feedback: spins while the refresh runs, flashes a
- * check on success, then fades back to the arrow. The spin lives on the inner
- * span and the cross-fade on the outer one — a single transform would fight
- * the spin keyframes and snap when the animation class is removed. */
-function RefreshFeedbackIcon({ feedback }: { feedback: RefreshFeedback }) {
+/** Click feedback for a header action button: `running` while the action
+ * settles, a green check flash on success, straight back to idle on failure.
+ * With `spin` the swap additionally waits out the current spin lap so the
+ * icon is upright when the check lands. */
+function useActionFeedback({ spin = false }: { spin?: boolean } = {}) {
+  const [feedback, setFeedback] = useState<ActionFeedback>("idle");
+  const timers = useRef<number[]>([]);
+  useEffect(() => {
+    const owned = timers.current;
+    return () => owned.forEach((id) => window.clearTimeout(id));
+  }, []);
+
+  /** Wraps `action` and drives the feedback; the returned promise keeps the
+   * action's settlement (rejections included) so `run`'s error plumbing still
+   * fires. `isFailure` lets non-throwing actions report failure from state. */
+  const start = (
+    action: () => Promise<unknown>,
+    isFailure?: () => boolean,
+  ): Promise<unknown> => {
+    // A click during the success flash restarts the cycle immediately.
+    timers.current.forEach((id) => window.clearTimeout(id));
+    timers.current = [];
+    setFeedback("running");
+    const startedAt = performance.now();
+    const settle = (failed: boolean) => {
+      const elapsed = performance.now() - startedAt;
+      const delay = spin
+        ? // Finish the current lap (and always complete at least one full
+          // turn) before swapping icons, so the icon finishes upright.
+          elapsed < SPIN_MS
+          ? SPIN_MS - elapsed
+          : (SPIN_MS - (elapsed % SPIN_MS)) % SPIN_MS
+        : 0;
+      timers.current.push(
+        window.setTimeout(() => {
+          setFeedback(failed ? "idle" : "success");
+          if (!failed) {
+            timers.current.push(
+              window.setTimeout(() => setFeedback("idle"), SUCCESS_MS),
+            );
+          }
+        }, delay),
+      );
+    };
+    return action().then(
+      (value) => {
+        settle(isFailure?.() ?? false);
+        return value;
+      },
+      (err: unknown) => {
+        settle(true);
+        throw err;
+      },
+    );
+  };
+
+  return { feedback, start };
+}
+
+/** Action icon with click feedback: optionally spins while running and
+ * cross-fades to a check on success, then fades back. The spin lives on the
+ * inner span and the cross-fade on the outer one — a single transform would
+ * fight the spin keyframes and snap when the animation class is removed. */
+function ActionFeedbackIcon({
+  icon: Icon,
+  feedback,
+  spin = false,
+}: {
+  icon: IconComponent;
+  feedback: ActionFeedback;
+  spin?: boolean;
+}) {
   return (
     <span
       aria-hidden
@@ -59,10 +128,10 @@ function RefreshFeedbackIcon({ feedback }: { feedback: RefreshFeedback }) {
           feedback === "success" ? "scale-50 opacity-0" : "scale-100 opacity-100",
         )}
       >
-        <RefreshCw
+        <Icon
           className={cx(
             "size-4",
-            feedback === "spinning" && "animate-refresh-spin",
+            spin && feedback === "running" && "animate-refresh-spin",
           )}
         />
       </span>
@@ -96,43 +165,27 @@ export function ChangesPanelHeader({
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
-  // Spin → check → idle click feedback for the refresh button.
-  const [refreshFeedback, setRefreshFeedback] = useState<RefreshFeedback>("idle");
-  const refreshTimers = useRef<number[]>([]);
-  useEffect(() => {
-    const timers = refreshTimers.current;
-    return () => timers.forEach((id) => window.clearTimeout(id));
-  }, []);
+  // Spin → check → idle click feedback for refresh; check flash only for
+  // pull/push (a spinning cloud reads as a glitch, not progress).
+  const refreshAction = useActionFeedback({ spin: true });
+  const pullAction = useActionFeedback();
+  const pushAction = useActionFeedback();
 
   const handleRefresh = () => {
-    if (refreshFeedback === "spinning") return;
-    // A click during the success flash restarts the cycle immediately.
-    refreshTimers.current.forEach((id) => window.clearTimeout(id));
-    refreshTimers.current = [];
-    setRefreshFeedback("spinning");
-    const startedAt = performance.now();
-    run("refresh", async () => {
-      await useGitStore.getState().refresh(workspacePath, true);
-      const state = useGitStore.getState();
-      const failed =
-        state.errorByWorkspace[workspacePath] != null ||
-        state.notRepoByWorkspace[workspacePath] === true;
-      // Finish the current lap (and always complete at least one full turn)
-      // before swapping icons, so the arrow is upright when the check lands.
-      const elapsed = performance.now() - startedAt;
-      const lapEnd =
-        elapsed < SPIN_MS ? SPIN_MS - elapsed : (SPIN_MS - (elapsed % SPIN_MS)) % SPIN_MS;
-      refreshTimers.current.push(
-        window.setTimeout(() => {
-          setRefreshFeedback(failed ? "idle" : "success");
-          if (!failed) {
-            refreshTimers.current.push(
-              window.setTimeout(() => setRefreshFeedback("idle"), SUCCESS_MS),
-            );
-          }
-        }, lapEnd),
-      );
-    });
+    if (refreshAction.feedback === "running") return;
+    run("refresh", () =>
+      // refresh() reports failure through store state instead of throwing.
+      refreshAction.start(
+        () => useGitStore.getState().refresh(workspacePath, true),
+        () => {
+          const state = useGitStore.getState();
+          return (
+            state.errorByWorkspace[workspacePath] != null ||
+            state.notRepoByWorkspace[workspacePath] === true
+          );
+        },
+      ),
+    );
   };
 
   // Stale filter text must not survive into the next open.
@@ -165,7 +218,11 @@ export function ChangesPanelHeader({
             disabled={pending.refresh === true}
             onClick={handleRefresh}
           >
-            <RefreshFeedbackIcon feedback={refreshFeedback} />
+            <ActionFeedbackIcon
+              icon={RefreshCw}
+              feedback={refreshAction.feedback}
+              spin
+            />
           </IconButton>
           <IconButton
             icon={CloudDownload}
@@ -173,16 +230,28 @@ export function ChangesPanelHeader({
             aria-label={t("git.pull")}
             title={t("git.pull")}
             disabled={notRepo || pending.pull === true}
-            onClick={() => run("pull", () => useGitStore.getState().pull(workspacePath))}
-          />
+            onClick={() =>
+              run("pull", () =>
+                pullAction.start(() => useGitStore.getState().pull(workspacePath)),
+              )
+            }
+          >
+            <ActionFeedbackIcon icon={CloudDownload} feedback={pullAction.feedback} />
+          </IconButton>
           <IconButton
             icon={CloudUpload}
             size="small"
             aria-label={t("git.push")}
             title={t("git.push")}
             disabled={notRepo || pending.push === true}
-            onClick={() => run("push", () => useGitStore.getState().push(workspacePath))}
-          />
+            onClick={() =>
+              run("push", () =>
+                pushAction.start(() => useGitStore.getState().push(workspacePath)),
+              )
+            }
+          >
+            <ActionFeedbackIcon icon={CloudUpload} feedback={pushAction.feedback} />
+          </IconButton>
         </div>
       </div>
       {!notRepo && (

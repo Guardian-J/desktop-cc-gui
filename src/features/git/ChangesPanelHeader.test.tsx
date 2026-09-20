@@ -4,16 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn<(workspacePath: string, force?: boolean) => Promise<void>>(),
+  pull: vi.fn<(workspacePath: string) => Promise<void>>(),
+  push: vi.fn<(workspacePath: string) => Promise<void>>(),
   errors: {} as Record<string, string | null>,
   notRepo: {} as Record<string, boolean>,
 }));
 
-// Only the header's refresh feedback touches the store; pull/push/branches
-// stay unused in these tests.
 vi.mock("./store", () => ({
   useGitStore: {
     getState: () => ({
       refresh: mocks.refresh,
+      pull: mocks.pull,
+      push: mocks.push,
       errorByWorkspace: mocks.errors,
       notRepoByWorkspace: mocks.notRepo,
     }),
@@ -39,6 +41,8 @@ describe("ChangesPanelHeader refresh feedback", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.refresh.mockReset();
+    mocks.pull.mockReset();
+    mocks.push.mockReset();
     for (const key of Object.keys(mocks.errors)) delete mocks.errors[key];
     for (const key of Object.keys(mocks.notRepo)) delete mocks.notRepo[key];
     container = document.createElement("div");
@@ -142,5 +146,39 @@ describe("ChangesPanelHeader refresh feedback", () => {
     expect(visibleCheck()).toBeNull();
     expect(container.querySelector(".animate-refresh-spin")).toBeNull();
     expect(arrowRestored()).toBe(true);
+  });
+
+  it("flashes a check on the pull button right after a successful pull", async () => {
+    const pending = deferred();
+    mocks.pull.mockReturnValue(pending.promise);
+    await render();
+
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="拉取"]',
+    )!;
+    act(() => button.click());
+    // No spin for cloud icons: the cloud stays put while the pull runs.
+    expect(container.querySelector(".animate-refresh-spin")).toBeNull();
+    expect(button.querySelector(".lucide-check.opacity-100")).toBeNull();
+
+    await act(async () => pending.resolve());
+    // Without a spin lap to finish, the check lands immediately.
+    act(() => vi.advanceTimersByTime(0));
+    expect(button.querySelector(".lucide-check.opacity-100")).not.toBeNull();
+
+    act(() => vi.advanceTimersByTime(1000));
+    expect(button.querySelector(".lucide-check.opacity-100")).toBeNull();
+  });
+
+  it("shows no check on the push button when the push fails", async () => {
+    mocks.push.mockRejectedValue(new Error("boom"));
+    await render();
+
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="推送"]',
+    )!;
+    await act(async () => button.click());
+    act(() => vi.advanceTimersByTime(2000));
+    expect(button.querySelector(".lucide-check.opacity-100")).toBeNull();
   });
 });
