@@ -456,6 +456,13 @@ pub fn git_diff(path: String, file: String, staged: bool) -> Result<String, Stri
     let repo = open_repo(&path)?;
     let mut opts = git2::DiffOptions::new();
     opts.pathspec(&file);
+    if !staged {
+        // Worktree diffs exclude untracked files by default. Include their
+        // content so a newly created file produces a real patch for preview.
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+    }
     let diff = if staged {
         let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
