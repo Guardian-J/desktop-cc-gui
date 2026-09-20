@@ -17,9 +17,14 @@ import { CommitFooter } from "./CommitFooter";
 
 export function ChangesPanel({
   workspacePath,
+  repoPath,
   className,
 }: {
   workspacePath: string;
+  /** Pin the panel to this repository instead of following the file tree's
+   *  selection — for callers that render the panel outside the files
+   *  context, where a global selectedPath would silently steer it. */
+  repoPath?: string;
   className?: string;
 }) {
   const { t } = useTranslation();
@@ -27,12 +32,13 @@ export function ChangesPanel({
   const repositories = useFilesStore((s) => s.repositories);
   const gitWorkspacePath = useMemo(
     () =>
+      repoPath ??
       resolveWorkspaceRepository({
         selectedPath,
         repositoryRoots: Object.keys(repositories),
         workspacePath,
       }),
-    [repositories, selectedPath, workspacePath],
+    [repositories, selectedPath, workspacePath, repoPath],
   );
   const status = useGitStore((s) => s.statusByWorkspace[gitWorkspacePath]);
   const notRepo = useGitStore((s) => s.notRepoByWorkspace[gitWorkspacePath]);
