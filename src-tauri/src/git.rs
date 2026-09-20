@@ -451,11 +451,20 @@ pub async fn git_status(path: String) -> Result<GitStatus, String> {
         .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub fn git_diff(path: String, file: String, staged: bool) -> Result<String, String> {
-    let repo = open_repo(&path)?;
+/// Sync body of `git_diff` — with untracked content included, a large new
+/// file turns into a full-content patch; far too heavy for the IPC main
+/// thread, same rationale as `git_status_blocking`.
+fn git_diff_blocking(path: &str, file: &str, staged: bool) -> Result<String, String> {
+    let repo = open_repo(path)?;
     let mut opts = git2::DiffOptions::new();
-    opts.pathspec(&file);
+    opts.pathspec(file);
+    if !staged {
+        // Worktree diffs exclude untracked files by default. Include their
+        // content so a newly created file produces a real patch for preview.
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+    }
     let diff = if staged {
         let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
@@ -474,6 +483,13 @@ pub fn git_diff(path: String, file: String, staged: bool) -> Result<String, Stri
     })
     .map_err(|e| e.to_string())?;
     Ok(text)
+}
+
+#[tauri::command]
+pub async fn git_diff(path: String, file: String, staged: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || git_diff_blocking(&path, &file, staged))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
