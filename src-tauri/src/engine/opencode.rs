@@ -18,11 +18,11 @@ impl Engine for OpenCodeEngine {
     }
 
     fn supported_permissions(&self) -> &'static [&'static str] {
-        // One-shot `run` cannot ask mid-turn ("manual" out). There is no
-        // bypass flag: opencode's default build agent already runs tools
-        // under its own config ("auto" = no flag); "plan" selects the
-        // read-only plan agent.
-        &["auto", "plan"]
+        // One-shot `run` cannot ask mid-turn ("manual" out). "auto" is the
+        // default build agent under its own config (no flag); "bypass" adds
+        // `--auto` (auto-approve permissions not explicitly denied,
+        // `opencode run --help`); "plan" selects the read-only plan agent.
+        &["auto", "plan", "bypass"]
     }
 
     fn build_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
@@ -30,9 +30,15 @@ impl Engine for OpenCodeEngine {
         cmd.arg("run");
         cmd.arg("--format");
         cmd.arg("json");
-        if self.resolve_permission(req.permission.as_deref()) == "plan" {
-            cmd.arg("--agent");
-            cmd.arg("plan");
+        match self.resolve_permission(req.permission.as_deref()) {
+            "plan" => {
+                cmd.arg("--agent");
+                cmd.arg("plan");
+            }
+            "bypass" => {
+                cmd.arg("--auto");
+            }
+            _ => {}
         }
         if let Some(model) = req.model.as_deref() {
             cmd.arg("--model");
@@ -332,10 +338,26 @@ mod tests {
             .windows(2)
             .any(|w| w == ["--model", "anthropic/claude-sonnet-5"]));
         assert!(args.windows(2).any(|w| w == ["--session", "ses_123"]));
-        // "bypass" is not a mode opencode can honor: it resolves to auto.
+        assert!(!args.contains(&"--auto".to_string()));
+    }
+
+    #[test]
+    fn bypass_adds_auto_flag() {
         let mut request = req();
         request.permission = Some("bypass".to_string());
-        assert!(!argv(&request).contains(&"--agent".to_string()));
+        let args = argv(&request);
+        assert!(args.contains(&"--auto".to_string()));
+        assert!(!args.windows(2).any(|w| w == ["--agent", "plan"]));
+        // Default ("auto") stays flag-free: opencode's own config applies.
+        let auto = argv(&req());
+        assert!(!auto.contains(&"--auto".to_string()));
+        assert!(!auto.contains(&"--agent".to_string()));
+        // "manual" is not honorably mappable one-shot: falls back to auto.
+        let mut request = req();
+        request.permission = Some("manual".to_string());
+        let manual = argv(&request);
+        assert!(!manual.contains(&"--auto".to_string()));
+        assert!(!manual.contains(&"--agent".to_string()));
     }
 
     #[test]
