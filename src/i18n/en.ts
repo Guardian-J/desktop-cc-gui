@@ -870,6 +870,7 @@ export const en: Messages = {
     resizePanel: "Drag to resize terminal panel",
     tabTitle: "Terminal {{index}}",
     failed: "Failed to start terminal: {{message}}",
+    copy: "Copy",
   },
   time: {
     now: "now",

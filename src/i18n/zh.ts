@@ -837,6 +837,7 @@ export const zh = {
     resizePanel: "拖拽调整终端面板高度",
     tabTitle: "终端 {{index}}",
     failed: "终端启动失败：{{message}}",
+    copy: "复制",
   },
   time: {
     now: "刚刚",
