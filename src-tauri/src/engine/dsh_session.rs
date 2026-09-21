@@ -5,7 +5,9 @@
 //! - RPC is plain HTTP ([`crate::dsh_host::host_call`], cookie-authenticated):
 //!   `workspace/create` → `session/create` (resume passes the known
 //!   sessionId) → `session/selectModel`? → `session/prompt` (mode "queue");
-//!   interrupt sends `session/cancel`.
+//!   interrupt sends `session/cancel`. Attachments ride the prompt as base64
+//!   image content parts, after [`super::dsh_images`] declares the input
+//!   modality on hand-declared `llm-pi-ai` routes (`settings/mutate`).
 //! - Streams share one WebSocket, `ws://<origin>/api/remote.mux` with the
 //!   auth cookie: open `$events` (the ready frame yields the events clientId;
 //!   waterfall frames are approval/question calls, answered via
@@ -28,7 +30,7 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{EngineEvent, SendRequest, TurnCore, TurnState, VirtualRunGuard};
+use super::{dsh_images, EngineEvent, SendRequest, TurnCore, TurnState, VirtualRunGuard};
 use crate::dsh_host::host_call;
 
 /// 提取并规范化上下文窗口字段
@@ -212,6 +214,21 @@ async fn turn_inner(
         }
     }
 
+    // Attachments: load through the shared image pipeline, then make sure
+    // the session's route actually admits images — hand-declared llm-pi-ai
+    // routes default to text-only until ccgui writes the modality claim.
+    let prompt_images = dsh_images::load_prompt_images(&req.images, &req.workspace)?;
+    if !prompt_images.is_empty() {
+        let Some((provider, model)) =
+            dsh_images::current_selection(&origin, req.model.as_deref()).await
+        else {
+            return Err(
+                "DSH 需要先选定模型才能发送图片：host 未报告当前 provider/model".to_string(),
+            );
+        };
+        dsh_images::ensure_image_admission(&origin, &provider, &model).await?;
+    }
+
     let mut ws = mux_connect(&origin, cookie.as_deref()).await?;
     // Streams must be live before the prompt so no turn event races the
     // subscription: the follow snapshot proves the follow subscription landed,
@@ -226,7 +243,7 @@ async fn turn_inner(
         );
     }
 
-    let prompt = host_call(
+    let prompt = crate::dsh_host::host_call_rpc(
         &origin,
         "session/prompt",
         json!({
@@ -234,7 +251,7 @@ async fn turn_inner(
                 "requestId": format!("codemoss-{}", uuid::Uuid::new_v4()),
                 "sessionId": session_id,
                 "mode": "queue",
-                "content": [{ "type": "text", "text": req.prompt }],
+                "content": dsh_images::build_prompt_content(&req.prompt, &prompt_images),
                 "clientTimeZone": client_time_zone(),
             }
         }),
@@ -242,7 +259,10 @@ async fn turn_inner(
     .await;
     if let Err(error) = prompt {
         let _ = ws.close(None).await;
-        return Err(format!("任务下发失败：{error}"));
+        return Err(format!(
+            "任务下发失败：{}",
+            dsh_images::format_prompt_refusal(&error)
+        ));
     }
 
     let (mut write, mut read) = ws.split();

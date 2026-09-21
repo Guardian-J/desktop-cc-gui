@@ -7,6 +7,7 @@ mod codex_usage;
 #[cfg(windows)]
 pub(crate) mod job;
 pub mod dsh;
+mod dsh_images;
 mod dsh_session;
 pub mod grok;
 pub(crate) mod opencode_server;
