@@ -584,6 +584,35 @@ pub fn git_unstage(path: String, files: Vec<String>) -> Result<(), String> {
     index.write().map_err(|e| e.to_string())
 }
 
+/// Discard worktree changes (the panel's 撤销更改), matching
+/// `git restore --worktree` + `git clean -f`: a path present in the index
+/// restores from the index — so hunks already staged survive — while an
+/// untracked path is deleted from disk. Staged deletions (in HEAD, removed
+/// from the index) are not offered discard in the UI; here they are a no-op.
+#[tauri::command]
+pub fn git_discard(path: String, files: Vec<String>) -> Result<(), String> {
+    let repo = open_repo(&path)?;
+    let workdir = repo.workdir().ok_or_else(|| "bare repository".to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    for file in &files {
+        let file_path = Path::new(file);
+        if index.get_path(file_path, 0).is_some() {
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.path(file).force();
+            repo.checkout_index(Some(&mut index), Some(&mut checkout))
+                .map_err(|e| e.to_string())?;
+        } else {
+            let abs = workdir.join(file_path);
+            if abs.is_dir() {
+                std::fs::remove_dir_all(&abs).map_err(|e| e.to_string())?;
+            } else if abs.exists() {
+                std::fs::remove_file(&abs).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn git_commit(path: String, message: String) -> Result<String, String> {
     let trimmed = message.trim();
@@ -1274,5 +1303,76 @@ mod tests {
         let status = git_status_blocking(repo_path.to_str().unwrap()).unwrap();
         assert_eq!(status.ahead, None, "status={status:?}");
         assert_eq!(status.behind, None, "status={status:?}");
+    }
+
+    #[test]
+    fn discard_restores_worktree_from_index_preserving_staged_hunks() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        commit_file(&repo, "a.txt", "base\n");
+        // Stage one revision, then dirty the worktree again: discard must drop
+        // only the unstaged layer, leaving the staged content in the index.
+        std::fs::write(scratch.0.join("a.txt"), "staged\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("a.txt")).unwrap();
+            index.write().unwrap();
+        }
+        let staged_blob = repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id;
+        std::fs::write(scratch.0.join("a.txt"), "unstaged\n").unwrap();
+
+        git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
+
+        assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), "staged\n");
+        assert_eq!(repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id, staged_blob);
+    }
+
+    #[test]
+    fn discard_restores_unstaged_deletion() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        commit_file(&repo, "a.txt", "keep\n");
+        std::fs::remove_file(scratch.0.join("a.txt")).unwrap();
+
+        git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
+
+        assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn discard_keeps_staged_new_file_content() {
+        // Staged-new (INDEX_NEW): the index is the only source, so discard
+        // must leave the worktree content untouched.
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        commit_file(&repo, "base.txt", "base\n");
+        std::fs::write(scratch.0.join("new.txt"), "fresh\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("new.txt")).unwrap();
+            index.write().unwrap();
+        }
+
+        git_discard(scratch.0.to_string_lossy().into_owned(), vec!["new.txt".to_string()]).unwrap();
+
+        assert_eq!(std::fs::read_to_string(scratch.0.join("new.txt")).unwrap(), "fresh\n");
+    }
+
+    #[test]
+    fn discard_removes_untracked_file() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        commit_file(&repo, "a.txt", "a\n");
+        std::fs::create_dir_all(scratch.0.join("sub")).unwrap();
+        std::fs::write(scratch.0.join("sub/new.txt"), "x\n").unwrap();
+
+        git_discard(
+            scratch.0.to_string_lossy().into_owned(),
+            vec!["sub/new.txt".to_string()],
+        )
+        .unwrap();
+
+        assert!(!scratch.0.join("sub/new.txt").exists());
+        assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), "a\n");
     }
 }

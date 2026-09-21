@@ -4,8 +4,10 @@ import Plus from "lucide-react/dist/esm/icons/plus";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
 import Minus from "lucide-react/dist/esm/icons/minus";
+import Undo2 from "lucide-react/dist/esm/icons/undo-2";
 import { Focusable } from "react-aria-components";
 import { Tooltip, TooltipContent } from "@/components/base/tooltip/tooltip";
+import { ConfirmDialog } from "@/components/dialogs";
 import { type GitFileEntry, type GitStatus } from "@/lib/ipc";
 import { errorText } from "@/lib/errors";
 import { cx } from "@/utils/cx";
@@ -48,6 +50,8 @@ export function ChangesPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState<Record<string, true>>({});
   const [commitMsg, setCommitMsg] = useState("");
+  /** Paths awaiting discard confirmation (one row or a whole group). */
+  const [discardTarget, setDiscardTarget] = useState<string[] | null>(null);
 
   useEffect(() => {
     void useGitStore.getState().refresh(gitWorkspacePath);
@@ -87,6 +91,17 @@ export function ChangesPanel({
   );
   const stageOne = useCallback((file: string) => stage([file]), [stage]);
   const unstageOne = useCallback((file: string) => unstage([file]), [unstage]);
+  const discard = useCallback(
+    (files: string[]) =>
+      run("discard", () => useGitStore.getState().discard(gitWorkspacePath, files)),
+    [run, gitWorkspacePath],
+  );
+  const discardRow = useCallback((file: string) => setDiscardTarget([file]), []);
+  const confirmDiscard = useCallback(() => {
+    if (discardTarget === null) return;
+    discard(discardTarget);
+    setDiscardTarget(null);
+  }, [discard, discardTarget]);
   // File rows open the diff in the center area, where it has room.
   const openStagedDiff = useCallback(
     (file: string) =>
@@ -169,6 +184,10 @@ export function ChangesPanel({
               rowActionLabel={t("git.stage")}
               rowActionKind="stage"
               onRowAction={stageOne}
+              rowDiscardLabel={t("git.discard")}
+              onRowDiscard={discardRow}
+              groupDiscardLabel={t("git.discardAll")}
+              onGroupDiscard={setDiscardTarget}
               onOpen={openUnstagedDiff}
               actionBusy={pending.stage === true}
             />
@@ -180,6 +199,10 @@ export function ChangesPanel({
               rowActionLabel={t("git.stage")}
               rowActionKind="stage"
               onRowAction={stageOne}
+              rowDiscardLabel={t("git.discard")}
+              onRowDiscard={discardRow}
+              groupDiscardLabel={t("git.discardAll")}
+              onGroupDiscard={setDiscardTarget}
               onOpen={openUnstagedDiff}
               actionBusy={pending.stage === true}
               isNew
@@ -195,6 +218,18 @@ export function ChangesPanel({
         onCommitMsgChange={setCommitMsg}
         run={run}
       />
+      {discardTarget !== null && (
+        <ConfirmDialog
+          danger
+          message={
+            discardTarget.length === 1
+              ? t("git.discardConfirm", { path: discardTarget[0] })
+              : t("git.discardAllConfirm", { count: discardTarget.length })
+          }
+          onConfirm={confirmDiscard}
+          onCancel={() => setDiscardTarget(null)}
+        />
+      )}
     </aside>
   );
 }
@@ -233,6 +268,13 @@ interface GroupSectionProps {
   rowActionLabel: string;
   rowActionKind: "stage" | "unstage";
   onRowAction: (file: string) => void;
+  /** Discard is destructive and only meaningful for worktree-side groups
+   *  (unstaged/untracked); staged rows get no discard button. */
+  rowDiscardLabel?: string;
+  onRowDiscard?: (file: string) => void;
+  /** Red group-level discard next to the stage-all action, same groups. */
+  groupDiscardLabel?: string;
+  onGroupDiscard?: (files: string[]) => void;
   onOpen: (file: string) => void;
   actionBusy: boolean;
   isNew?: boolean;
@@ -246,6 +288,10 @@ const GroupSection = memo(function GroupSection({
   rowActionLabel,
   rowActionKind,
   onRowAction,
+  rowDiscardLabel,
+  onRowDiscard,
+  groupDiscardLabel,
+  onGroupDiscard,
   onOpen,
   actionBusy,
   isNew = false,
@@ -274,6 +320,19 @@ const GroupSection = memo(function GroupSection({
           <span className="text-body-medium text-text-secondary">{title}</span>
           <span className="text-xs text-text-tertiary">{entries.length}</span>
         </button>
+        {groupDiscardLabel !== undefined && onGroupDiscard !== undefined && (
+          <button
+            type="button"
+            disabled={actionBusy}
+            onClick={() => onGroupDiscard(entries.map((f) => f.path))}
+            className={cx(
+              "shrink-0 rounded px-1.5 py-0.5 text-xs text-text-error-primary",
+              "hover:bg-background-tertiary-hover disabled:text-text-disabled",
+            )}
+          >
+            {groupDiscardLabel}
+          </button>
+        )}
         <button
           type="button"
           disabled={actionBusy}
@@ -295,6 +354,8 @@ const GroupSection = memo(function GroupSection({
               actionLabel={rowActionLabel}
               actionKind={rowActionKind}
               onAction={onRowAction}
+              discardLabel={rowDiscardLabel}
+              onDiscard={onRowDiscard}
               onOpen={onOpen}
               actionBusy={actionBusy}
               isNew={isNew}
@@ -312,6 +373,9 @@ interface FileRowProps {
   actionKind: "stage" | "unstage";
   /** Untracked group: show the "New" badge like the template panel. */
   isNew?: boolean;
+  /** Present only on worktree-side rows; opens the discard confirmation. */
+  discardLabel?: string;
+  onDiscard?: (path: string) => void;
   onAction: (path: string) => void;
   onOpen: (path: string) => void;
   actionBusy: boolean;
@@ -322,6 +386,8 @@ const FileRow = memo(function FileRow({
   actionLabel,
   actionKind,
   isNew = false,
+  discardLabel,
+  onDiscard,
   onAction,
   onOpen,
   actionBusy,
@@ -336,7 +402,7 @@ const FileRow = memo(function FileRow({
   const statsTitle =
     entry.additions !== undefined ? `+${entry.additions} −${entry.deletions ?? 0}` : undefined;
   return (
-    <li className="group grid min-h-8 grid-cols-[1rem_minmax(0,1fr)_4.5rem_0.75rem_1.25rem] items-center gap-1.5 px-3 hover:bg-background-secondary-hover">
+    <li className="group grid min-h-8 grid-cols-[1rem_minmax(0,1fr)_4.5rem_0.75rem_1.25rem_1.25rem] items-center gap-1.5 px-3 hover:bg-background-secondary-hover">
       <span
         className={cx(
           "w-4 shrink-0 text-center font-mono text-xs",
@@ -392,6 +458,26 @@ const FileRow = memo(function FileRow({
           </Tooltip>
         )}
       </span>
+      {/* Two trailing action slots keep stage/unstage aligned across
+          groups; the discard slot stays empty on staged rows. */}
+      {discardLabel !== undefined && onDiscard !== undefined ? (
+        <button
+          type="button"
+          disabled={actionBusy}
+          onClick={() => onDiscard(entry.path)}
+          aria-label={discardLabel}
+          title={discardLabel}
+          className={cx(
+            "rounded p-0.5 text-foreground-icon-secondary opacity-0",
+            "group-hover:opacity-100 focus-visible:opacity-100 hover:bg-background-tertiary-hover",
+            "disabled:text-foreground-icon-disabled",
+          )}
+        >
+          <Undo2 aria-hidden className="size-4" />
+        </button>
+      ) : (
+        <span />
+      )}
       <button
         type="button"
         disabled={actionBusy}

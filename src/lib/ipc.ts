@@ -1035,6 +1035,8 @@ export const ipc = {
   gitStage: (path: string, files: string[]) => invoke<void>("git_stage", { path, files }),
   gitUnstage: (path: string, files: string[]) =>
     invoke<void>("git_unstage", { path, files }),
+  gitDiscard: (path: string, files: string[]) =>
+    invoke<void>("git_discard", { path, files }),
   gitCommit: (path: string, message: string) =>
     invoke<string>("git_commit", { path, message }),
   gitPush: (path: string) => invoke<void>("git_push", { path }),
