@@ -128,6 +128,10 @@ pub trait Engine: Send + Sync {
     fn supports_computer_use(&self) -> bool {
         false
     }
+    /// Whether this engine supports reasoning effort configuration.
+    fn supports_effort(&self) -> bool {
+        false
+    }
     /// Permission modes this engine can honor at spawn ("auto" | "manual" |
     /// "plan" | "bypass"). These are one-shot headless launches that cannot
     /// ask mid-turn, so most engines support only a subset; the UI greys out
@@ -235,6 +239,8 @@ pub struct EngineInfo {
     /// Drives the composer's computer-use toggle: engines without an
     /// MCP-config launch flag cannot receive the driver.
     pub supports_computer_use: bool,
+    /// Whether this engine supports reasoning effort configuration.
+    pub supports_effort: bool,
     /// Permission modes the engine honors at spawn; drives the composer
     /// picker's disabled options.
     pub permissions: Vec<String>,
@@ -306,6 +312,7 @@ pub fn list_engines() -> Vec<EngineInfo> {
                     != Some(crate::config::DISABLED_PROVIDER_ID),
                 supports_images: engine.supports_images(),
                 supports_computer_use: engine.supports_computer_use(),
+                supports_effort: engine.supports_effort(),
                 permissions: engine
                     .supported_permissions()
                     .iter()
