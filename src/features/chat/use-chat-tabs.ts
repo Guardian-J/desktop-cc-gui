@@ -6,6 +6,9 @@ import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import Globe from "lucide-react/dist/esm/icons/globe";
 import { BROWSER_TAB_PREFIX, useBrowserStore } from "@/features/browser/store";
 import { browserTabLabel } from "@/features/browser/BrowserPane";
+import { centerTabRegistry, useRegistry } from "@ccgui/plugin-sdk";
+import type { LucideIcon } from "lucide-react";
+import { PLUGIN_TAB_PREFIX, usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
 import { fileName, useFilesStore } from "@/features/files/store";
 import { useGitStore } from "@/features/git/store";
 import type { SessionMeta } from "@/lib/ipc";
@@ -59,6 +62,21 @@ export function useChatTabs({
   // Center diff, opened from the changes panel's file rows.
   const diffView = useGitStore((s) => s.diffView);
   const closeDiff = useGitStore((s) => s.closeDiff);
+  // Plugin center tabs (SDK 0.3.12 ui:center-tab): definitions in the SDK
+  // registry, open instances in the plugin tabs store. Stale ids (plugin
+  // unloaded with a tab open) drop read-side via registry membership.
+  const { pluginTabs, activePluginTabIdRaw, activatePluginTab, deactivatePluginTab, closePluginTab, movePluginTab } =
+    usePluginTabsStore(
+      useShallow((s) => ({
+        pluginTabs: s.tabs,
+        activePluginTabIdRaw: s.activeId,
+        activatePluginTab: s.activate,
+        deactivatePluginTab: s.deactivate,
+        closePluginTab: s.closeTab,
+        movePluginTab: s.moveTab,
+      })),
+    );
+  const centerTabDefs = useRegistry(centerTabRegistry);
   // Browser tabs share the strip too; keyed by id behind BROWSER_TAB_PREFIX.
   const { browserTabs, activeBrowserId, activateBrowserTab, deactivateBrowserTab, closeBrowserTab, moveBrowserTab } =
     useBrowserStore(
@@ -130,6 +148,31 @@ export function useChatTabs({
       })),
     [openFiles, dirtyPaths],
   );
+  // Plugin tabs trail the browser tabs in the same strip.
+  const pluginTabItems = useMemo(
+    () =>
+      pluginTabs.flatMap((id) => {
+        const def = centerTabDefs.find((d) => d.id === id);
+        if (!def) return [];
+        const title = def.title();
+        return [
+          {
+            key: PLUGIN_TAB_PREFIX + id,
+            label: title,
+            title,
+            // SDK 插件图标是宽松 ComponentType；宿主页签条按 Lucide 渲染。
+            icon: def.icon as LucideIcon | undefined,
+            streaming: false,
+          },
+        ];
+      }),
+    [pluginTabs, centerTabDefs],
+  );
+  // The active plugin tab only counts while its definition still exists.
+  const activePluginTabId =
+    activePluginTabIdRaw && centerTabDefs.some((d) => d.id === activePluginTabIdRaw)
+      ? activePluginTabIdRaw
+      : null;
   // Browser tabs trail the file tabs in the same strip.
   const browserTabItems = useMemo(
     () =>
@@ -147,6 +190,7 @@ export function useChatTabs({
       ...sessionTabItems,
       ...fileTabItems,
       ...browserTabItems,
+      ...pluginTabItems,
       ...(diffView
         ? [
             {
@@ -159,7 +203,7 @@ export function useChatTabs({
           ]
         : []),
     ],
-    [sessionTabItems, fileTabItems, browserTabItems, diffView],
+    [sessionTabItems, fileTabItems, browserTabItems, pluginTabItems, diffView],
   );
   // A browser tab and a file tab are never active at once (handleTabSelect
   // enforces it), so this precedence is only a tie-breaker for restores.
@@ -167,11 +211,13 @@ export function useChatTabs({
     ? DIFF_TAB_KEY
     : activeBrowserId
       ? BROWSER_TAB_PREFIX + activeBrowserId
-      : activeFilePath
-        ? FILE_TAB_PREFIX + activeFilePath
-        : active
-          ? sessionKey(active.engine, active.sessionId, active.workspacePath)
-          : null;
+      : activePluginTabId
+        ? PLUGIN_TAB_PREFIX + activePluginTabId
+        : activeFilePath
+          ? FILE_TAB_PREFIX + activeFilePath
+          : active
+            ? sessionKey(active.engine, active.sessionId, active.workspacePath)
+            : null;
   const handleTabSelect = useCallback(
     (tabKey: string) => {
       // The diff tab is already the active center view while diffView is set.
@@ -180,10 +226,17 @@ export function useChatTabs({
       closeDiff();
       if (tabKey.startsWith(BROWSER_TAB_PREFIX)) {
         clearActiveFile();
+        deactivatePluginTab();
         activateBrowserTab(tabKey.slice(BROWSER_TAB_PREFIX.length));
         return;
       }
       deactivateBrowserTab();
+      if (tabKey.startsWith(PLUGIN_TAB_PREFIX)) {
+        clearActiveFile();
+        activatePluginTab(tabKey.slice(PLUGIN_TAB_PREFIX.length));
+        return;
+      }
+      deactivatePluginTab();
       if (tabKey.startsWith(FILE_TAB_PREFIX)) {
         activateFile(tabKey.slice(FILE_TAB_PREFIX.length));
         return;
@@ -192,7 +245,7 @@ export function useChatTabs({
       const item = sessionTabItems.find((i) => i.key === tabKey);
       if (item) focusTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);
     },
-    [sessionTabItems, focusTab, activateFile, clearActiveFile, closeDiff, activateBrowserTab, deactivateBrowserTab],
+    [sessionTabItems, focusTab, activateFile, clearActiveFile, closeDiff, activateBrowserTab, deactivateBrowserTab, activatePluginTab, deactivatePluginTab],
   );
   const handleTabClose = useCallback(
     (tabKey: string) => {
@@ -204,6 +257,10 @@ export function useChatTabs({
         closeBrowserTab(tabKey.slice(BROWSER_TAB_PREFIX.length));
         return;
       }
+      if (tabKey.startsWith(PLUGIN_TAB_PREFIX)) {
+        closePluginTab(tabKey.slice(PLUGIN_TAB_PREFIX.length));
+        return;
+      }
       if (tabKey.startsWith(FILE_TAB_PREFIX)) {
         const path = tabKey.slice(FILE_TAB_PREFIX.length);
         if (dirtyPaths[path]) setDialog({ kind: "closeFile", path });
@@ -213,7 +270,7 @@ export function useChatTabs({
       const item = sessionTabItems.find((i) => i.key === tabKey);
       if (item) closeTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);
     },
-    [sessionTabItems, closeTab, closeFile, dirtyPaths, closeDiff, setDialog, closeBrowserTab],
+    [sessionTabItems, closeTab, closeFile, dirtyPaths, closeDiff, setDialog, closeBrowserTab, closePluginTab],
   );
   // Drag-reorder stays within each tab-kind group (sessions, files,
   // browsers each reorder in their own store); cross-group drops are
@@ -223,7 +280,13 @@ export function useChatTabs({
       if (draggedKey === DIFF_TAB_KEY || targetKey === DIFF_TAB_KEY) return;
       // Reorder stays within a tab-kind group; cross-group drops are ignored.
       const kindOf = (key: string) =>
-        key.startsWith(FILE_TAB_PREFIX) ? "file" : key.startsWith(BROWSER_TAB_PREFIX) ? "browser" : "session";
+        key.startsWith(FILE_TAB_PREFIX)
+          ? "file"
+          : key.startsWith(BROWSER_TAB_PREFIX)
+            ? "browser"
+            : key.startsWith(PLUGIN_TAB_PREFIX)
+              ? "plugin"
+              : "session";
       if (kindOf(draggedKey) !== kindOf(targetKey)) return;
       if (kindOf(draggedKey) === "browser") {
         const draggedId = draggedKey.slice(BROWSER_TAB_PREFIX.length);
@@ -232,6 +295,15 @@ export function useChatTabs({
         let to = browserTabs.findIndex((t) => t.id === targetId) + (before ? 0 : 1);
         if (from >= 0 && from < to) to -= 1;
         moveBrowserTab(draggedId, to);
+        return;
+      }
+      if (kindOf(draggedKey) === "plugin") {
+        const draggedId = draggedKey.slice(PLUGIN_TAB_PREFIX.length);
+        const targetId = targetKey.slice(PLUGIN_TAB_PREFIX.length);
+        const from = pluginTabs.indexOf(draggedId);
+        let to = pluginTabs.indexOf(targetId) + (before ? 0 : 1);
+        if (from >= 0 && from < to) to -= 1;
+        movePluginTab(draggedId, to);
         return;
       }
       if (kindOf(draggedKey) === "file") {
@@ -251,7 +323,7 @@ export function useChatTabs({
       if (from < to) to -= 1;
       moveTab(dragged.engine, dragged.sessionId, dragged.workspacePath, to);
     },
-    [openFiles, moveOpenFile, sessionTabItems, moveTab, browserTabs, moveBrowserTab],
+    [openFiles, moveOpenFile, sessionTabItems, moveTab, browserTabs, moveBrowserTab, pluginTabs, movePluginTab],
   );
 
 
@@ -265,12 +337,13 @@ export function useChatTabs({
       closeTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);
     }
     for (const tab of browserTabs) closeBrowserTab(tab.id);
+    for (const id of pluginTabs) closePluginTab(id);
     const dirty = openFiles.filter((path) => dirtyPaths[path]);
     for (const path of openFiles) {
       if (!dirtyPaths[path]) closeFile(path);
     }
     if (dirty[0]) setDialog({ kind: "closeFile", path: dirty[0] });
-  }, [sessionTabItems, closeTab, openFiles, dirtyPaths, closeFile, closeDiff, setDialog, browserTabs, closeBrowserTab]);
+  }, [sessionTabItems, closeTab, openFiles, dirtyPaths, closeFile, closeDiff, setDialog, browserTabs, closeBrowserTab, pluginTabs, closePluginTab]);
 
   // Tab context menu "Close Inactive": drop the tabs that are neither in
   // view nor running. A session tab whose turn is still streaming stays —
@@ -287,6 +360,10 @@ export function useChatTabs({
     for (const tab of browserTabs) {
       if (tab.id === activeBrowserId) continue;
       closeBrowserTab(tab.id);
+    }
+    for (const id of pluginTabs) {
+      if (id === activePluginTabId) continue;
+      closePluginTab(id);
     }
     const others = openFiles.filter((path) => FILE_TAB_PREFIX + path !== activeTabKey);
     const dirty = others.filter((path) => dirtyPaths[path]);
@@ -306,6 +383,9 @@ export function useChatTabs({
     browserTabs,
     activeBrowserId,
     closeBrowserTab,
+    pluginTabs,
+    activePluginTabId,
+    closePluginTab,
   ]);
 
   return {
@@ -322,6 +402,8 @@ export function useChatTabs({
     activeFilePath,
     browserTabs,
     activeBrowserId,
+    pluginTabs,
+    activePluginTabId,
     diffView,
     closeDiff,
   };

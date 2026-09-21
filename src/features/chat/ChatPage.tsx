@@ -137,6 +137,8 @@ export default function ChatPage() {
     activeFilePath,
     browserTabs,
     activeBrowserId,
+    pluginTabs,
+    activePluginTabId,
     diffView,
     closeDiff,
   } = useChatTabs({ setDialog });
@@ -286,6 +288,8 @@ export default function ChatPage() {
             activeFilePath={activeFilePath}
             browserTabs={browserTabs}
             activeBrowserId={activeBrowserId}
+            pluginTabs={pluginTabs}
+            activePluginTabId={activePluginTabId}
             diffView={diffView}
             diffStatus={diffStatus}
             closeDiff={closeDiff}

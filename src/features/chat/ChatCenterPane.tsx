@@ -1,4 +1,6 @@
 import { lazy, Suspense } from "react";
+import { centerTabRegistry, pluginIdFromRegistryKey, useRegistry } from "@ccgui/plugin-sdk";
+import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-chat-composer";
 import { CenteredSpinner } from "@/components/base/empty-state";
 import { BrowserPane, useBrowserNavSync } from "@/features/browser/BrowserPane";
@@ -28,6 +30,8 @@ export function ChatCenterPane({
   activeFilePath,
   browserTabs,
   activeBrowserId,
+  pluginTabs,
+  activePluginTabId,
   diffView,
   diffStatus,
   closeDiff,
@@ -43,6 +47,10 @@ export function ChatCenterPane({
    *  activeFilePath; use-chat-tabs enforces it). */
   browserTabs: BrowserTab[];
   activeBrowserId: string | null;
+  /** Open plugin center tabs (registry ids) and the one in view (mutually
+   *  exclusive with the other surfaces; use-chat-tabs enforces it). */
+  pluginTabs: string[];
+  activePluginTabId: string | null;
   diffView: { workspacePath: string; target: DiffTarget } | null;
   diffStatus: GitStatus | undefined;
   closeDiff: () => void;
@@ -50,12 +58,14 @@ export function ChatCenterPane({
   // Native nav/title events → store, mounted once while this pane lives.
   useBrowserNavSync();
   const browserInView = activeBrowserId !== null && !diffView;
+  const pluginInView = activePluginTabId !== null && !diffView;
+  const centerTabDefs = useRegistry(centerTabRegistry);
   return (
     <>
       <div
         className={cx(
           "flex min-w-0 flex-col overflow-hidden bg-background-primary-default",
-          activeFilePath || browserInView || diffView
+          activeFilePath || browserInView || pluginInView || diffView
             ? "invisible absolute inset-0"
             : "relative min-w-0 flex-1 basis-0",
         )}
@@ -73,7 +83,7 @@ export function ChatCenterPane({
         <div
           className={cx(
             "flex min-w-0 flex-col overflow-hidden bg-background-primary-default",
-            activeFilePath && !browserInView && !diffView
+            activeFilePath && !browserInView && !pluginInView && !diffView
               ? "relative min-w-0 flex-1 basis-0"
               : "invisible absolute inset-0",
           )}
@@ -120,6 +130,42 @@ export function ChatCenterPane({
               <BrowserPane tab={tab} active={browserInView && tab.id === activeBrowserId} />
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Plugin center tabs (SDK 0.3.12 ui:center-tab): one pane per open tab,
+          keep-alive like the other surfaces; each renders its registered
+          component inside a plugin-scoped crash boundary. Stale ids (plugin
+          unloaded with a tab open) render nothing. */}
+      {pluginTabs.length > 0 && (
+        <div
+          className={cx(
+            "flex min-w-0 flex-col overflow-hidden bg-background-primary-default",
+            pluginInView
+              ? "relative min-w-0 flex-1 basis-0"
+              : "invisible absolute inset-0",
+          )}
+        >
+          {pluginTabs.map((tabId) => {
+            const def = centerTabDefs.find((d) => d.id === tabId);
+            if (!def) return null;
+            const TabComponent = def.component;
+            return (
+              <div
+                key={tabId}
+                className={cx(
+                  "min-h-0 flex-col",
+                  tabId === activePluginTabId
+                    ? "flex flex-1"
+                    : "invisible absolute inset-0",
+                )}
+              >
+                <PluginBoundary pluginId={pluginIdFromRegistryKey(tabId)}>
+                  <TabComponent />
+                </PluginBoundary>
+              </div>
+            );
+          })}
         </div>
       )}
 

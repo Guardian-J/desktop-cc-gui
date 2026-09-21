@@ -143,6 +143,29 @@ export interface TimelineRowRendererDef {
   component: ComponentType<{ row: { kind: string } }>;
 }
 
+/** Home sidebar nav entry (0.3.12): one row under the builtin 自动化 entry,
+ *  rendering through the same chrome as the builtin nav items. `onOpen`
+ *  typically opens the plugin's center tab (ctx.ui.openCenterTab). */
+export interface SidebarNavEntryDef {
+  id: string;
+  label: () => string;
+  icon?: ComponentType<{ className?: string }>;
+  order?: number;
+  onOpen: () => void;
+}
+
+/** Center-area tab definition (0.3.12): what a plugin can open as a tab in
+ *  the center tab strip. Definitions live in this registry; open-tab
+ *  INSTANCES are host-side runtime state (features/plugins/runtime/
+ *  center-tabs.ts), created via ctx.ui.openCenterTab. */
+export interface CenterTabDef {
+  id: string;
+  title: () => string;
+  icon?: ComponentType<{ className?: string }>;
+  component: ComponentType;
+  order?: number;
+}
+
 // ---------------------------------------------------------------------------
 // 注册表
 // ---------------------------------------------------------------------------
@@ -224,6 +247,12 @@ export const pageRegistry = new Registry<PageDef>();
 
 /** Chat timeline row renderer registry (plan §4.2 #5). */
 export const timelineRowRegistry = new Registry<TimelineRowRendererDef>();
+
+/** Home sidebar nav entries (0.3.12); rendered after the builtin 自动化 row. */
+export const sidebarNavRegistry = new Registry<SidebarNavEntryDef>();
+
+/** Center-area tab definitions (0.3.12). */
+export const centerTabRegistry = new Registry<CenterTabDef>();
 
 // ---------------------------------------------------------------------------
 // 注册表 id / 排序辅助

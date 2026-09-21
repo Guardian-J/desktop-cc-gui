@@ -17,6 +17,8 @@ import {
   statusBarRegistry,
   composerStatusRegistry,
   timelineRowRegistry,
+  sidebarNavRegistry,
+  centerTabRegistry,
 } from "@ccgui/plugin-sdk";
 import type {
   Disposer,
@@ -28,6 +30,7 @@ import { assertPluginEmitTopic, pluginBus } from "./events";
 import { setActiveComposerDraft } from "./composer-draft";
 import { addPluginWorkspace, openPluginSession } from "./workspace-bridge";
 import { registerSessionSource } from "./session-source";
+import { usePluginTabsStore } from "./center-tabs";
 import { runAsPlugin } from "./hardening";
 
 /** Storage transport the context talks to; the loader binds the IPC-backed
@@ -265,6 +268,38 @@ export function createPluginContext(
           }),
         );
       },
+      registerSidebarNav(def) {
+        requirePermission("ui:sidebar-entry");
+        return track(
+          sidebarNavRegistry.register({
+            id: scopedPluginId(id, def.key),
+            label: def.label,
+            icon: def.icon,
+            order: def.order,
+            onOpen: () => runAsPlugin(def.onOpen),
+          }),
+        );
+      },
+      registerCenterTab(def) {
+        requirePermission("ui:center-tab");
+        return track(
+          centerTabRegistry.register({
+            id: scopedPluginId(id, def.key),
+            title: def.title,
+            icon: def.icon,
+            component: def.component,
+            order: def.order,
+          }),
+        );
+      },
+      openCenterTab(key) {
+        requirePermission("ui:center-tab");
+        const tabId = scopedPluginId(id, key);
+        if (!centerTabRegistry.get(tabId)) {
+          throw new Error(`[plugins] "${id}" opened unregistered center tab ${tabId}`);
+        }
+        usePluginTabsStore.getState().openTab(tabId);
+      },
     },
     theme: {
       injectCss(css) {
@@ -375,6 +410,24 @@ export function createPluginContext(
         );
       },
     },
+    agent: {
+      start(def) {
+        requirePermission("agent");
+        return backend.bridgeInvoke("plugin_agent_start", {
+          pluginId: id,
+          engine: def.engine,
+          prompt: def.prompt,
+          workspacePath: def.workspacePath,
+          model: def.model ?? null,
+          providerId: def.providerId ?? null,
+          sessionId: def.sessionId ?? null,
+        }) as Promise<{ runId: string; sessionId: string | null }>;
+      },
+      async interrupt(runId) {
+        requirePermission("agent");
+        await backend.bridgeInvoke("plugin_agent_interrupt", { pluginId: id, runId });
+      },
+    },
     bridge: {
       invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
         // JS 侧预检（DX；真边界是 Rust 侧的服务端强制）：授权未命中即
@@ -405,10 +458,18 @@ export function createPluginContext(
               new Error(`[plugins] "${id}" used plugin_exec_kill without any exec: grant`),
             );
           }
+        } else if (command === "plugin_agent_start" || command === "plugin_agent_interrupt") {
+          // 通用出口与 ctx.agent 同一能力：引擎管线走宿主（渠道/注册表/
+          // 事件流）；run id 的属主前缀在 Rust 侧强制。
+          if (!manifest.permissions.includes("agent")) {
+            return Promise.reject(
+              new Error(`[plugins] "${id}" used ${command} without declaring "agent" in permissions`),
+            );
+          }
         } else {
           return Promise.reject(
             new Error(
-              `[plugins] unknown bridge command "${command}" (available: plugin_http_request / plugin_exec_run / plugin_exec_spawn / plugin_exec_kill)`,
+              `[plugins] unknown bridge command "${command}" (available: plugin_http_request / plugin_exec_run / plugin_exec_spawn / plugin_exec_kill / plugin_agent_start / plugin_agent_interrupt)`,
             ),
           );
         }
