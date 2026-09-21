@@ -21,8 +21,10 @@ export interface SettingsSectionDef {
   /** Resolved at render time so language flips re-label the rail. */
   label: () => string;
   icon?: ComponentType<{ className?: string }>;
-  /** Nav group: core settings rail vs the CLI 管理 rail. */
-  group: "settings" | "cli";
+  /** Nav group id: 系统 system / 插件 plugins / CLI 管理 cli / 工作区与数据
+   *  workspace / 其他 misc. Open string so SDK consumers can introduce new
+   *  rails — the settings page appends unknown groups after the known ones. */
+  group: string;
   /** Rail order within the group; builtins use their old fixed order,
    *  plugin sections default after them. */
   order: number;

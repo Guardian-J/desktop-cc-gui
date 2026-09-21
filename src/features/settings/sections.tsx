@@ -51,7 +51,7 @@ settingsRegistry.register({
   key: "general",
   label: () => i18n.t("settings.general"),
   icon: Settings,
-  group: "settings",
+  group: "system",
   order: 0,
   component: GeneralSection,
 });
@@ -60,7 +60,7 @@ settingsRegistry.register({
   key: "proxy",
   label: () => i18n.t("settings.proxy"),
   icon: Globe,
-  group: "settings",
+  group: "misc",
   order: 1,
   component: ProxySection,
 });
@@ -69,8 +69,8 @@ settingsRegistry.register({
   key: "workspaces",
   label: () => i18n.t("settings.workspaces"),
   icon: FolderSymlink,
-  group: "settings",
-  order: 2,
+  group: "workspace",
+  order: 0,
   component: WorkspacesSection,
 });
 settingsRegistry.register({
@@ -78,8 +78,8 @@ settingsRegistry.register({
   key: "archivedSessions",
   label: () => i18n.t("settings.archivedSessions"),
   icon: Archive,
-  group: "settings",
-  order: 3,
+  group: "workspace",
+  order: 1,
   component: ArchivedSessionsSection,
 });
 settingsRegistry.register({
@@ -87,8 +87,8 @@ settingsRegistry.register({
   key: "shortcuts",
   label: () => i18n.t("shortcuts.sectionTitle"),
   icon: Keyboard,
-  group: "settings",
-  order: 3,
+  group: "misc",
+  order: 2,
   component: ShortcutsSection,
 });
 settingsRegistry.register({
@@ -96,8 +96,8 @@ settingsRegistry.register({
   key: "agentsPrompts",
   label: () => i18n.t("settings.agentsPrompts"),
   icon: Bot,
-  group: "settings",
-  order: 3,
+  group: "misc",
+  order: 0,
   component: AgentsPromptsSection,
 });
 settingsRegistry.register({
@@ -105,8 +105,8 @@ settingsRegistry.register({
   key: "webAccess",
   label: () => i18n.t("settings.webAccess"),
   icon: Smartphone,
-  group: "settings",
-  order: 3,
+  group: "system",
+  order: 1,
   component: WebAccessSection,
 });
 settingsRegistry.register({
@@ -114,8 +114,8 @@ settingsRegistry.register({
   key: "usage",
   label: () => i18n.t("usage.title"),
   icon: ChartColumn,
-  group: "settings",
-  order: 4,
+  group: "workspace",
+  order: 2,
   component: UsageSection,
 });
 settingsRegistry.register({
@@ -123,8 +123,8 @@ settingsRegistry.register({
   key: "about",
   label: () => i18n.t("settings.about"),
   icon: Info,
-  group: "settings",
-  order: 4,
+  group: "misc",
+  order: 3,
   component: AboutSection,
 });
 ENGINE_IDS.forEach((engine, index) => {

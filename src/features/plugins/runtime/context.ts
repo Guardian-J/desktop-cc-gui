@@ -146,7 +146,7 @@ export function createPluginContext(
             key,
             label: def.label,
             icon: def.icon,
-            group: "settings",
+            group: "plugins",
             order: 1000,
             component: def.component,
           }),
