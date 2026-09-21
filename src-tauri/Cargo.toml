@@ -43,6 +43,19 @@ zstd = "0.13"
 which = "7"
 # PTY for the integrated terminal panel.
 portable-pty = "0.8"
+# Computer use (src/computer_use.rs): xcap captures the screen, enigo injects
+# mouse/keyboard input; rmcp serves both as an stdio MCP server
+# (`--computer-use-mcp`) that engine CLIs spawn as a child process.
+xcap = "0.9"
+enigo = "0.6"
+image = "0.25"
+rmcp = { version = "3.4", features = ["server", "macros", "transport-io"] }
+# Drag the app bundle out of the window into System Settings' permission
+# lists (macOS Accessibility / Screen Recording accept drop-to-authorize).
+tauri-plugin-drag = "2.1"
+# Global Esc-to-stop while a computer-use run is active; registered only for
+# the run's lifetime so Esc is never stolen outside a session.
+tauri-plugin-global-shortcut = "2"
 sysinfo = "0.36.1"
 libc = "0.2"
 # LAN web access: serves the built frontend and bridges the command/event

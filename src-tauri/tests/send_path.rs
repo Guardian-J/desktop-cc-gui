@@ -58,6 +58,9 @@ fn build_app(
         web: ccgui_next_lib::web::WebAccessState::default(),
         relay: ccgui_next_lib::relay::RelayState::default(),
         dsh_host: Arc::new(ccgui_next_lib::dsh_host::DshHostState::default()),
+        opencode_server: std::sync::Arc::new(
+            ccgui_next_lib::engine::opencode_server::OpencodeServerState::default(),
+        ),
     };
     app.manage(state);
     app.manage(ConfigStore::default());
@@ -95,6 +98,7 @@ async fn send_message_streams_events_end_to_end() {
         workspace.to_string_lossy().to_string(),
         None,
         "hi".to_string(),
+        None,
         None,
         None,
         None,
@@ -209,6 +213,7 @@ sleep 60
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -289,6 +294,9 @@ fn ipc_send_message_accepts_camel_case_args() {
         web: ccgui_next_lib::web::WebAccessState::default(),
         relay: ccgui_next_lib::relay::RelayState::default(),
         dsh_host: Arc::new(ccgui_next_lib::dsh_host::DshHostState::default()),
+        opencode_server: std::sync::Arc::new(
+            ccgui_next_lib::engine::opencode_server::OpencodeServerState::default(),
+        ),
     });
     app.manage(ConfigStore::default());
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -368,6 +376,7 @@ echo '{"type":"agent_end"}'
             workspace.to_string_lossy().into(),
             None,
             "hi".into(),
+            None,
             None,
             None,
             None,

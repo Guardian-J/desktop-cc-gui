@@ -116,6 +116,9 @@ struct SendMessageArgs {
     effort: Option<String>,
     permission: Option<String>,
     provider_id: Option<String>,
+    /// Desktop-only feature; default keeps older web clients compatible.
+    #[serde(default)]
+    computer_use: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -550,6 +553,7 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
                 a.permission,
                 a.provider_id,
                 a.run_id,
+                a.computer_use,
             )
             .await)
         }
