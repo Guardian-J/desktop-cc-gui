@@ -297,14 +297,22 @@ pub fn inject_workspace_mcp(workspace: &Path) -> Result<Option<McpRestore>, Stri
         }
         let exe = std::env::current_exe()
             .map_err(|e| format!("resolve own exe for computer use: {e}"))?;
-        servers.insert(
-            MCP_SERVER_NAME.to_string(),
-            serde_json::json!({
-                "type": "stdio",
-                "command": exe.to_string_lossy(),
-                "args": ["--computer-use-mcp"],
-            }),
-        );
+        let mut server = serde_json::json!({
+            "type": "stdio",
+            "command": exe.to_string_lossy(),
+            "args": ["--computer-use-mcp"],
+        });
+        // Same overlay control channel as the claude --mcp-config path.
+        if let (Some(base), Some(token)) = (
+            crate::cu_overlay::control_base(),
+            crate::cu_overlay::control_token(),
+        ) {
+            server["env"] = serde_json::json!({
+                "CCGUI_CU_CONTROL": base,
+                "CCGUI_CU_TOKEN": token,
+            });
+        }
+        servers.insert(MCP_SERVER_NAME.to_string(), server);
     }
     if created_file {
         let parent = path.parent().unwrap();
@@ -522,11 +530,49 @@ fn capture_frame(display_id: Option<u32>) -> Result<CapturedFrame, String> {
 fn new_enigo() -> Result<Enigo, String> {
     Enigo::new(&Settings::default()).map_err(|e| format!("init input driver: {e}"))
 }
+// ---- Virtual cursor reporting (MCP child → main app) ----
+
+fn control_client() -> Option<(reqwest::blocking::Client, String, String)> {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    let base = std::env::var("CCGUI_CU_CONTROL").ok()?;
+    let token = std::env::var("CCGUI_CU_TOKEN").ok()?;
+    Some((CLIENT.get_or_init(reqwest::blocking::Client::new).clone(), base, token))
+}
+
+/// Tell the main app's overlay where the next action lands. Fire-and-forget:
+/// loopback is sub-millisecond and a dead channel must never fail an action.
+pub(crate) fn notify_cursor(x: i32, y: i32) {
+    let Some((client, base, token)) = control_client() else {
+        return;
+    };
+    let _ = client
+        .post(format!("{base}/cursor"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "x": x, "y": y }))
+        .timeout(Duration::from_millis(250))
+        .send();
+}
+
+/// Session brackets from the MCP child: show the pointer on initialize,
+/// hide it when stdin closes (the engine run is over).
+pub(crate) fn notify_session(active: bool) {
+    let Some((client, base, token)) = control_client() else {
+        return;
+    };
+    let _ = client
+        .post(format!("{base}/session"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "active": active }))
+        .timeout(Duration::from_millis(250))
+        .send();
+}
 
 fn logical_point(x: f64, y: f64, display_id: Option<u32>) -> Result<(i32, i32), String> {
     let (_, info) = pick_display(display_id)?;
     let (fw, fh) = frame_dims(&info);
-    Ok(frame_to_logical(x, y, fw, fh, &info))
+    let point = frame_to_logical(x, y, fw, fh, &info);
+    notify_cursor(point.0, point.1);
+    Ok(point)
 }
 
 fn action_move(x: f64, y: f64, display_id: Option<u32>) -> Result<String, String> {
@@ -633,6 +679,11 @@ const MAX_TYPE_CHARS: usize = 4096;
 
 fn action_type(text: &str) -> Result<String, String> {
     require_accessibility()?;
+    if let Ok(enigo) = new_enigo() {
+        if let Ok((x, y)) = enigo.location() {
+            notify_cursor(x, y);
+        }
+    }
     if text.chars().count() > MAX_TYPE_CHARS {
         return Err(format!("text too long (max {MAX_TYPE_CHARS} chars); split it into multiple type calls"));
     }
@@ -718,6 +769,11 @@ pub(crate) fn parse_key_chord(chord: &str) -> Result<(Vec<Key>, Key), String> {
 
 fn action_key(chord: &str) -> Result<String, String> {
     require_accessibility()?;
+    if let Ok(enigo) = new_enigo() {
+        if let Ok((x, y)) = enigo.location() {
+            notify_cursor(x, y);
+        }
+    }
     let (modifiers, key) = parse_key_chord(chord)?;
     let mut enigo = new_enigo()?;
     for modifier in &modifiers {
@@ -849,6 +905,100 @@ pub mod mcp {
     struct WaitParams {
         /// Milliseconds to wait (max 10000).
         ms: u64,
+    }
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct ElementRefParams {
+        /// state_id from get_app_state (e.g. "s3"); a stale id is refused.
+        state: String,
+        /// Element ref from the tree — the number in brackets, e.g. [4].
+        #[serde(rename = "ref")]
+        ref_id: usize,
+    }
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct SetValueParams {
+        /// state_id from get_app_state (e.g. "s3"); a stale id is refused.
+        state: String,
+        /// Element ref from the tree — the number in brackets, e.g. [4].
+        #[serde(rename = "ref")]
+        ref_id: usize,
+        /// The value to write into the field.
+        value: String,
+    }
+    /// One step of a `sequence` call. Coordinates are screenshot pixels,
+    /// same as the single-action tools.
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub(crate) enum SequenceAction {
+        /// Left-click at (x, y).
+        LeftClick { x: f64, y: f64 },
+        /// Right-click at (x, y).
+        RightClick { x: f64, y: f64 },
+        /// Double-click at (x, y).
+        DoubleClick { x: f64, y: f64 },
+        /// Move the cursor to (x, y).
+        MouseMove { x: f64, y: f64 },
+        /// Drag from one point to another.
+        Drag {
+            from_x: f64,
+            from_y: f64,
+            to_x: f64,
+            to_y: f64,
+        },
+        /// Scroll at the current position; positive delta_y scrolls down.
+        Scroll { delta_x: i32, delta_y: i32 },
+        /// Type text at the current focus.
+        Type { text: String },
+        /// Press a key or chord, e.g. "enter", "cmd+v".
+        Key { key: String },
+        /// Wait for the UI to settle (max 10000 ms).
+        Wait { ms: u64 },
+    }
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct SequenceParams {
+        /// Actions to execute in order (max 32). Stops at the first
+        /// failure and reports which step failed.
+        actions: Vec<SequenceAction>,
+        /// Attach a screenshot after the last action (default true). Set
+        /// false when the model already knows the expected end state and
+        /// wants to skip the extra image.
+        screenshot_after: Option<bool>,
+        /// Display id from `list_displays`; omit for the primary display.
+        display_id: Option<u32>,
+    }
+
+    /// Run one batch step; reuses the single-action implementations so
+    /// validation and error text stay identical.
+    pub(crate) fn run_sequence_step(action: &SequenceAction, display_id: Option<u32>) -> Result<String, String> {
+        match action {
+            SequenceAction::LeftClick { x, y } => {
+                action_click(Button::Left, "Left", Some(*x), Some(*y), 1, display_id)
+            }
+            SequenceAction::RightClick { x, y } => {
+                action_click(Button::Right, "Right", Some(*x), Some(*y), 1, display_id)
+            }
+            SequenceAction::DoubleClick { x, y } => {
+                action_click(Button::Left, "Double", Some(*x), Some(*y), 2, display_id)
+            }
+            SequenceAction::MouseMove { x, y } => action_move(*x, *y, display_id),
+            SequenceAction::Drag {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+            } => action_drag(*from_x, *from_y, *to_x, *to_y, display_id),
+            SequenceAction::Scroll { delta_x, delta_y } => {
+                action_scroll(None, None, *delta_x, *delta_y, display_id)
+            }
+            SequenceAction::Type { text } => action_type(text),
+            SequenceAction::Key { key } => action_key(key),
+            SequenceAction::Wait { ms } => {
+                let ms = (*ms).min(10_000);
+                std::thread::sleep(Duration::from_millis(ms));
+                Ok(format!("Waited {ms} ms."))
+            }
+        }
     }
 
     #[derive(Clone, Default)]
@@ -1013,6 +1163,39 @@ pub mod mcp {
             action_result(message, params.display_id)
         }
 
+        #[tool(description = "Read the frontmost app's accessibility tree (macOS only): a fast text snapshot of its controls — role, label, position, supported actions — with refs for press_element/set_element_value. MUCH cheaper and faster than a screenshot; try this FIRST for app interactions, and fall back to screenshot when the tree does not cover the target (canvas, custom-drawn UI).")]
+        fn get_app_state(&self) -> Result<CallToolResult, McpError> {
+            require_accessibility().map_err(tool_error)?;
+            let text = crate::computer_use_ax::app_state().map_err(tool_error)?;
+            Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+        }
+
+        #[tool(description = "Press (click) an accessibility element by ref from get_app_state. Precise and does not depend on pixel coordinates.")]
+        fn press_element(
+            &self,
+            Parameters(params): Parameters<ElementRefParams>,
+        ) -> Result<CallToolResult, McpError> {
+            require_accessibility().map_err(tool_error)?;
+            let message =
+                crate::computer_use_ax::press(&params.state, params.ref_id).map_err(tool_error)?;
+            action_result(message, None)
+        }
+
+        #[tool(description = "Set the value of a text-field element by ref from get_app_state. Writes the value directly — no focusing click, no typing; better than left_click + type_text whenever the field has a ref.")]
+        fn set_element_value(
+            &self,
+            Parameters(params): Parameters<SetValueParams>,
+        ) -> Result<CallToolResult, McpError> {
+            require_accessibility().map_err(tool_error)?;
+            let message = crate::computer_use_ax::set_value(
+                &params.state,
+                params.ref_id,
+                &params.value,
+            )
+            .map_err(tool_error)?;
+            action_result(message, None)
+        }
+
         #[tool(description = "Wait for the UI to settle (e.g. after opening an app), then take a fresh screenshot.")]
         fn wait(
             &self,
@@ -1021,6 +1204,40 @@ pub mod mcp {
             let ms = params.ms.min(10_000);
             std::thread::sleep(Duration::from_millis(ms));
             action_result(format!("Waited {ms} ms."), None)
+        }
+        #[tool(description = "Execute a batch of actions in one call (clicks, typing, keys, scrolls, drags, waits). Much faster than one tool call per action: the model plans several steps from a single screenshot, and only the final screenshot comes back. Stops at the first failing step.")]
+        fn sequence(
+            &self,
+            Parameters(params): Parameters<SequenceParams>,
+        ) -> Result<CallToolResult, McpError> {
+            require_accessibility().map_err(tool_error)?;
+            if params.actions.is_empty() {
+                return Err(tool_error("actions must not be empty".into()));
+            }
+            if params.actions.len() > 32 {
+                return Err(tool_error("too many actions (max 32); split the batch".into()));
+            }
+            let mut done = Vec::new();
+            for (index, action) in params.actions.iter().enumerate() {
+                match run_sequence_step(action, params.display_id) {
+                    Ok(message) => done.push(format!("{}. {message}", index + 1)),
+                    Err(error) => {
+                        let completed = done.join("\n");
+                        return Err(tool_error(format!(
+                            "step {} failed: {error}\ncompleted steps:\n{completed}",
+                            index + 1
+                        )));
+                    }
+                }
+                // Small settle between steps so fast UIs keep up; the final
+                // screenshot's own settle delay still applies.
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let summary = format!("Executed {} actions:\n{}", done.len(), done.join("\n"));
+            if params.screenshot_after == Some(false) {
+                return Ok(CallToolResult::success(vec![ContentBlock::text(summary)]));
+            }
+            action_result(summary, params.display_id)
         }
     }
 
@@ -1038,9 +1255,16 @@ pub mod mcp {
             info.server_info = implementation;
             info.instructions = Some(
                 "These tools see and control the user's real machine. \
-                 Loop: screenshot → decide one action → act → read the returned screenshot. \
+                 Loop: screenshot → act → read the returned screenshot. \
                  Coordinates are always in the pixels of the latest screenshot of the same display. \
-                 Never batch blind actions; verify each step with the follow-up image. \
+                 On macOS, prefer get_app_state over screenshot for app interactions: the tree is \
+                 far cheaper to read and its refs are precise. Use screenshot for whatever the \
+                 tree does not expose (canvas, custom-drawn UI, web content that hides its DOM). \
+                 Speed matters: when the next few steps are obvious from the current screen \
+                 (e.g. click a field, type, press enter), plan them as ONE `sequence` call instead \
+                 of many single-action calls. Never batch a step whose target depends on the \
+                 previous step's visual result — stop the batch there and look at the returned \
+                 screenshot first. \
                  If a tool reports a missing OS permission, stop and tell the user to grant it \
                  in CC GUI → Settings → Computer Use."
                     .into(),
@@ -1061,11 +1285,13 @@ pub mod mcp {
                 .serve(rmcp::transport::stdio())
                 .await
                 .map_err(|e| format!("MCP initialize: {e}"))?;
-            server
+            crate::computer_use::notify_session(true);
+            let result = server
                 .waiting()
                 .await
-                .map_err(|e| format!("MCP serve: {e}"))?;
-            Ok(())
+                .map_err(|e| format!("MCP serve: {e}"));
+            crate::computer_use::notify_session(false);
+            result.map(|_| ())
         })
     }
 }
@@ -1134,6 +1360,32 @@ mod tests {
         assert!(parse_key_chord("").is_err());
         assert!(parse_key_chord("c+cmd").is_err());
         assert!(parse_key_chord("cmd+nosuchkey").is_err());
+    }
+    #[test]
+    fn sequence_action_deserializes_tagged_batch() {
+        let batch: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+                {"type":"left_click","x":100.0,"y":200.0},
+                {"type":"type","text":"你好"},
+                {"type":"key","key":"cmd+enter"},
+                {"type":"wait","ms":300},
+                {"type":"drag","from_x":1.0,"from_y":2.0,"to_x":3.0,"to_y":4.0}
+            ]"#,
+        )
+        .unwrap();
+        let actions: Vec<mcp::SequenceAction> = batch
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(actions.len(), 5);
+        // 未知动作类型在参数校验阶段就被拒绝。
+        assert!(serde_json::from_value::<mcp::SequenceAction>(
+            serde_json::json!({"type":"explode","x":1.0,"y":2.0})
+        )
+        .is_err());
+        // Wait 步不需要任何 OS 权限,可真实执行。
+        assert!(mcp::run_sequence_step(&mcp::SequenceAction::Wait { ms: 1 }, None).is_ok());
     }
     // ---- omp MCP injection ----
 

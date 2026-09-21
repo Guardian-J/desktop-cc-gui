@@ -6,6 +6,8 @@ pub mod cc_switch;
 pub mod cli_lifecycle;
 pub mod config;
 pub mod computer_use;
+pub mod computer_use_ax;
+pub mod cu_overlay;
 pub mod db;
 pub mod dsh_host;
 pub mod engine;
@@ -154,6 +156,12 @@ pub fn run() {
             // otherwise every provider mutation panics with "state() called
             // before manage()".
             app.manage(config::ConfigStore::default());
+            // Virtual cursor overlay + its loopback control channel: the
+            // --computer-use-mcp child posts action targets here so the
+            // blue pointer can follow the agent.
+            if let Err(error) = cu_overlay::init(app.handle()) {
+                eprintln!("[cu-overlay] init failed (overlay disabled): {error}");
+            }
             app.manage(metrics::MetricsState::new());
             app.manage(baidu_tongji::BaiduTongjiState::load());
             // Keep the pairing key from lingering: while the switch is on, a
@@ -257,6 +265,7 @@ pub fn run() {
                     plugin_caps::kill_all_tracked_children();
                     tauri::async_runtime::block_on(terminal::kill_all(&state.terminals));
                     computer_use::disarm_esc(&window.app_handle());
+                    cu_overlay::shutdown();
                 }
             }
         })
