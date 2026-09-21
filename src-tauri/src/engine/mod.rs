@@ -702,6 +702,7 @@ async fn send_reserved(
     } else {
         launch.req.model.clone()
     };
+    let initial_effort = launch.req.effort.clone().filter(|e| !e.trim().is_empty());
     let ctx = RunContext {
         core: TurnCore {
             sink: Arc::clone(&state.sink),
@@ -713,6 +714,7 @@ async fn send_reserved(
         pid,
         preassigned_session_id: launch.built.preassigned_session_id.clone(),
         initial_model,
+        initial_effort,
         child,
         killed,
         cleanup_files,
@@ -1390,6 +1392,7 @@ mod retry_lifecycle_tests {
             pid: child.id().unwrap(),
             preassigned_session_id: Some("session".to_string()),
             initial_model: None,
+            initial_effort: None,
             child: Arc::new(TokioMutex::new(child)),
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_files: vec![path],
@@ -1437,6 +1440,7 @@ mod retry_lifecycle_tests {
             pid: child.id().unwrap(),
             preassigned_session_id: None,
             initial_model: None,
+            initial_effort: None,
             child: Arc::new(TokioMutex::new(child)),
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_files: Vec::new(),
@@ -1545,6 +1549,7 @@ mod retry_lifecycle_tests {
             pid,
             preassigned_session_id: Some("session-held".to_string()),
             initial_model: None,
+            initial_effort: None,
             child,
             killed,
             cleanup_files: Vec::new(),
