@@ -3,7 +3,7 @@
 
 use super::events::EngineEvent;
 use super::codex_usage;
-use super::registry::ProcessRegistry;
+use super::registry::{ProcessRegistry, kill_process_group};
 use super::Engine;
 #[cfg(windows)]
 use super::job;
@@ -620,7 +620,7 @@ pub(crate) async fn read_line_capped(
     }
 }
 /// Read NDJSON stdout until EOF, dispatch events, then settle the turn:
-/// registry cleanup, temp-file cleanup, and the terminal done/error terminal.
+/// registry cleanup, temp-file cleanup, and the terminal done/error event.
 pub(crate) async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
     let mut state = TurnState::new(ctx.preassigned_session_id.clone());
     if let Some(model) = ctx.initial_model.clone() {
@@ -970,6 +970,7 @@ mod staging_tests {
             pid: 4242,
             preassigned_session_id: None,
             initial_model: None,
+            initial_effort: None,
             child: Arc::new(TokioMutex::new(child)),
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_files: Vec::new(),

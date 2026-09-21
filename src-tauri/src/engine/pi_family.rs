@@ -859,6 +859,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn message_end_reports_actual_thinking_effort() {
+        let mut out = Vec::new();
+        parse_pi_family_line(
+            &serde_json::json!({
+                "type": "message_end",
+                "message": { "model": "kimi-k2", "thinking_effort": "xhigh" }
+            })
+            .to_string(),
+            &mut out,
+        );
+        assert!(
+            out.iter().any(|e| matches!(e, EngineEvent::Effort(level) if level == "xhigh")),
+            "got {out:?}"
+        );
+
+        // Blank or absent effort emits nothing.
+        for line in [
+            serde_json::json!({ "type": "message_end", "thinking_effort": " " }).to_string(),
+            serde_json::json!({ "type": "message_end", "message": {} }).to_string(),
+        ] {
+            let mut out = Vec::new();
+            parse_pi_family_line(&line, &mut out);
+            assert!(!out.iter().any(|e| matches!(e, EngineEvent::Effort(_))), "got {out:?}");
+        }
+    }
+
+    #[test]
     fn stream_updates_skip_snapshots_and_preserve_delta_order() {
         let mut out = Vec::new();
         for (kind, text) in [("thinking_delta", "思考\n"), ("text_delta", "答案\"你好\"")] {

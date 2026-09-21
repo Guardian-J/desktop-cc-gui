@@ -175,7 +175,7 @@ function onEffort(
   if (!reported) return;
   deps.set((s) => {
     const cur = s.bySession[key];
-    if (!cur) return {};
+    if (!cur || cur.activeEffort === reported) return {};
     return {
       bySession: {
         ...s.bySession,
