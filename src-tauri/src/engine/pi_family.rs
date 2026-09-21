@@ -372,7 +372,7 @@ impl Engine for PiFamilyEngine {
             };
             return Ok(BuiltCommand {
                 command: cmd,
-                stdin_payload: Some(format!("{payload}\n")),
+                stdin_payload: Some(payload),
                 // 提问应答(extension_ui_response)在同一根 stdin 上回写;
                 // Done 事件落定时 reader 会关闭它,rpc 进程随之 drain 退出。
                 keep_stdin_open: true,

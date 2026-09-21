@@ -105,12 +105,24 @@ impl Engine for ClaudeEngine {
             // closed on missing OS grants.
             let exe = std::env::current_exe()
                 .map_err(|e| format!("resolve own exe for computer use: {e}"))?;
+            let mut server = serde_json::json!({
+                "command": exe.to_string_lossy(),
+                "args": ["--computer-use-mcp"],
+            });
+            // Overlay control channel: the child reports action targets so
+            // the main app's virtual cursor can follow (absent in tests).
+            if let (Some(base), Some(token)) = (
+                crate::cu_overlay::control_base(),
+                crate::cu_overlay::control_token(),
+            ) {
+                server["env"] = serde_json::json!({
+                    "CCGUI_CU_CONTROL": base,
+                    "CCGUI_CU_TOKEN": token,
+                });
+            }
             let config = serde_json::json!({
                 "mcpServers": {
-                    "ccgui-computer": {
-                        "command": exe.to_string_lossy(),
-                        "args": ["--computer-use-mcp"],
-                    }
+                    "ccgui-computer": server,
                 }
             });
             cmd.arg("--mcp-config");

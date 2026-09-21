@@ -13,7 +13,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "unstable"] }
+tauri = { version = "2", features = ["protocol-asset", "unstable", "macos-private-api"] }
+# macos-private-api: WebviewWindowBuilder::transparent on macOS (cursor
+# overlay window, src/cu_overlay.rs) is gated behind it.
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
@@ -68,7 +70,7 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = ["c
 serde_yaml = "0.9"
 # Linux-native Baidu Tongji transport: fixed hm.js fetch + hm.gif beacon with
 # rustls so it never touches the vendored-openssl stack or WebKit networking.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "multipart", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "multipart", "json", "blocking"] }
 
 [target.'cfg(windows)'.dependencies]
 # Live User/Machine PATH for CLI discovery: a GUI process inherits the PATH
