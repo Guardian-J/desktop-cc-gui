@@ -1104,6 +1104,9 @@ mod permission_tests {
         assert_eq!(prompt["type"], "prompt");
         assert_eq!(prompt["message"], request.prompt);
         assert!(lines.next().is_none(), "unexpected extra command: {payload}");
+        // 末尾不得自带换行:writer 统一补 `\n`,自带会在 rpc stdin 上产生
+        // 空行,pi 回一帧 `command:"parse"` 失败响应(parse 错误警告横幅)。
+        assert!(!payload.ends_with('\n'), "writer appends the terminator: {payload:?}");
         assert!(built.keep_stdin_open);
     }
 
