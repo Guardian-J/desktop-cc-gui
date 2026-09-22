@@ -164,6 +164,9 @@ impl Engine for CodexEngine {
     fn supports_images(&self) -> bool {
         true // -i/--image FILE
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
     fn supported_permissions(&self) -> &'static [&'static str] {
         &["auto", "manual", "bypass"]
     }

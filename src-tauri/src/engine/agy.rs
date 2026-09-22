@@ -46,6 +46,9 @@ impl Engine for AgyEngine {
     fn supports_images(&self) -> bool {
         false
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
 
     fn supported_permissions(&self) -> &'static [&'static str] {
         &["auto", "plan", "bypass"]

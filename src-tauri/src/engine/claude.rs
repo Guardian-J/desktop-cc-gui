@@ -51,6 +51,9 @@ impl Engine for ClaudeEngine {
     fn supports_computer_use(&self) -> bool {
         true
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
     fn supported_permissions(&self) -> &'static [&'static str] {
         &["auto", "manual", "plan", "bypass"]
     }
@@ -141,22 +144,34 @@ impl Engine for ClaudeEngine {
             // reading native settings here would remap independent channels.
             cmd.arg(model);
         }
-        // Claude Code has no effort flag; the thinking budget env var is the
-        // effort knob. "low" stays at the CLI default (no forced thinking).
-        match req.effort.as_deref() {
-            Some("medium") => {
-                cmd.env("MAX_THINKING_TOKENS", "16384");
+        if let Some(effort) = req.effort.as_deref() {
+            let level = match effort {
+                "low" => "low",
+                "medium" => "medium",
+                "high" => "high",
+                "xhigh" => "xhigh",
+                "max" | "ultra" => "max",
+                _ => effort,
+            };
+            cmd.arg("--effort");
+            cmd.arg(level);
+            cmd.env("CLAUDE_CODE_EFFORT_LEVEL", level);
+            // Keep MAX_THINKING_TOKENS for older CLI versions or custom token budgets.
+            match level {
+                "medium" => {
+                    cmd.env("MAX_THINKING_TOKENS", "16384");
+                }
+                "high" => {
+                    cmd.env("MAX_THINKING_TOKENS", "65536");
+                }
+                "xhigh" => {
+                    cmd.env("MAX_THINKING_TOKENS", "131072");
+                }
+                "max" => {
+                    cmd.env("MAX_THINKING_TOKENS", "262144");
+                }
+                _ => {}
             }
-            Some("high") => {
-                cmd.env("MAX_THINKING_TOKENS", "65536");
-            }
-            Some("xhigh") => {
-                cmd.env("MAX_THINKING_TOKENS", "131072");
-            }
-            Some("max") => {
-                cmd.env("MAX_THINKING_TOKENS", "262144");
-            }
-            _ => {}
         }
         // Granted directories ride every launch: the CLI cannot expand its
         // allowed-dirs mid-process, and each send is a fresh process anyway,
@@ -1421,5 +1436,46 @@ mod tests {
             }
             _ => panic!("expected done event"),
         }
+    }
+
+    #[test]
+    fn build_command_passes_effort_flag() {
+        let engine = ClaudeEngine::new();
+        let mut request = SendRequest {
+            session_id: None,
+            prompt: "hi".into(),
+            images: vec![],
+            workspace: std::path::PathBuf::from("/tmp"),
+            model: None,
+            effort: Some("xhigh".into()),
+            service_tier: None,
+            permission: None,
+            additional_dirs: vec![],
+            provider_id: None,
+            computer_use: None,
+        };
+        let built = engine.build_command(&request, "claude").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
+
+        // ultra is clamped to max
+        request.effort = Some("ultra".into());
+        let built = engine.build_command(&request, "claude").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--effort", "max"]));
+        assert_eq!(
+            built.command.as_std().get_envs().find(|(k, _)| *k == "CLAUDE_CODE_EFFORT_LEVEL").and_then(|(_, v)| v),
+            Some(std::ffi::OsStr::new("max"))
+        );
     }
 }

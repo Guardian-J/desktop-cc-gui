@@ -470,6 +470,9 @@ impl Engine for GrokEngine {
     fn supports_images(&self) -> bool {
         true
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
     fn supported_permissions(&self) -> &'static [&'static str] {
         &["bypass"]
     }
@@ -484,6 +487,10 @@ impl Engine for GrokEngine {
         if let Some(model) = req.model.as_deref() {
             cmd.arg("-m");
             cmd.arg(model);
+        }
+        if let Some(effort) = req.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            cmd.arg("--effort");
+            cmd.arg(effort);
         }
         // `-s` creates a NEW session with a caller-chosen UUID and errors if it
         // already exists; `-r` resumes. Never both.
@@ -574,5 +581,36 @@ impl Engine for GrokEngine {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn build_command_passes_effort_flag() {
+        let req = SendRequest {
+            session_id: Some("s1".into()),
+            prompt: "hi".into(),
+            images: vec![],
+            workspace: PathBuf::from("/tmp"),
+            model: Some("grok-3".into()),
+            effort: Some("high".into()),
+            service_tier: None,
+            permission: None,
+            additional_dirs: vec![],
+            provider_id: None,
+            computer_use: None,
+        };
+        let built = GrokEngine.build_command(&req, "grok").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--effort", "high"]));
     }
 }
