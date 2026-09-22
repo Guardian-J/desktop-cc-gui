@@ -54,6 +54,8 @@ function info(id: string, over: Partial<PluginInfo> = {}): PluginInfo {
     permissions: [],
     installedAt: 0,
     minAppVersion: null,
+    icon: null,
+    screenshots: [],
     ...over,
   };
 }

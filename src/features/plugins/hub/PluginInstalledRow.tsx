@@ -11,6 +11,7 @@ import { isWeb } from "@/lib/platform";
 import type { PluginInfo } from "@/lib/ipc";
 import { cx } from "@/utils/cx";
 import { PluginAvatar } from "./PluginAvatar";
+import { useLocalArtwork } from "./artwork";
 import { usePluginSettingsKey } from "./use-plugin-settings-key";
 import { usePluginStates, usePluginsStore } from "../manager/usePlugins";
 import type { PluginRuntimeState } from "../runtime/loader";
@@ -48,12 +49,16 @@ export function PluginInstalledRow({
   const update = useMarketplaceStore((s) => s.updates.find((u) => u.id === plugin.id));
   const installing = useMarketplaceStore((s) => s.installing);
   const install = useMarketplaceStore((s) => s.install);
-  // Artwork lives in the index, not in the installed record: an installed row
-  // shows the icon only while the market listing is loaded, and falls back to
-  // the deterministic tile offline. A primitive selector keeps re-renders
-  // tied to the icon itself, not to every index refresh.
-  const icon = useMarketplaceStore(
+  // Artwork lives outside the install record: the market index carries the
+  // resolved URL, and an installed-only plugin falls back to the paths its own
+  // manifest declares (read through the host). A primitive selector keeps
+  // re-renders tied to the icon itself, not to every index refresh.
+  const marketIcon = useMarketplaceStore(
     (s) => s.entries.find((entry) => entry.id === plugin.id)?.icon ?? null,
+  );
+  const localIcon = useLocalArtwork(
+    marketIcon ? null : plugin.id,
+    marketIcon ? null : plugin.icon,
   );
   const [confirming, setConfirming] = useState(false);
   // Same spin → check feedback as every other refresh action. On success the
@@ -72,7 +77,7 @@ export function PluginInstalledRow({
   // disable it so a half-cleared quarantine can't be toggled.
   return (
     <div className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-background-primary-hover">
-      <PluginAvatar id={plugin.id} name={plugin.name} src={icon} />
+      <PluginAvatar id={plugin.id} name={plugin.name} src={marketIcon ?? localIcon} />
       <button
         type="button"
         onClick={() => onOpenDetail(plugin.id)}

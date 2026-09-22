@@ -53,6 +53,13 @@ pub(crate) struct PluginManifest {
     /// declared here so the field is schema-known and future UI can show it.
     #[allow(dead_code)] // schema-known only; read by no host code yet
     pub(crate) sdk_version: Option<String>,
+    /// Optional market artwork: a square icon and up to five screenshots.
+    /// Purely presentational — install never fails on them, and `info_for`
+    /// drops anything that is not a safe image path (see fs::safe_artwork_path).
+    #[serde(default)]
+    pub(crate) icon: Option<String>,
+    #[serde(default)]
+    pub(crate) screenshots: Vec<String>,
 }
 
 /// ids double as directory names, so the manifest charset whitelist is also

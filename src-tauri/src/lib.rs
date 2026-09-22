@@ -330,6 +330,7 @@ pub fn run() {
             plugins::plugin_uninstall,
             plugins::plugin_set_enabled,
             plugins::plugin_quarantine,
+            plugins::plugin_read_artwork,
             plugins::plugin_read_file,
             plugins::plugin_storage_get,
             plugins::plugin_storage_set,

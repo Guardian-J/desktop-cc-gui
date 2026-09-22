@@ -16,6 +16,9 @@ const pluginUninstall = vi.fn(async (_id: string, _deleteData: boolean) => {});
 const pluginSetEnabled = vi.fn(async (id: string, enabled: boolean) =>
   installedPlugin({ id, enabled }),
 );
+const pluginReadArtwork = vi.fn(
+  async (_id: string, _path: string): Promise<string> => "data:image/png;base64,AAAA",
+);
 vi.mock("@/lib/ipc", () => ({
   ipc: {
     pluginFetchIndex: (force?: boolean) => pluginFetchIndex(force),
@@ -25,6 +28,7 @@ vi.mock("@/lib/ipc", () => ({
     pluginInstallFromMarketplace: (id: string) => pluginInstallFromMarketplace(id),
     pluginUninstall: (id: string, deleteData: boolean) => pluginUninstall(id, deleteData),
     pluginSetEnabled: (id: string, enabled: boolean) => pluginSetEnabled(id, enabled),
+    pluginReadArtwork: (id: string, path: string) => pluginReadArtwork(id, path),
   },
 }));
 vi.mock("@/lib/events", () => ({
@@ -109,6 +113,8 @@ function installedPlugin(overrides: Partial<PluginInfo> & { id: string }): Plugi
     permissions: ["storage"],
     installedAt: 1_700_000_000_000,
     minAppVersion: "1.0.2",
+    icon: null,
+    screenshots: [],
     ...overrides,
   };
 }
@@ -237,6 +243,52 @@ describe("PluginHub", () => {
     // tab must fetch it too, or a locally installed plugin keeps the letter.
     expect(pluginFetchIndex).toHaveBeenCalled();
     expect(document.body.querySelector(`img[src="${MARKET_ENTRY.icon}"]`)).not.toBeNull();
+  });
+
+  it("reads artwork from the installed manifest when the market has no entry", async () => {
+    // A locally developed plugin the index does not carry: the only artwork
+    // source is its own manifest, read through the path-scoped host command.
+    usePluginHubStore.setState({ view: "installed" });
+    pluginFetchIndex.mockImplementation(async () => []);
+    pluginList.mockImplementation(async () => [
+      installedPlugin({ id: "kimi-lb", name: "Kimi LB", source: "local", icon: "docs/icon.png" }),
+    ]);
+    await render();
+    await act(async () => {});
+
+    expect(pluginReadArtwork).toHaveBeenCalledWith("kimi-lb", "docs/icon.png");
+    expect(
+      document.body.querySelector<HTMLImageElement>('img[src="data:image/png;base64,AAAA"]'),
+    ).not.toBeNull();
+  });
+
+  it("fills the detail gallery from the installed manifest for a market-less plugin", async () => {
+    usePluginHubStore.setState({ view: "installed" });
+    pluginFetchIndex.mockImplementation(async () => []);
+    pluginList.mockImplementation(async () => [
+      installedPlugin({
+        id: "kimi-lb",
+        name: "Kimi LB",
+        source: "local",
+        icon: "docs/icon.png",
+        screenshots: ["docs/screenshot-1.png"],
+      }),
+    ]);
+    await render();
+    await act(async () => {});
+    await act(async () => {
+      buttonContaining("Kimi LB").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {});
+
+    // The index has no entry for this plugin, so the gallery can only come
+    // from the installed manifest, read as a data URL through the host.
+    expect(pluginReadArtwork).toHaveBeenCalledWith("kimi-lb", "docs/screenshot-1.png");
+    const gallery = document.body.querySelector(
+      `section[aria-label="${i18n.t("plugins.hub.screenshotsTitle")}"]`,
+    );
+    expect(gallery).not.toBeNull();
+    expect(gallery!.querySelector("img")).not.toBeNull();
   });
 
   it("filters by category, by query, and clears an empty result", async () => {

@@ -13,6 +13,7 @@ import { isWeb, openExternal } from "@/lib/platform";
 import { ipc, type MarketPlugin, type PluginInfo } from "@/lib/ipc";
 import { categorizePlugin, githubAvatarUrl, githubLoginFor, indexUpdatedAt } from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
+import { usePluginArtwork } from "./artwork";
 import { PluginReadme } from "./PluginReadme";
 import { PluginScreenshotCarousel } from "./PluginScreenshotCarousel";
 import { describePermission } from "./permissions";
@@ -59,6 +60,43 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
     <button type="button" onClick={() => openExternal(url)} className={LINK_BUTTON}>
       {label}
       <SquareArrowOutUpRight className="size-3.5" aria-hidden />
+    </button>
+  );
+}
+
+/**
+ * Developer identity in the rail. When the index resolves a GitHub account
+ * (`githubLoginFor`: the indexed `author`, or the repo owner when `author` is
+ * only a display name) the whole avatar + name chip links to that profile; a
+ * display name alone stays inert text rather than pointing at a guessed URL.
+ */
+function AuthorChip({ author, login }: { author: string; login: string | null }) {
+  const { t } = useTranslation();
+  const label = author || login || "";
+  const chip = (
+    <>
+      {label && (
+        <PluginAvatar
+          id={label}
+          name={label}
+          src={login ? githubAvatarUrl(login, 20) : null}
+          size={20}
+          shape="circle"
+        />
+      )}
+      <span className="truncate">{label || "—"}</span>
+    </>
+  );
+
+  if (!login) return <span className="flex min-w-0 items-center gap-2">{chip}</span>;
+  return (
+    <button
+      type="button"
+      title={t("plugins.hub.authorGithub", { login })}
+      onClick={() => openExternal(`https://github.com/${login}`)}
+      className="flex w-fit max-w-full min-w-0 cursor-pointer items-center gap-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+    >
+      {chip}
     </button>
   );
 }
@@ -191,7 +229,10 @@ export function PluginDetailPage({
   const updatedAt = indexUpdatedAt(entry?.updatedAt);
   const minAppVersion = entry?.minAppVersion ?? installed?.minAppVersion ?? null;
   const sdkVersion = entry?.sdkVersion ?? null;
-  const screenshots = entry?.screenshots ?? [];
+  // Market-first artwork, with the installed manifest as the fallback for
+  // plugins the index does not carry (locally developed ones).
+  const artwork = usePluginArtwork(entry, installed);
+  const screenshots = artwork.screenshots;
   const category = entry ? categorizePlugin(entry) : null;
   const installPct =
     installing && installing.total > 0
@@ -223,7 +264,7 @@ export function PluginDetailPage({
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-6 px-6 py-6">
           <header className="flex flex-wrap items-start gap-4">
-            <PluginAvatar id={id} name={name} src={entry?.icon ?? null} size={56} />
+            <PluginAvatar id={id} name={name} src={artwork.icon} size={56} />
             <div className="flex min-w-0 flex-1 flex-col gap-2">
               <h2 className="text-title-3-medium text-text-primary">{name}</h2>
               {description && (
@@ -319,18 +360,7 @@ export function PluginDetailPage({
 
             <aside className={RAIL}>
               <RailRow label={t("plugins.hub.author")}>
-                <span className="flex min-w-0 items-center gap-2">
-                  {author && (
-                    <PluginAvatar
-                      id={author}
-                      name={author}
-                      src={authorLogin ? githubAvatarUrl(authorLogin, 20) : null}
-                      size={20}
-                      shape="circle"
-                    />
-                  )}
-                  <span className="truncate">{author || "—"}</span>
-                </span>
+                <AuthorChip author={author} login={authorLogin} />
               </RailRow>
 
               {category && (

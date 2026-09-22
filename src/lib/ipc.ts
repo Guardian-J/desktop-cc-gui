@@ -716,6 +716,12 @@ export interface PluginInfo {
   permissions: string[];
   installedAt: number;
   minAppVersion: string | null;
+  /** Artwork declared by the installed manifest: `https://` URLs render
+   *  directly, repo-relative paths are read from the plugin directory through
+   *  `plugin_read_artwork`. Null / empty when the plugin ships none — the UI
+   *  then keeps its deterministic letter tile and renders no gallery. */
+  icon: string | null;
+  screenshots: string[];
 }
 /** Marketplace listing row (plan §6.1): community-plugins.json merged with
  *  plugins/<id>.json — the fields the market UI renders. */
@@ -1119,6 +1125,11 @@ export const ipc = {
     invoke<PluginInfo>("plugin_quarantine", { id, error }),
   pluginReadFile: (id: string, name: string) =>
     invoke<string>("plugin_read_file", { id, name }),
+  /** One declared artwork file of an installed plugin as a data URL. The
+   *  webview has no filesystem access, so locally installed plugins get their
+   *  icon/gallery through this path-scoped read. */
+  pluginReadArtwork: (id: string, path: string) =>
+    invoke<string>("plugin_read_artwork", { id, path }),
   pluginStorageGet: (id: string, key: string) =>
     invoke<unknown>("plugin_storage_get", { id, key }),
   pluginStorageSet: (id: string, key: string, value: unknown) =>

@@ -72,6 +72,8 @@ function installedInfo(over: Partial<PluginInfo> = {}): PluginInfo {
     permissions: ["storage"],
     installedAt: 0,
     minAppVersion: "1.0.0",
+    icon: null,
+    screenshots: [],
     ...over,
   };
 }
