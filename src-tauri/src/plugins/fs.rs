@@ -142,7 +142,7 @@ pub(crate) fn info_for(plugins_dir: &Path, id: &str, record: &PluginRecord) -> P
 /// images only, repo-relative or absolute https, no traversal, no backslashes
 /// or control characters, bounded length. Returns the trimmed value; bad
 /// entries are dropped rather than failing the install (artwork is optional).
-fn safe_artwork_path(raw: &str) -> Option<String> {
+pub(crate) fn safe_artwork_path(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.len() > 1024 || trimmed.chars().any(char::is_control) {
         return None;

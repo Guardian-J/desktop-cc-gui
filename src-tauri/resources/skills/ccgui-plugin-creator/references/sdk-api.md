@@ -29,7 +29,7 @@ export default function activate(ctx: PluginContext): void | (() => void) {
 | `permissions` | `string[]` | 必填 | 基座权限与 `network:`/`exec:` 授权；全集与形状规则见 spec/permissions.json（单一事实源）。`network:none` 是基座权限 （声明无网络），永远不是授权。 |
 | `contributes`? | `{ themes?: { name?: string; tokens: { light?: Record<string, string>; dark?: Record<string, string> } }[]; i18n?: { lang: string; ns?: string; resources: Record<string, unknown> }[]; statusBarItems?: { key?: string; text: string }[]; commands?: { key: string; title: string; emits?: string }[] }` | 可选 | — |
 | `configSchema`? | `JsonSchemaObject` | 可选 | JSON Schema object; the settings UI auto-renders a config form. |
-| `icon`? | `string` | 可选 | 市场展示用的方形图标：仓库内相对路径（推荐放 `docs/`，如 `docs/icon.png`）或绝对 https URL。缺省 = 市场用插件名首字母瓷砖。 仅市场索引消费，宿主安装/运行不读它。 |
+| `icon`? | `string` | 可选 | 市场展示用的方形图标：仓库内相对路径（推荐放 `docs/`，如 `docs/icon.png`）或绝对 https URL。缺省 = 市场用插件名首字母瓷砖。 面板页签没注册 `icon` 时也回落到它：市场安装会把索引品牌图按相对路径 落到插件目录（发布包无需内含图片文件），绝对 URL 直接联网加载。 |
 | `screenshots`? | `string[]` | 可选 | 市场详情页的效果图：仓库内相对路径或绝对 https URL，≤ 5 张，按数组 顺序展示。缺省 = 详情页不渲染图集。图片在插件仓库默认分支上按路径读取， 换图无需发版。 |
 
 字段取值规则（`id` 命名、`version` 与 Release tag 的关系、`tier` 取值、`configSchema` 渲染范围、`contributes` 声明式能力）见 `references/development-guide.md` §5 与 §8。

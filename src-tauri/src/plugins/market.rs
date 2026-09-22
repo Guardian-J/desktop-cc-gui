@@ -40,6 +40,9 @@ const MAX_README_BYTES: u64 = 512 * 1024;
 const INDEX_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Assets run to the 16MB bundle cap; slow links need real headroom.
 const ASSET_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Brand artwork is a square icon, not a screenshot gallery: 2MB bounds a
+/// hostile index row while leaving room for a 1024px PNG.
+const MAX_ARTWORK_BYTES: u64 = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One shared client: a pool per request would waste connections (same
@@ -501,6 +504,34 @@ async fn download_asset_verified(
     Ok(body)
 }
 
+/// Manifest-declared destination for the index artwork, when it is a
+/// repo-relative image path the staging tree can hold. Absolute https values
+/// are loaded by the webview directly (never materialized), and unsafe
+/// shapes are dropped here exactly like they are on the read side
+/// (`fs::safe_artwork_path`).
+fn materializable_artwork_path(raw: &str) -> Option<String> {
+    let path = super::fs::safe_artwork_path(raw)?;
+    let relative = !path.starts_with("https://") && !path.contains(['?', '#']);
+    relative.then_some(path)
+}
+
+fn local_artwork_path(manifest: &serde_json::Value) -> Option<String> {
+    materializable_artwork_path(manifest.get("icon")?.as_str()?)
+}
+
+/// Write fetched artwork bytes into the staging tree; `rel` is validated
+/// again here so the helper is safe on its own. Nested directories are
+/// created on demand.
+fn write_artwork(root: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
+    let rel = materializable_artwork_path(rel)
+        .ok_or_else(|| format!("{rel:?}: not a materializable artwork path"))?;
+    let dest = root.join(&rel);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&dest, bytes).map_err(|e| format!("write {}: {e}", dest.display()))
+}
+
 /// Core of plugin_install_from_marketplace, split from the Tauri command so
 /// tests and the (desktop-only) bridge ruling stay simple: download every
 /// pinned asset into a temp tree, cross-check the manifest against the
@@ -582,6 +613,29 @@ async fn install_from_marketplace_at(
                 "{id}: downloaded manifest version {:?} != index version {:?}",
                 manifest["version"], info.version
             ));
+        }
+
+        // Release bundles are the pinned files only — no docs/ tree — so the
+        // host's panel-tab fallback (`plugin_read_artwork`) would never find
+        // the manifest-declared artwork. Materialize the index icon at that
+        // path while the index data is at hand. Decorative: a missing icon
+        // or a failed fetch only logs, the install stays intact.
+        if let Some(rel) = local_artwork_path(&manifest) {
+            match info.icon.as_deref() {
+                Some(url) => {
+                    match get_capped(url, MAX_ARTWORK_BYTES, ASSET_REQUEST_TIMEOUT).await {
+                        Ok(bytes) => {
+                            if let Err(error) = write_artwork(&temp, &rel, &bytes) {
+                                eprintln!("[market] {id}: artwork not materialized: {error}");
+                            }
+                        }
+                        Err(error) => eprintln!("[market] {id}: artwork unavailable: {error}"),
+                    }
+                }
+                None => eprintln!(
+                    "[market] {id}: manifest declares {rel:?} but the index carries no artwork"
+                ),
+            }
         }
 
         let temp_clone = temp.clone();
@@ -756,6 +810,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn marketplace_artwork_targets_a_safe_relative_manifest_path() {
+        let target = |raw: &str| {
+            local_artwork_path(&serde_json::json!({ "icon": raw })).unwrap_or_default()
+        };
+        assert_eq!(target("docs/icon.png"), "docs/icon.png");
+        assert_eq!(target(" icon.png "), "icon.png");
+        // Remote artwork loads from the webview directly — never materialized.
+        assert_eq!(target("https://example.com/icon.png"), "");
+        // Traversal, non-image extensions and query/hash are refused.
+        assert_eq!(target("../evil.png"), "");
+        assert_eq!(target("/etc/passwd"), "");
+        assert_eq!(target("docs\\icon.png"), "");
+        assert_eq!(target("main.js"), "");
+        assert_eq!(target("docs/icon.png?v=2"), "");
+        assert_eq!(target(""), "");
+        // A manifest without a string icon declares no local target.
+        assert_eq!(local_artwork_path(&serde_json::json!({})), None);
+        assert_eq!(local_artwork_path(&serde_json::json!({ "icon": 7 })), None);
+    }
+
+    #[test]
+    fn write_artwork_creates_nested_directories_and_keeps_bytes() {
+        let scratch = crate::plugins::test_support::Scratch::new();
+        let root = scratch.path("plugin");
+        write_artwork(&root, "docs/icon.png", b"\x89PNG bytes").unwrap();
+        assert_eq!(
+            std::fs::read(root.join("docs/icon.png")).unwrap(),
+            b"\x89PNG bytes"
+        );
+        // The helper re-validates on its own: nothing escapes the root.
+        assert!(write_artwork(&root, "../escape.png", b"x").is_err());
+        assert!(write_artwork(&root, "docs/icon.svg", b"<svg/>").is_ok());
+        assert!(write_artwork(&root, "icon.png?x=1", b"x").is_err());
+    }
+
     /// Live end-to-end smoke against the real index and release: fetch the
     /// index, download react-doctor's pinned assets, verify the digests, and
     /// run the full install transaction into a throwaway HOME. Network-dependent
@@ -775,7 +865,14 @@ mod tests {
             !entries.is_empty(),
             "the live index should list at least one plugin"
         );
-        let id = entries[0].info.id.clone();
+        // react-doctor is the reference row for artwork materialization: its
+        // release manifest declares docs/icon.png. Fall back to the first row
+        // so the smoke still covers plain installs if it ever disappears.
+        let entry = entries
+            .iter()
+            .find(|entry| entry.info.id == "react-doctor")
+            .unwrap_or(&entries[0]);
+        let id = entry.info.id.clone();
 
         // Full pipeline: index lookup → asset download → SHA-256 verify →
         // manifest cross-check → staging/backup transaction → state record.
@@ -789,6 +886,23 @@ mod tests {
         assert_eq!(info.source, "marketplace");
         assert!(info.enabled);
         assert!(plugins_dir.join(&id).join("manifest.json").is_file());
+
+        // Declared brand artwork lands where the panel-tab fallback reads it:
+        // release bundles carry no docs/ tree of their own, so the install
+        // mirrors the index image to the manifest-declared path.
+        let installed: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(plugins_dir.join(&id).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        if let Some(rel) = local_artwork_path(&installed) {
+            assert!(
+                entry.info.icon.is_some(),
+                "{id} declares {rel:?} but the index carries no artwork to materialize"
+            );
+            let artwork = plugins_dir.join(&id).join(&rel);
+            assert!(artwork.is_file(), "{id}: {rel} should be materialized");
+            assert!(std::fs::metadata(&artwork).unwrap().len() > 0);
+        }
 
         // The record carries the manifest version and permissions.
         let state = crate::plugins::state::read_state(&state_path).unwrap();
