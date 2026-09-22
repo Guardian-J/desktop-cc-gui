@@ -8,7 +8,7 @@ import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-
 import { Switch } from "@/components/base/switch/switch";
 import { ConfirmDialog } from "@/components/dialogs";
 import { isWeb } from "@/lib/platform";
-import type { PluginInfo } from "@/lib/ipc";
+import type { PluginInfo, PluginUpdate } from "@/lib/ipc";
 import { cx } from "@/utils/cx";
 import { PluginAvatar } from "./PluginAvatar";
 import { useLocalArtwork } from "./artwork";
@@ -40,15 +40,9 @@ export function PluginInstalledRow({
   plugin: PluginInfo;
   onOpenDetail: (id: string) => void;
 }) {
-  const { t } = useTranslation();
-  const states = usePluginStates();
-  const setEnabled = usePluginsStore((s) => s.setEnabled);
-  const retry = usePluginsStore((s) => s.retry);
   const uninstall = usePluginsStore((s) => s.uninstall);
   const settingsKey = usePluginSettingsKey(plugin.id);
   const update = useMarketplaceStore((s) => s.updates.find((u) => u.id === plugin.id));
-  const installing = useMarketplaceStore((s) => s.installing);
-  const install = useMarketplaceStore((s) => s.install);
   // Artwork lives outside the install record: the market index carries the
   // resolved URL, and an installed-only plugin falls back to the paths its own
   // manifest declares (read through the host). A primitive selector keeps
@@ -61,126 +55,33 @@ export function PluginInstalledRow({
     marketIcon ? null : plugin.icon,
   );
   const [confirming, setConfirming] = useState(false);
-  // Same spin → check feedback as every other refresh action. On success the
-  // row turns healthy and this button unmounts, so the flash is just the
-  // consistent landing when it stays.
-  const retryAction = useActionFeedback({ spin: true });
-  const retrying = retryAction.feedback === "running";
-
+  const states = usePluginStates();
   const runtime = states.find((s) => s.id === plugin.id);
   const stateLabel = runtime ? STATE_LABELS[runtime.state] : undefined;
   const errorText = runtime?.error ?? plugin.lastError;
   const failed =
     plugin.quarantined || runtime?.state === "quarantined" || runtime?.state === "failed";
 
-  // Switch flips mirror the load/unload pair in the store; while retrying we
-  // disable it so a half-cleared quarantine can't be toggled.
   return (
     <div className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-background-primary-hover">
       <PluginAvatar id={plugin.id} name={plugin.name} src={marketIcon ?? localIcon} />
-      <button
-        type="button"
-        onClick={() => onOpenDetail(plugin.id)}
-        className="flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 text-left"
-      >
-        <span className="flex w-full min-w-0 flex-wrap items-center gap-2">
-          <span className="truncate text-body-medium text-text-primary">{plugin.name}</span>
-          {plugin.version && <span className={BADGE}>v{plugin.version}</span>}
-          <span className={BADGE}>
-            {t(plugin.tier === "declarative" ? "plugins.hub.tierDeclarative" : "plugins.hub.tierJs")}
-          </span>
-          <span className={BADGE}>{t(`plugins.source.${plugin.source}`, plugin.source)}</span>
-          {stateLabel && (
-            <span className={cx(BADGE, "text-text-error-primary")}>{t(stateLabel)}</span>
-          )}
-          {errorText && (
-            <span
-              className={cx(BADGE, "max-w-56 truncate text-text-error-primary")}
-              title={errorText}
-            >
-              {errorText}
-            </span>
-          )}
-        </span>
-        {plugin.description && (
-          <span className="w-full truncate text-body-2-regular text-text-secondary">
-            {plugin.description}
-          </span>
-        )}
-      </button>
-
-      <div className="flex shrink-0 items-center gap-1">
-        {update && (
-          <button
-            type="button"
-            disabled={!!installing || isWeb}
-            title={isWeb ? t("plugins.market.desktopOnly") : undefined}
-            onClick={() => void install(plugin.id)}
-            className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg bg-background-secondary-default px-3 py-1.5 text-body-2-medium text-text-primary transition-colors hover:bg-background-secondary-hover disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {installing?.id === plugin.id && (
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-            )}
-            {t("plugins.hub.updateTo", { version: update.latestVersion })}
-          </button>
-        )}
-        {failed && (
-          <button
-            type="button"
-            aria-label={t("plugins.reload")}
-            title={isWeb ? t("plugins.market.desktopOnly") : t("plugins.reloadHint")}
-            disabled={isWeb || retrying}
-            onClick={() => {
-              if (retrying) return;
-              void retryAction.start(() => retry(plugin));
-            }}
-            className={ICON_BUTTON}
-          >
-            <ActionFeedbackIcon
-              icon={RotateCcw}
-              feedback={retryAction.feedback}
-              spin
-            />
-          </button>
-        )}
-        {settingsKey && (
-          <button
-            type="button"
-            aria-label={t("plugins.hub.openSettings")}
-            title={t("plugins.hub.openSettings")}
-            onClick={() => {
-              window.location.hash = `#/settings?page=${encodeURIComponent(settingsKey)}`;
-            }}
-            className={ICON_BUTTON}
-          >
-            <Settings2 className="size-4" aria-hidden />
-          </button>
-        )}
-        {plugin.source !== "builtin" && (
-          <button
-            type="button"
-            aria-label={t("plugins.uninstall")}
-            title={isWeb ? t("plugins.market.desktopOnly") : t("plugins.uninstall")}
-            disabled={isWeb}
-            onClick={() => setConfirming(true)}
-            className={ICON_BUTTON}
-          >
-            <Trash2 className="size-4" aria-hidden />
-          </button>
-        )}
-        <Switch
-          size="sm"
-          aria-label={plugin.name}
-          isDisabled={isWeb}
-          isSelected={plugin.enabled}
-          onChange={(next) => void setEnabled(plugin, next)}
-        />
-      </div>
+      <PluginRowIdentity
+        plugin={plugin}
+        stateLabel={stateLabel}
+        errorText={errorText}
+        onOpenDetail={onOpenDetail}
+      />
+      <PluginRowActions
+        plugin={plugin}
+        update={update}
+        failed={failed}
+        settingsKey={settingsKey}
+        onRequestUninstall={() => setConfirming(true)}
+      />
 
       {confirming && (
-        <ConfirmDialog
-          danger
-          message={t("plugins.uninstallConfirm", { name: plugin.name })}
+        <PluginConfirmUninstall
+          plugin={plugin}
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
             setConfirming(false);
@@ -189,5 +90,169 @@ export function PluginInstalledRow({
         />
       )}
     </div>
+  );
+}
+
+/** Identity button: name, version/tier/source badges, runtime error badge
+ *  and one-line description. */
+function PluginRowIdentity({
+  plugin,
+  stateLabel,
+  errorText,
+  onOpenDetail,
+}: {
+  plugin: PluginInfo;
+  stateLabel: string | undefined;
+  errorText: string | null | undefined;
+  onOpenDetail: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenDetail(plugin.id)}
+      className="flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 text-left"
+    >
+      <span className="flex w-full min-w-0 flex-wrap items-center gap-2">
+        <span className="truncate text-body-medium text-text-primary">{plugin.name}</span>
+        {plugin.version && <span className={BADGE}>v{plugin.version}</span>}
+        <span className={BADGE}>
+          {t(plugin.tier === "declarative" ? "plugins.hub.tierDeclarative" : "plugins.hub.tierJs")}
+        </span>
+        <span className={BADGE}>{t(`plugins.source.${plugin.source}`, plugin.source)}</span>
+        {stateLabel && (
+          <span className={cx(BADGE, "text-text-error-primary")}>{t(stateLabel)}</span>
+        )}
+        {errorText && (
+          <span
+            className={cx(BADGE, "max-w-56 truncate text-text-error-primary")}
+            title={errorText}
+          >
+            {errorText}
+          </span>
+        )}
+      </span>
+      {plugin.description && (
+        <span className="w-full truncate text-body-2-regular text-text-secondary">
+          {plugin.description}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Trailing controls: update, retry-after-failure, settings, uninstall and
+ *  the enable switch. */
+function PluginRowActions({
+  plugin,
+  update,
+  failed,
+  settingsKey,
+  onRequestUninstall,
+}: {
+  plugin: PluginInfo;
+  update: PluginUpdate | undefined;
+  failed: boolean;
+  settingsKey: string | null;
+  onRequestUninstall: () => void;
+}) {
+  const { t } = useTranslation();
+  const setEnabled = usePluginsStore((s) => s.setEnabled);
+  const retry = usePluginsStore((s) => s.retry);
+  const installing = useMarketplaceStore((s) => s.installing);
+  const install = useMarketplaceStore((s) => s.install);
+  // Same spin → check feedback as every other refresh action. On success the
+  // row turns healthy and this button unmounts, so the flash is just the
+  // consistent landing when it stays.
+  const retryAction = useActionFeedback({ spin: true });
+  const retrying = retryAction.feedback === "running";
+
+  // Switch flips mirror the load/unload pair in the store; while retrying we
+  // disable it so a half-cleared quarantine can't be toggled.
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      {update && (
+        <button
+          type="button"
+          disabled={!!installing || isWeb}
+          title={isWeb ? t("plugins.market.desktopOnly") : undefined}
+          onClick={() => void install(plugin.id)}
+          className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg bg-background-secondary-default px-3 py-1.5 text-body-2-medium text-text-primary transition-colors hover:bg-background-secondary-hover disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {installing?.id === plugin.id && (
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+          )}
+          {t("plugins.hub.updateTo", { version: update.latestVersion })}
+        </button>
+      )}
+      {failed && (
+        <button
+          type="button"
+          aria-label={t("plugins.reload")}
+          title={isWeb ? t("plugins.market.desktopOnly") : t("plugins.reloadHint")}
+          disabled={isWeb || retrying}
+          onClick={() => {
+            if (retrying) return;
+            void retryAction.start(() => retry(plugin));
+          }}
+          className={ICON_BUTTON}
+        >
+          <ActionFeedbackIcon icon={RotateCcw} feedback={retryAction.feedback} spin />
+        </button>
+      )}
+      {settingsKey && (
+        <button
+          type="button"
+          aria-label={t("plugins.hub.openSettings")}
+          title={t("plugins.hub.openSettings")}
+          onClick={() => {
+            window.location.hash = `#/settings?page=${encodeURIComponent(settingsKey)}`;
+          }}
+          className={ICON_BUTTON}
+        >
+          <Settings2 className="size-4" aria-hidden />
+        </button>
+      )}
+      {plugin.source !== "builtin" && (
+        <button
+          type="button"
+          aria-label={t("plugins.uninstall")}
+          title={isWeb ? t("plugins.market.desktopOnly") : t("plugins.uninstall")}
+          disabled={isWeb}
+          onClick={onRequestUninstall}
+          className={ICON_BUTTON}
+        >
+          <Trash2 className="size-4" aria-hidden />
+        </button>
+      )}
+      <Switch
+        size="sm"
+        aria-label={plugin.name}
+        isDisabled={isWeb}
+        isSelected={plugin.enabled}
+        onChange={(next) => void setEnabled(plugin, next)}
+      />
+    </div>
+  );
+}
+
+/** Uninstall confirmation for one installed row. */
+function PluginConfirmUninstall({
+  plugin,
+  onCancel,
+  onConfirm,
+}: {
+  plugin: PluginInfo;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <ConfirmDialog
+      danger
+      message={t("plugins.uninstallConfirm", { name: plugin.name })}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }

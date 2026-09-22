@@ -330,6 +330,54 @@ function NoticeDetail({
         </div>
       )}
 
+      <NoticeActions
+        item={item}
+        actionable={actionable}
+        feedbackOpen={feedbackOpen}
+        feedbackText={feedbackText}
+        feedbackError={feedbackError}
+        onFeedbackText={onFeedbackText}
+        onOpenFeedback={onOpenFeedback}
+        onSubmitFeedback={onSubmitFeedback}
+        onAction={onAction}
+        onLocate={onLocate}
+      />
+
+      <p className="mt-4 text-caption-1-regular leading-relaxed text-text-tertiary">
+        {t("mission.inboxDecisionNote")}
+      </p>
+    </div>
+  );
+}
+
+/** Decision area: buttons for actionable notices, or the read-only reason
+ *  the notice cannot be acted on; the feedback form appears once opened. */
+function NoticeActions({
+  item,
+  actionable,
+  feedbackOpen,
+  feedbackText,
+  feedbackError,
+  onFeedbackText,
+  onOpenFeedback,
+  onSubmitFeedback,
+  onAction,
+  onLocate,
+}: {
+  item: MissionInboxItem;
+  actionable: boolean;
+  feedbackOpen: boolean;
+  feedbackText: string;
+  feedbackError: string | null;
+  onFeedbackText: (value: string) => void;
+  onOpenFeedback: () => void;
+  onSubmitFeedback: () => void;
+  onAction: (action: Parameters<typeof applyInboxAction>[1]) => void;
+  onLocate: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <>
       {actionable ? (
         <div className="mt-4 flex flex-wrap gap-2">
           {item.type === "attention" ? (
@@ -396,10 +444,6 @@ function NoticeDetail({
           )}
         </form>
       )}
-
-      <p className="mt-4 text-caption-1-regular leading-relaxed text-text-tertiary">
-        {t("mission.inboxDecisionNote")}
-      </p>
-    </div>
+    </>
   );
 }

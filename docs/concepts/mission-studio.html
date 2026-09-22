@@ -98,9 +98,10 @@ function renderGraph() {
   get('graph').style.height = `${data.height}px`; get('graph-nodes').replaceChildren(); get('connections').replaceChildren();
   hide('empty-canvas', !!config);
   if (config?.parallel) { const group = document.createElement('div'); group.className = 'branch-group'; Object.assign(group.style, { left: '43px', top: '160px', width: '836px', height: '175px' }); group.append(textElement('div', 'PARALLEL · 独立处理，再汇总', 'branch-caption')); get('graph-nodes').append(group); }
+  const changed = new Set(flow.changed);
   for (const node of data.nodes) {
     const status = nodeStatus(node), card = document.createElement('button'), point = position(node);
-    card.type = 'button'; card.dataset.node = node.id; card.className = `node ${status}${selectedNode === node.id ? ' selected' : ''}${mode === 'draft' && flow.changed.includes(node.id) ? ' changed' : ''}`;
+    card.type = 'button'; card.dataset.node = node.id; card.className = `node ${status}${selectedNode === node.id ? ' selected' : ''}${mode === 'draft' && changed.has(node.id) ? ' changed' : ''}`;
     Object.assign(card.style, { left: `${point.x}px`, top: `${point.y}px` });
     const caption = status === 'draft' ? node.type === 'HUMAN' ? '等待用户决定后继续' : '随流程执行' : ({ done: '✓ 已完成', running: '◉ 正在处理', waiting: '◇ 需人工介入', failed: '! 失败，等待重试', pending: '◷ 等待前序步骤' }[status] ?? labels[status]);
     card.setAttribute('aria-label', `${node.title}，${caption}`);
@@ -114,8 +115,9 @@ function renderGraph() {
 function drawEdges(data = graphData(current(), visibleConfig())) {
   get('connections').replaceChildren(); get('connections').setAttribute('viewBox', `0 0 920 ${data.height}`);
   const defs = document.createElementNS(svgNS, 'defs'); const marker = document.createElementNS(svgNS, 'marker'); marker.setAttribute('id', 'arrow'); marker.setAttribute('viewBox', '0 0 10 10'); marker.setAttribute('refX', '8'); marker.setAttribute('refY', '5'); marker.setAttribute('markerWidth', '4'); marker.setAttribute('markerHeight', '4'); marker.setAttribute('orient', 'auto'); const arrow = document.createElementNS(svgNS, 'path'); arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z'); arrow.style.fill = '#aec4df'; arrow.style.stroke = 'none'; marker.append(arrow); defs.append(marker); get('connections').append(defs);
+  const nodesById = new Map(data.nodes.map(node => [node.id, node]));
   for (const [fromId, toId] of data.edges) {
-    const from = position(data.nodes.find(node => node.id === fromId)), to = position(data.nodes.find(node => node.id === toId));
+    const from = position(nodesById.get(fromId)), to = position(nodesById.get(toId));
     const sourceCard = [...get('graph-nodes').querySelectorAll('[data-node]')].find(card => card.dataset.node === fromId);
     const sourceHeight = sourceCard?.offsetHeight || 104;
     const sourceX = from.x + 102, sourceY = from.y + sourceHeight, targetX = to.x + 102, targetY = to.y, middle = (sourceY + targetY) / 2;
@@ -220,10 +222,11 @@ function renderFlows() {
 function selectNotice(id) { const notice = notices.find(item => item.id === id); if (!notice) return; selectedNotice = id; notice.read = true; refresh(); }
 function matchingNoticeIsActionable(notice) { const flow = workflows.find(item => item.id === notice.flowId), run = flow?.run; return !!run && run.id === notice.runId && !notice.resolved && run.stage === notice.nodeId && ((notice.type === 'attention' && run.state === 'waiting') || (notice.type === 'failed' && run.state === 'failed')); }
 function renderInbox() {
-  const search = get('inbox-search').value.trim().toLowerCase(); const filtered = notices.filter(notice => (inboxFilter === 'all' || notice.type === inboxFilter) && (!search || `${notice.title} ${workflows.find(flow => flow.id === notice.flowId)?.title}`.toLowerCase().includes(search)));
+  const flowsById = new Map(workflows.map(flow => [flow.id, flow]));
+  const search = get('inbox-search').value.trim().toLowerCase(); const filtered = notices.filter(notice => (inboxFilter === 'all' || notice.type === inboxFilter) && (!search || `${notice.title} ${flowsById.get(notice.flowId)?.title}`.toLowerCase().includes(search)));
   get('notice-list').replaceChildren();
   for (const notice of filtered) {
-    const flow = workflows.find(item => item.id === notice.flowId), row = document.createElement('button'); row.type = 'button'; row.dataset.notice = notice.id; row.className = `notice ${notice.type}${notice.read ? ' read' : ''}${selectedNotice === notice.id ? ' selected' : ''}`;
+    const flow = flowsById.get(notice.flowId), row = document.createElement('button'); row.type = 'button'; row.dataset.notice = notice.id; row.className = `notice ${notice.type}${notice.read ? ' read' : ''}${selectedNotice === notice.id ? ' selected' : ''}`;
     row.append(textElement('span', notice.type === 'attention' ? '◇' : notice.type === 'failed' ? '!' : '✓', 'notice-icon')); const info = document.createElement('div'); info.append(textElement('h3', notice.title), textElement('p', `${flow.title} · ${notice.time}${notice.resolved && notice.type !== 'done' ? ' · 已处理' : ''}`)); row.append(info, textElement('span', '', 'unread-dot')); row.addEventListener('click', () => selectNotice(notice.id)); get('notice-list').append(row);
   }
   if (!filtered.length) get('notice-list').append(textElement('div', '当前筛选没有消息。', 'empty-state'));

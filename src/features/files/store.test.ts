@@ -1,14 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirEntry } from "@/lib/ipc";
 
 const mocks = vi.hoisted(() => ({
   listDir: vi.fn(),
+  readFile: vi.fn(async () => ({ kind: "text", text: "", dataUrl: null, truncated: false })),
   gitTreeStatus: vi.fn(),
   gitRepositorySummaries: vi.fn(),
   gitFileColors: vi.fn(),
 }));
+const browserMock = vi.hoisted(() => ({ deactivate: vi.fn() }));
 vi.mock("@/lib/ipc", () => ({ ipc: mocks }));
-vi.mock("@/features/browser/store", () => ({ useBrowserStore: {} }));
+vi.mock("@/features/browser/store", () => ({
+  useBrowserStore: { getState: () => browserMock },
+}));
+import { useGitStore } from "@/features/git/store";
+import { resetMissionStore, useMissionStore } from "@/features/mission/store";
+import { usePluginHubStore } from "@/features/plugins/hub/store";
+import { usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
 import { useFilesStore } from "./store";
 
 const entry = (name: string, isDir = false): DirEntry => ({ name, isDir, size: 0, mtimeMs: 0 });
@@ -94,5 +102,72 @@ describe("file tree Git refresh", () => {
     finish({ repositories: [], fileColors: { "/repo": { "stale.txt": "modified" } } });
     await refresh;
     expect(useFilesStore.getState().fileColors["/repo"]).toEqual({});
+  });
+});
+
+/** 文件抢到中心时，其余中心面（插件中心/插件页/工作台/差异/浏览器）要让位，
+ *  否则编辑器页签亮了，画面还停在原来那一面。 */
+describe("文件打开时的中心面互斥", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useFilesStore.setState({
+      root: "/repo",
+      children: {},
+      expanded: {},
+      loadingDirs: {},
+      dirErrors: {},
+      repositories: {},
+      fileColors: {},
+      refreshing: false,
+      openFiles: [],
+      fileStates: {},
+      activeFilePath: null,
+      dirtyPaths: {},
+    });
+    usePluginHubStore.setState({ open: true, active: true, view: "market" });
+    usePluginTabsStore.setState({ tabs: ["plugin:demo:main"], activeId: "plugin:demo:main" });
+    resetMissionStore();
+    useMissionStore.setState({ open: true, active: true });
+    useGitStore.setState({
+      diffView: { workspacePath: "/repo", target: { file: "a.ts", staged: false } },
+    });
+  });
+
+  afterEach(() => {
+    usePluginHubStore.setState({ open: false, active: false, view: "market" });
+    usePluginTabsStore.setState({ tabs: [], activeId: null });
+    resetMissionStore();
+    useGitStore.setState({ diffView: null });
+  });
+
+  function expectOnlyFileLeft() {
+    expect(usePluginHubStore.getState().active).toBe(false);
+    expect(usePluginTabsStore.getState().activeId).toBeNull();
+    expect(useMissionStore.getState().active).toBe(false);
+    expect(useGitStore.getState().diffView).toBeNull();
+    expect(browserMock.deactivate).toHaveBeenCalled();
+  }
+
+  it("openFile（文件树/搜索/插件桥）让其他中心面靠边", async () => {
+    await useFilesStore.getState().openFile("/repo/a.ts");
+    expectOnlyFileLeft();
+    expect(useFilesStore.getState().activeFilePath).toBe("/repo/a.ts");
+  });
+
+  it("activateFile（页签选择/已加载文件）同样清场", () => {
+    useFilesStore.setState({
+      fileStates: {
+        "/repo/a.ts": {
+          path: "/repo/a.ts",
+          content: { kind: "text", text: "", dataUrl: null, truncated: false, readOnly: false },
+          loading: false,
+          error: null,
+          loadNonce: 0,
+        },
+      },
+    });
+    useFilesStore.getState().activateFile("/repo/a.ts");
+    expectOnlyFileLeft();
+    expect(useFilesStore.getState().activeFilePath).toBe("/repo/a.ts");
   });
 });

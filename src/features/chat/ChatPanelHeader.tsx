@@ -7,7 +7,7 @@ import { LaunchScriptActions } from "@/features/launch-script/LaunchScriptAction
 import { pluginPanelTabIcon } from "@/features/plugins/hub/PluginPanelTabIcon";
 import { cx } from "@/utils/cx";
 import { PANEL_TOGGLE_CLASSES } from "./panel-toggle-classes";
-import { resolveActivePanelTab, useSortedPanelTabs } from "./panel-tabs";
+import { resolveActivePanelTab, useSortedPanelTabs } from "./use-panel-tabs";
 
 /** Tab-strip actions slot: the open-in-app cluster plus the side panel's
  * titlebar header (files/changes pills and collapse toggles). */

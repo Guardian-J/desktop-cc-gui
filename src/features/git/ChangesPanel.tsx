@@ -190,70 +190,21 @@ export function ChangesPanel({
         className="min-h-0 flex-1 overflow-y-auto"
         onScroll={(event) => { if (visible) scrollOffset.current = event.currentTarget.scrollTop; }}
       >
-        {!status ? (
-          <div className="flex h-full items-center justify-center p-4">
-            <p className="text-body-medium text-text-tertiary">{t("common.loading")}</p>
-          </div>
-        ) : status.staged.length + status.unstaged.length + status.untracked.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-4">
-            <p className="text-body-medium text-text-tertiary">{t("git.noChanges")}</p>
-          </div>
-        ) : (
-          <>
-            <ChangesSummary status={status} />
-            <GroupSection
-              visible={visible}
-              scrollElement={scrollElement}
-              scrollOffset={scrollOffset}
-              title={t("git.staged")}
-              entries={status.staged}
-              groupActionLabel={t("git.unstageAll")}
-              onGroupAction={unstage}
-              rowActionLabel={t("git.unstage")}
-              rowActionKind="unstage"
-              onRowAction={unstageOne}
-              onOpen={openStagedDiff}
-              actionBusy={pending.unstage === true}
-            />
-            <GroupSection
-              visible={visible}
-              scrollElement={scrollElement}
-              scrollOffset={scrollOffset}
-              title={t("git.unstaged")}
-              entries={status.unstaged}
-              groupActionLabel={t("git.stageAll")}
-              onGroupAction={stage}
-              rowActionLabel={t("git.stage")}
-              rowActionKind="stage"
-              onRowAction={stageOne}
-              rowDiscardLabel={t("git.discard")}
-              onRowDiscard={discardRow}
-              groupDiscardLabel={t("git.discardAll")}
-              onGroupDiscard={setDiscardTarget}
-              onOpen={openUnstagedDiff}
-              actionBusy={pending.stage === true}
-            />
-            <GroupSection
-              visible={visible}
-              scrollElement={scrollElement}
-              scrollOffset={scrollOffset}
-              title={t("git.untracked")}
-              entries={status.untracked}
-              groupActionLabel={t("git.stageAll")}
-              onGroupAction={stage}
-              rowActionLabel={t("git.stage")}
-              rowActionKind="stage"
-              onRowAction={stageOne}
-              rowDiscardLabel={t("git.discard")}
-              onRowDiscard={discardRow}
-              groupDiscardLabel={t("git.discardAll")}
-              onGroupDiscard={setDiscardTarget}
-              onOpen={openUnstagedDiff}
-              actionBusy={pending.stage === true}
-              isNew
-            />
-          </>
-        )}
+        <ChangesBody
+          status={status}
+          visible={visible}
+          scrollElement={scrollElement}
+          scrollOffset={scrollOffset}
+          pending={pending}
+          stage={stage}
+          unstage={unstage}
+          stageOne={stageOne}
+          unstageOne={unstageOne}
+          discardRow={discardRow}
+          setDiscardTarget={setDiscardTarget}
+          openStagedDiff={openStagedDiff}
+          openUnstagedDiff={openUnstagedDiff}
+        />
       </div>
       {visible && (
         <CommitFooter
@@ -282,6 +233,107 @@ export function ChangesPanel({
 }
 
 /* -------------------------------------------------------------------------- */
+
+/** Scrollable body: loading / empty placeholder, or the three file groups. */
+function ChangesBody({
+  status,
+  visible,
+  scrollElement,
+  scrollOffset,
+  pending,
+  stage,
+  unstage,
+  stageOne,
+  unstageOne,
+  discardRow,
+  setDiscardTarget,
+  openStagedDiff,
+  openUnstagedDiff,
+}: {
+  status: GitStatus | undefined;
+  visible: boolean;
+  scrollElement: HTMLDivElement | null;
+  scrollOffset: RefObject<number>;
+  pending: Record<string, true>;
+  stage: (files: string[]) => void;
+  unstage: (files: string[]) => void;
+  stageOne: (file: string) => void;
+  unstageOne: (file: string) => void;
+  discardRow: (file: string) => void;
+  setDiscardTarget: (target: string[] | null) => void;
+  openStagedDiff: (file: string) => void;
+  openUnstagedDiff: (file: string) => void;
+}) {
+  const { t } = useTranslation();
+  if (!status) return <ChangesPlaceholder text={t("common.loading")} />;
+  const total = status.staged.length + status.unstaged.length + status.untracked.length;
+  if (total === 0) return <ChangesPlaceholder text={t("git.noChanges")} />;
+  return (
+    <>
+      <ChangesSummary status={status} />
+      <GroupSection
+        visible={visible}
+        scrollElement={scrollElement}
+        scrollOffset={scrollOffset}
+        title={t("git.staged")}
+        entries={status.staged}
+        groupActionLabel={t("git.unstageAll")}
+        onGroupAction={unstage}
+        rowActionLabel={t("git.unstage")}
+        rowActionKind="unstage"
+        onRowAction={unstageOne}
+        onOpen={openStagedDiff}
+        actionBusy={pending.unstage === true}
+      />
+      <GroupSection
+        visible={visible}
+        scrollElement={scrollElement}
+        scrollOffset={scrollOffset}
+        title={t("git.unstaged")}
+        entries={status.unstaged}
+        groupActionLabel={t("git.stageAll")}
+        onGroupAction={stage}
+        rowActionLabel={t("git.stage")}
+        rowActionKind="stage"
+        onRowAction={stageOne}
+        rowDiscardLabel={t("git.discard")}
+        onRowDiscard={discardRow}
+        groupDiscardLabel={t("git.discardAll")}
+        onGroupDiscard={setDiscardTarget}
+        onOpen={openUnstagedDiff}
+        actionBusy={pending.stage === true}
+      />
+      <GroupSection
+        visible={visible}
+        scrollElement={scrollElement}
+        scrollOffset={scrollOffset}
+        title={t("git.untracked")}
+        entries={status.untracked}
+        groupActionLabel={t("git.stageAll")}
+        onGroupAction={stage}
+        rowActionLabel={t("git.stage")}
+        rowActionKind="stage"
+        onRowAction={stageOne}
+        rowDiscardLabel={t("git.discard")}
+        onRowDiscard={discardRow}
+        groupDiscardLabel={t("git.discardAll")}
+        onGroupDiscard={setDiscardTarget}
+        onOpen={openUnstagedDiff}
+        actionBusy={pending.stage === true}
+        isNew
+      />
+    </>
+  );
+}
+
+/** Centered loading / no-changes placeholder. */
+function ChangesPlaceholder({ text }: { text: string }) {
+  return (
+    <div className="flex h-full items-center justify-center p-4">
+      <p className="text-body-medium text-text-tertiary">{text}</p>
+    </div>
+  );
+}
 
 const ChangesSummary = memo(function ChangesSummary({ status }: { status: GitStatus }) {
   const { t } = useTranslation();

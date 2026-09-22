@@ -14,7 +14,12 @@ import { Button } from "@/components/base/buttons/button";
 import { CenteredSpinner } from "@/components/base/empty-state";
 import { ConfirmDialog } from "@/components/dialogs";
 import { isWeb, openExternal } from "@/lib/platform";
-import { ipc, type MarketPlugin, type PluginInfo } from "@/lib/ipc";
+import {
+  ipc,
+  type MarketPlugin,
+  type PluginInfo,
+  type PluginUpdate,
+} from "@/lib/ipc";
 import {
   categorizePlugin,
   githubAvatarUrl,
@@ -233,6 +238,40 @@ function PermissionList({ permissions }: { permissions: string[] }) {
   );
 }
 
+/** Every identity/metadata field the header and rail share, resolved once so
+ *  the market entry and the installed record can't disagree mid-render. */
+function pluginDetailModel(
+  id: string,
+  entry: MarketPlugin | undefined,
+  installed: PluginInfo | undefined,
+) {
+  const name = entry?.name ?? installed?.name ?? id;
+  const author = entry?.author || installed?.author || "";
+  const repo = entry?.repo;
+  return {
+    id,
+    name,
+    description: installed?.description || entry?.description || "",
+    author,
+    authorLogin: githubLoginFor({ author, repo }),
+    version: installed?.version || entry?.version || "",
+    tier: installed?.tier ?? entry?.tier,
+    repo,
+    permissions: installed?.permissions.length
+      ? installed.permissions
+      : (entry?.permissions ?? []),
+    downloads: entry?.downloads ?? null,
+    updatedAt: indexUpdatedAt(entry?.updatedAt),
+    minAppVersion: entry?.minAppVersion ?? installed?.minAppVersion ?? null,
+    sdkVersion: entry?.sdkVersion ?? null,
+    category: entry ? categorizePlugin(entry) : null,
+  };
+}
+
+type PluginDetailModel = ReturnType<typeof pluginDetailModel>;
+
+type InstallProgress = { id: string; done: number; total: number } | null;
+
 /**
  * Full-page plugin detail (plan A layout): actions sit on the title row, the
  * long-form content owns the left column, and the metadata/permissions/links
@@ -249,7 +288,7 @@ export function PluginDetailPage({
   installed?: PluginInfo;
   onClose: () => void;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const install = useMarketplaceStore((s) => s.install);
   const installing = useMarketplaceStore((s) => (s.installing?.id === id ? s.installing : null));
   const update = useMarketplaceStore((s) => s.updates.find((u) => u.id === id));
@@ -258,29 +297,10 @@ export function PluginDetailPage({
   const readme = useMarketReadme(entry);
   const [confirming, setConfirming] = useState(false);
 
-  const name = entry?.name ?? installed?.name ?? id;
-  const description = installed?.description || entry?.description || "";
-  const author = entry?.author || installed?.author || "";
-  const version = installed?.version || entry?.version || "";
-  const tier = installed?.tier ?? entry?.tier;
-  const repo = entry?.repo;
-  const authorLogin = githubLoginFor({ author, repo });
-  // The installed record is the running truth; fall back to the indexed
-  // manifest so a not-yet-installed plugin still lists its grants.
-  const permissions = installed?.permissions.length
-    ? installed.permissions
-    : (entry?.permissions ?? []);
-  const downloads = entry?.downloads ?? null;
-  // Upstream freshness, not local install state: the index stamps this when
-  // it registers the pinned release, so an old install still reads honestly.
-  const updatedAt = indexUpdatedAt(entry?.updatedAt);
-  const minAppVersion = entry?.minAppVersion ?? installed?.minAppVersion ?? null;
-  const sdkVersion = entry?.sdkVersion ?? null;
+  const model = pluginDetailModel(id, entry, installed);
   // Market-first artwork, with the installed manifest as the fallback for
   // plugins the index does not carry (locally developed ones).
   const artwork = usePluginArtwork(entry, installed);
-  const screenshots = artwork.screenshots;
-  const category = entry ? categorizePlugin(entry) : null;
   const installPct =
     installing && installing.total > 0
       ? Math.round((installing.done / installing.total) * 100)
@@ -304,94 +324,33 @@ export function PluginDetailPage({
           {t("plugins.hub.backToList")}
         </button>
         <span className="min-w-0 truncate text-body-2-regular text-text-tertiary">
-          {t("plugins.hub.title")} / {name}
+          {t("plugins.hub.title")} / {model.name}
         </span>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-6 px-6 py-6">
-          <header className="flex flex-wrap items-start gap-4">
-            <PluginAvatar id={id} name={name} src={artwork.icon} size={56} />
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <h2 className="text-title-3-medium text-text-primary">{name}</h2>
-              {description && (
-                <p className="max-w-2xl text-body-2-regular text-text-secondary">{description}</p>
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                {version && <span className={BADGE}>v{version}</span>}
-                {tier && (
-                  <span className={BADGE}>
-                    {t(
-                      tier === "declarative"
-                        ? "plugins.hub.tierDeclarative"
-                        : "plugins.hub.tierJs",
-                    )}
-                  </span>
-                )}
-                {installed && <span className={BADGE_OK}>{t("plugins.hub.installed")}</span>}
-                {downloads != null && (
-                  <span className={BADGE}>
-                    {t("plugins.hub.downloadsShort", { n: downloads.toLocaleString() })}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
-              {installing ? (
-                <button type="button" disabled className={INSTALLING_BUTTON}>
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                  {installPct != null
-                    ? t("plugins.installingPct", { pct: installPct })
-                    : t("plugins.installing")}
-                </button>
-              ) : entry && !installed ? (
-                <Button
-                  variant="primary"
-                  leadingIcon={Download}
-                  disabled={isWeb}
-                  title={isWeb ? t("plugins.market.desktopOnly") : undefined}
-                  onClick={() => void install(id)}
-                >
-                  {t("plugins.hub.install")}
-                </Button>
-              ) : null}
-              {entry && update && (
-                <Button
-                  variant="primary"
-                  leadingIcon={Download}
-                  disabled={!!installing || isWeb}
-                  title={isWeb ? t("plugins.market.desktopOnly") : undefined}
-                  onClick={() => void install(id)}
-                >
-                  {t("plugins.hub.updateTo", { version: update.latestVersion })}
-                </Button>
-              )}
-              {installed && settingsKey && (
-                <Button variant="secondary" leadingIcon={Settings2} onClick={openSettings}>
-                  {t("plugins.hub.openSettings")}
-                </Button>
-              )}
-              {installed && installed.source !== "builtin" && (
-                <Button
-                  variant="danger"
-                  leadingIcon={Trash2}
-                  disabled={isWeb}
-                  title={isWeb ? t("plugins.market.desktopOnly") : undefined}
-                  onClick={() => setConfirming(true)}
-                >
-                  {t("plugins.uninstall")}
-                </Button>
-              )}
-            </div>
-          </header>
+          <PluginDetailHeader
+            id={id}
+            model={model}
+            icon={artwork.icon}
+            entry={entry}
+            installed={installed}
+            installing={installing}
+            installPct={installPct}
+            update={update}
+            settingsKey={settingsKey}
+            onInstall={() => void install(id)}
+            onOpenSettings={openSettings}
+            onRequestUninstall={() => setConfirming(true)}
+          />
 
           <div className="grid grid-cols-1 gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_272px]">
             <div className="flex min-w-0 flex-col gap-6">
-              <PluginScreenshotCarousel images={screenshots} name={name} />
+              <PluginScreenshotCarousel images={artwork.screenshots} name={model.name} />
               {readme.status === "loading" && <CenteredSpinner className="py-8" />}
               {readme.status === "ready" && (
-                <PluginReadme markdown={readme.markdown} repo={repo ?? ""} />
+                <PluginReadme markdown={readme.markdown} repo={model.repo ?? ""} />
               )}
               {readme.status === "error" && (
                 <p className="text-body-2-regular text-text-tertiary">
@@ -405,96 +364,7 @@ export function PluginDetailPage({
               )}
             </div>
 
-            <aside className={RAIL}>
-              <RailRow label={t("plugins.hub.author")}>
-                <AuthorChip
-                  author={author}
-                  login={authorLogin}
-                  official={isOfficialPlugin({ author, repo })}
-                />
-              </RailRow>
-
-              {category && (
-                <RailRow label={t("plugins.hub.infoCategory")}>
-                  <span className={RAIL_VALUE}>{t(`plugins.hub.categories.${category}`)}</span>
-                </RailRow>
-              )}
-
-              {tier && (
-                <RailRow label={t("plugins.hub.tier")}>
-                  <span className={RAIL_VALUE}>
-                    {t(
-                      tier === "declarative"
-                        ? "plugins.hub.tierDeclarative"
-                        : "plugins.hub.tierJs",
-                    )}
-                  </span>
-                </RailRow>
-              )}
-
-              {(version || installed) && (
-                <RailRow label={t("plugins.hub.version")}>
-                  <span className={RAIL_VALUE}>v{version}</span>
-                </RailRow>
-              )}
-
-              {(minAppVersion || sdkVersion) && (
-                <RailRow label={t("plugins.hub.compatibility")}>
-                  <span className={RAIL_VALUE}>
-                    {minAppVersion && (
-                      <span className="block">
-                        {t("plugins.hub.minAppShort", { version: minAppVersion })}
-                      </span>
-                    )}
-                    {sdkVersion && (
-                      <span className="block">
-                        {t("plugins.hub.sdkVersion")} {sdkVersion}
-                      </span>
-                    )}
-                  </span>
-                </RailRow>
-              )}
-
-              {downloads != null && (
-                <RailRow label={t("plugins.hub.downloadsLabel")}>
-                  <span className={RAIL_VALUE}>
-                    {t("plugins.hub.downloadsShort", { n: downloads.toLocaleString() })}
-                  </span>
-                </RailRow>
-              )}
-
-              {updatedAt && (
-                <RailRow label={t("plugins.hub.updatedAt")}>
-                  <span className={RAIL_VALUE}>{updatedAt.toLocaleDateString(i18n.language)}</span>
-                </RailRow>
-              )}
-
-              <RailRow label={t("plugins.hub.permissionsTitle")}>
-                <PermissionList key={id} permissions={permissions} />
-              </RailRow>
-
-              {repo && (
-                <RailRow label={t("plugins.hub.infoLinks")}>
-                  <div className="flex flex-col items-start gap-1.5">
-                    <ExternalLink
-                      icon={Github}
-                      label={t("plugins.hub.repo")}
-                      url={`https://github.com/${repo}`}
-                    />
-                    <ExternalLink
-                      icon={Tag}
-                      label={t("plugins.hub.releases")}
-                      url={`https://github.com/${repo}/releases`}
-                    />
-                    <ExternalLink
-                      icon={CircleDot}
-                      label={t("plugins.hub.issues")}
-                      url={`https://github.com/${repo}/issues`}
-                    />
-                  </div>
-                </RailRow>
-              )}
-            </aside>
+            <PluginDetailRail model={model} installed={installed} />
           </div>
         </div>
       </div>
@@ -502,7 +372,7 @@ export function PluginDetailPage({
       {confirming && installed && (
         <ConfirmDialog
           danger
-          message={t("plugins.uninstallConfirm", { name })}
+          message={t("plugins.uninstallConfirm", { name: model.name })}
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
             setConfirming(false);
@@ -512,5 +382,254 @@ export function PluginDetailPage({
         />
       )}
     </div>
+  );
+}
+
+/** Title row: avatar, name/description/badges and the action cluster. */
+function PluginDetailHeader({
+  id,
+  model,
+  icon,
+  entry,
+  installed,
+  installing,
+  installPct,
+  update,
+  settingsKey,
+  onInstall,
+  onOpenSettings,
+  onRequestUninstall,
+}: {
+  id: string;
+  model: PluginDetailModel;
+  icon: string | null;
+  entry?: MarketPlugin;
+  installed?: PluginInfo;
+  installing: InstallProgress;
+  installPct: number | null;
+  update: PluginUpdate | undefined;
+  settingsKey: string | null;
+  onInstall: () => void;
+  onOpenSettings: () => void;
+  onRequestUninstall: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <header className="flex flex-wrap items-start gap-4">
+      <PluginAvatar id={id} name={model.name} src={icon} size={56} />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <h2 className="text-title-3-medium text-text-primary">{model.name}</h2>
+        {model.description && (
+          <p className="max-w-2xl text-body-2-regular text-text-secondary">{model.description}</p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {model.version && <span className={BADGE}>v{model.version}</span>}
+          {model.tier && (
+            <span className={BADGE}>
+              {t(
+                model.tier === "declarative"
+                  ? "plugins.hub.tierDeclarative"
+                  : "plugins.hub.tierJs",
+              )}
+            </span>
+          )}
+          {installed && <span className={BADGE_OK}>{t("plugins.hub.installed")}</span>}
+          {model.downloads != null && (
+            <span className={BADGE}>
+              {t("plugins.hub.downloadsShort", { n: model.downloads.toLocaleString() })}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <PluginHeaderActions
+        entry={entry}
+        installed={installed}
+        installing={installing}
+        installPct={installPct}
+        update={update}
+        settingsKey={settingsKey}
+        onInstall={onInstall}
+        onOpenSettings={onOpenSettings}
+        onRequestUninstall={onRequestUninstall}
+      />
+    </header>
+  );
+}
+
+/** Install / update / settings / uninstall cluster on the title row. */
+function PluginHeaderActions({
+  entry,
+  installed,
+  installing,
+  installPct,
+  update,
+  settingsKey,
+  onInstall,
+  onOpenSettings,
+  onRequestUninstall,
+}: {
+  entry?: MarketPlugin;
+  installed?: PluginInfo;
+  installing: InstallProgress;
+  installPct: number | null;
+  update: PluginUpdate | undefined;
+  settingsKey: string | null;
+  onInstall: () => void;
+  onOpenSettings: () => void;
+  onRequestUninstall: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
+      {installing ? (
+        <button type="button" disabled className={INSTALLING_BUTTON}>
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          {installPct != null
+            ? t("plugins.installingPct", { pct: installPct })
+            : t("plugins.installing")}
+        </button>
+      ) : entry && !installed ? (
+        <Button
+          variant="primary"
+          leadingIcon={Download}
+          disabled={isWeb}
+          title={isWeb ? t("plugins.market.desktopOnly") : undefined}
+          onClick={onInstall}
+        >
+          {t("plugins.hub.install")}
+        </Button>
+      ) : null}
+      {entry && update && (
+        <Button
+          variant="primary"
+          leadingIcon={Download}
+          disabled={!!installing || isWeb}
+          title={isWeb ? t("plugins.market.desktopOnly") : undefined}
+          onClick={onInstall}
+        >
+          {t("plugins.hub.updateTo", { version: update.latestVersion })}
+        </Button>
+      )}
+      {installed && settingsKey && (
+        <Button variant="secondary" leadingIcon={Settings2} onClick={onOpenSettings}>
+          {t("plugins.hub.openSettings")}
+        </Button>
+      )}
+      {installed && installed.source !== "builtin" && (
+        <Button
+          variant="danger"
+          leadingIcon={Trash2}
+          disabled={isWeb}
+          title={isWeb ? t("plugins.market.desktopOnly") : undefined}
+          onClick={onRequestUninstall}
+        >
+          {t("plugins.uninstall")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** Sticky metadata/permissions/links rail. */
+function PluginDetailRail({
+  model,
+  installed,
+}: {
+  model: PluginDetailModel;
+  installed?: PluginInfo;
+}) {
+  const { t, i18n } = useTranslation();
+  return (
+    <aside className={RAIL}>
+      <RailRow label={t("plugins.hub.author")}>
+        <AuthorChip
+          author={model.author}
+          login={model.authorLogin}
+          official={isOfficialPlugin({ author: model.author, repo: model.repo })}
+        />
+      </RailRow>
+
+      {model.category && (
+        <RailRow label={t("plugins.hub.infoCategory")}>
+          <span className={RAIL_VALUE}>{t(`plugins.hub.categories.${model.category}`)}</span>
+        </RailRow>
+      )}
+
+      {model.tier && (
+        <RailRow label={t("plugins.hub.tier")}>
+          <span className={RAIL_VALUE}>
+            {t(
+              model.tier === "declarative"
+                ? "plugins.hub.tierDeclarative"
+                : "plugins.hub.tierJs",
+            )}
+          </span>
+        </RailRow>
+      )}
+
+      {(model.version || installed) && (
+        <RailRow label={t("plugins.hub.version")}>
+          <span className={RAIL_VALUE}>v{model.version}</span>
+        </RailRow>
+      )}
+
+      {(model.minAppVersion || model.sdkVersion) && (
+        <RailRow label={t("plugins.hub.compatibility")}>
+          <span className={RAIL_VALUE}>
+            {model.minAppVersion && (
+              <span className="block">
+                {t("plugins.hub.minAppShort", { version: model.minAppVersion })}
+              </span>
+            )}
+            {model.sdkVersion && (
+              <span className="block">
+                {t("plugins.hub.sdkVersion")} {model.sdkVersion}
+              </span>
+            )}
+          </span>
+        </RailRow>
+      )}
+
+      {model.downloads != null && (
+        <RailRow label={t("plugins.hub.downloadsLabel")}>
+          <span className={RAIL_VALUE}>
+            {t("plugins.hub.downloadsShort", { n: model.downloads.toLocaleString() })}
+          </span>
+        </RailRow>
+      )}
+
+      {model.updatedAt && (
+        <RailRow label={t("plugins.hub.updatedAt")}>
+          <span className={RAIL_VALUE}>{model.updatedAt.toLocaleDateString(i18n.language)}</span>
+        </RailRow>
+      )}
+
+      <RailRow label={t("plugins.hub.permissionsTitle")}>
+        <PermissionList key={model.id} permissions={model.permissions} />
+      </RailRow>
+
+      {model.repo && (
+        <RailRow label={t("plugins.hub.infoLinks")}>
+          <div className="flex flex-col items-start gap-1.5">
+            <ExternalLink
+              icon={Github}
+              label={t("plugins.hub.repo")}
+              url={`https://github.com/${model.repo}`}
+            />
+            <ExternalLink
+              icon={Tag}
+              label={t("plugins.hub.releases")}
+              url={`https://github.com/${model.repo}/releases`}
+            />
+            <ExternalLink
+              icon={CircleDot}
+              label={t("plugins.hub.issues")}
+              url={`https://github.com/${model.repo}/issues`}
+            />
+          </div>
+        </RailRow>
+      )}
+    </aside>
   );
 }

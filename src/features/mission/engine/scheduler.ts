@@ -641,11 +641,14 @@ export class MissionScheduler {
         : task.parentTaskId === null,
     );
     const incoming = new Map<string, string[]>();
+    // One scope task per node (same item + parent), so a nodeId map is an
+    // exact replacement for the per-edge scope scans.
+    const scopeByNode = new Map(scope.map((task) => [task.nodeId, task]));
     for (const task of scope) incoming.set(task.id, []);
     for (const edge of this.edgesFor(run, humanTask)) {
       for (const target of scope) {
         if (target.nodeId !== edge.to) continue;
-        const source = scope.find((row) => row.nodeId === edge.from);
+        const source = scopeByNode.get(edge.from);
         if (source) incoming.get(target.id)?.push(source.id);
       }
     }

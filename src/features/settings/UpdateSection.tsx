@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Button } from "@/components/base/buttons/button";
 import {
   SettingsCard,
@@ -7,8 +8,34 @@ import {
   SettingsSectionLabel,
 } from "@/components/application/settings/settings-rows";
 import { getAppVersion } from "@/lib/platform";
-import { useUpdateStore } from "@/features/update/store";
+import { useUpdateStore, type UpdateStage } from "@/features/update/store";
 import { useUpdateStageMessage } from "@/features/update/stage-message";
+
+/** Row description for the current update stage. */
+function describeUpdate(input: {
+  stage: UpdateStage;
+  message: string | null | undefined;
+  latestVersion: string | null | undefined;
+  latestPubDate: string | null | undefined;
+  language: string;
+  t: TFunction;
+}): string | undefined {
+  const { stage, message, latestVersion, latestPubDate, language, t } = input;
+  if (stage === "checking") return t("settings.updateChecking");
+  if (stage === "latest") {
+    // The "up to date" line keeps its own richer copy (version + date).
+    const parsed = latestPubDate ? new Date(latestPubDate) : null;
+    const date =
+      parsed && !Number.isNaN(parsed.getTime())
+        ? parsed.toLocaleDateString(language)
+        : null;
+    if (!latestVersion) return t("settings.updateLatest");
+    return date
+      ? t("settings.updateLatestDetail", { version: latestVersion, date })
+      : t("settings.updateLatestDetailNoDate", { version: latestVersion });
+  }
+  return message ?? undefined;
+}
 
 /** Update page: app identity + version and the check-for-updates row. */
 export function UpdateSection() {
@@ -37,6 +64,14 @@ export function UpdateSection() {
    *  a check that would race it. */
   const updateInFlight =
     updateStage === "downloading" || updateStage === "installing" || updateStage === "restarting";
+  const updateDescription = describeUpdate({
+    stage: updateStage,
+    message: updateMessage,
+    latestVersion,
+    latestPubDate,
+    language: i18n.language,
+    t,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -50,25 +85,6 @@ export function UpdateSection() {
     };
   }, []);
 
-  let updateDescription: string | undefined;
-  if (updateStage === "checking") {
-    updateDescription = t("settings.updateChecking");
-  } else if (updateStage === "latest") {
-    // The "up to date" line keeps its own richer copy (version + date).
-    const parsed = latestPubDate ? new Date(latestPubDate) : null;
-    const date =
-      parsed && !Number.isNaN(parsed.getTime())
-        ? parsed.toLocaleDateString(i18n.language)
-        : null;
-    updateDescription = !latestVersion
-      ? t("settings.updateLatest")
-      : date
-        ? t("settings.updateLatestDetail", { version: latestVersion, date })
-        : t("settings.updateLatestDetailNoDate", { version: latestVersion });
-  } else {
-    updateDescription = updateMessage ?? undefined;
-  }
-
   return (
     <div className="flex w-full flex-col gap-6">
       {/* App identity + version */}
@@ -81,32 +97,56 @@ export function UpdateSection() {
             </span>
           </SettingsRow>
           <SettingsRow label={t("settings.checkUpdates")} description={updateDescription}>
-            {updateInFlight ? (
-              // Progress rides in the description; the CTA stays visible but
-              // inert so the row does not jump mid-install.
-              <Button size="small" variant="primary" disabled>
-                {t("settings.updateNow")}
-              </Button>
-            ) : (
-              <div className="flex shrink-0 items-center gap-2">
-                <Button
-                  size="small"
-                  variant="secondary"
-                  disabled={updateStage === "checking"}
-                  onClick={() => void checkForUpdates({ interactive: true })}
-                >
-                  {t("settings.checkUpdates")}
-                </Button>
-                {updateStage === "available" && (
-                  <Button size="small" variant="primary" onClick={() => void startUpdate()}>
-                    {t("settings.updateNow")}
-                  </Button>
-                )}
-              </div>
-            )}
+            <UpdateControls
+              stage={updateStage}
+              inFlight={updateInFlight}
+              onCheck={() => void checkForUpdates({ interactive: true })}
+              onStart={() => void startUpdate()}
+            />
           </SettingsRow>
         </SettingsCard>
       </div>
+    </div>
+  );
+}
+
+/** Row controls: check button plus the update CTA once a release is known. */
+function UpdateControls({
+  stage,
+  inFlight,
+  onCheck,
+  onStart,
+}: {
+  stage: UpdateStage;
+  inFlight: boolean;
+  onCheck: () => void;
+  onStart: () => void;
+}) {
+  const { t } = useTranslation();
+  if (inFlight) {
+    // Progress rides in the description; the CTA stays visible but inert so
+    // the row does not jump mid-install.
+    return (
+      <Button size="small" variant="primary" disabled>
+        {t("settings.updateNow")}
+      </Button>
+    );
+  }
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <Button
+        size="small"
+        variant="secondary"
+        disabled={stage === "checking"}
+        onClick={onCheck}
+      >
+        {t("settings.checkUpdates")}
+      </Button>
+      {stage === "available" && (
+        <Button size="small" variant="primary" onClick={onStart}>
+          {t("settings.updateNow")}
+        </Button>
+      )}
     </div>
   );
 }

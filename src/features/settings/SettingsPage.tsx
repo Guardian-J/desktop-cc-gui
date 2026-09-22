@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid";
 import {
   SettingsShell,
   type SettingsNavGroup,
@@ -12,6 +11,7 @@ import {
   useRegistry,
 } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
+import { pluginSettingsNavIcon } from "@/features/plugins/hub/PluginSettingsNavIcon";
 import { useChatStore } from "@/features/chat/store";
 import { ENGINE_IDS, type EngineId } from "./providers";
 import { CliHeaderActions } from "./CliHeaderActions";
@@ -133,7 +133,7 @@ export default function SettingsPage() {
       const item = {
         key: def.key,
         label: def.label(),
-        icon: def.icon ?? LayoutGrid,
+        icon: pluginSettingsNavIcon(def),
       };
       const bucket = byGroup.get(def.group);
       if (bucket) bucket.push(item);
@@ -269,6 +269,7 @@ export default function SettingsPage() {
 
   return (
     <SettingsShell
+      key={pageParam}
       onClose={() => navigate("/")}
       defaultPage={pageParam}
       ariaLabel={t("settings.title")}

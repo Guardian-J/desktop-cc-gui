@@ -69,6 +69,60 @@ function PluginCenterTab({ tabId, active }: { tabId: string; active: boolean }) 
   );
 }
 
+/** Exactly one center surface may be visible at a time. Single-instance
+ * native tabs race only when handlers set both flags in one commit — the
+ * priority order below keeps the previous last-resort tie-breaker (mission
+ * workbench wins over the plugin hub) and never stacks surfaces. */
+function centerSurfaces(input: {
+  activeFilePath: string | null;
+  activeBrowserId: string | null;
+  activePluginTabId: string | null;
+  pluginHubActive: boolean;
+  missionActive: boolean;
+  diffOpen: boolean;
+}): {
+  chat: boolean;
+  editor: boolean;
+  browser: boolean;
+  plugin: boolean;
+  hub: boolean;
+  mission: boolean;
+} {
+  if (input.diffOpen) {
+    return {
+      chat: false,
+      editor: false,
+      browser: false,
+      plugin: false,
+      hub: false,
+      mission: false,
+    };
+  }
+  const browserInView = input.activeBrowserId !== null;
+  const pluginInView = input.activePluginTabId !== null;
+  const hubInView = input.pluginHubActive && !input.missionActive;
+  const missionInView = input.missionActive;
+  return {
+    chat: !(
+      input.activeFilePath ||
+      browserInView ||
+      pluginInView ||
+      hubInView ||
+      missionInView
+    ),
+    editor:
+      input.activeFilePath !== null &&
+      !browserInView &&
+      !pluginInView &&
+      !hubInView &&
+      !missionInView,
+    browser: browserInView && !missionInView && !hubInView,
+    plugin: pluginInView && !missionInView && !hubInView,
+    hub: hubInView,
+    mission: missionInView,
+  };
+}
+
 /** Center tab content: the chat conversation, open file editors, and the
  * changes diff, stacked so only the active surface is visible. */
 export function ChatCenterPane({
@@ -128,20 +182,17 @@ export function ChatCenterPane({
     // 浏览器忽略，交给等待可见的助手（详见 focus-composer.ts）。
     focusComposerWhenVisible(composerInputRef);
   }, [active, workspaces, composerInputRef]);
-  const browserInView = activeBrowserId !== null && !diffView;
-  const pluginInView = activePluginTabId !== null && !diffView;
-  // Single-instance native tabs: if both flags were ever set at once, the
-  // mission workbench wins (handlers keep them mutually exclusive; this is
-  // the last-resort tie-breaker so the surfaces never stack).
-  const hubInView = pluginHubActive && !diffView && !missionActive;
-  const missionInView = missionActive && !diffView;
+  const surfaces = centerSurfaces({
+    activeFilePath,
+    activeBrowserId,
+    activePluginTabId,
+    pluginHubActive,
+    missionActive,
+    diffOpen: diffView !== null,
+  });
   return (
     <>
-      <Surface
-        visible={
-          !(activeFilePath || browserInView || pluginInView || hubInView || missionInView || diffView)
-        }
-      >
+      <Surface visible={surfaces.chat}>
         <ChatConversation
           active={active}
           engines={engines}
@@ -152,16 +203,7 @@ export function ChatCenterPane({
       </Surface>
 
       {openFiles.length > 0 && (
-        <Surface
-          visible={
-            activeFilePath !== null &&
-            !browserInView &&
-            !pluginInView &&
-            !hubInView &&
-            !missionInView &&
-            !diffView
-          }
-        >
+        <Surface visible={surfaces.editor}>
           <Suspense fallback={<CenteredSpinner />}>
             {openFiles.map((path) => (
               <SurfaceItem key={path} active={path === activeFilePath}>
@@ -175,10 +217,10 @@ export function ChatCenterPane({
       {/* Browser tabs: one pane per tab, each owning a native child webview
           painted over its placeholder rect (see BrowserPane). */}
       {browserTabs.length > 0 && (
-        <Surface visible={browserInView && !missionInView && !hubInView}>
+        <Surface visible={surfaces.browser}>
           {browserTabs.map((tab) => (
             <SurfaceItem key={tab.id} active={tab.id === activeBrowserId}>
-              <BrowserPane tab={tab} active={browserInView && tab.id === activeBrowserId} />
+              <BrowserPane tab={tab} active={surfaces.browser && tab.id === activeBrowserId} />
             </SurfaceItem>
           ))}
         </Surface>
@@ -187,7 +229,7 @@ export function ChatCenterPane({
       {/* Plugin center tabs: one pane per open tab, keep-alive like the
           other surfaces. */}
       {pluginTabs.length > 0 && (
-        <Surface visible={pluginInView && !missionInView && !hubInView}>
+        <Surface visible={surfaces.plugin}>
           {pluginTabs.map((tabId) => (
             <PluginCenterTab key={tabId} tabId={tabId} active={tabId === activePluginTabId} />
           ))}
@@ -196,7 +238,7 @@ export function ChatCenterPane({
 
       {/* 插件 hub（原生单实例页签）：商店/已安装管理，页签关闭后保持挂载。 */}
       {pluginHubOpen && (
-        <Surface visible={hubInView}>
+        <Surface visible={surfaces.hub}>
           <Suspense fallback={<CenteredSpinner />}>
             <PluginHub
               onCreatePluginChat={workspaces.length > 0 ? handleCreatePluginChat : null}
@@ -208,7 +250,7 @@ export function ChatCenterPane({
       {/* 任务工作台（原生单实例页签）：打开后保持挂载，只切可见性，
           对话与运行视图不因切换页签而丢状态。 */}
       {missionOpen && (
-        <Surface visible={missionInView}>
+        <Surface visible={surfaces.mission}>
           <Suspense fallback={<CenteredSpinner />}>
             <MissionWorkbench />
           </Suspense>

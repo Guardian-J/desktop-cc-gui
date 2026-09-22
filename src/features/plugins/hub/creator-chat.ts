@@ -1,6 +1,6 @@
 import { ipc, type Workspace } from "@/lib/ipc";
+import { dismissCenterSurfaces } from "@/features/chat/center-surfaces";
 import { sessionKey, useChatStore, type ActiveSession } from "@/features/chat/store";
-import { usePluginHubStore } from "./store";
 
 /**
  * 插件中心「创建插件」的入口动作：开一个新会话，把内置插件开发 skill 的调用
@@ -39,7 +39,7 @@ export function startCreatorChat(workspacePath: string): string {
       }
     })
     .catch((error) => console.warn("[creator-skill] install failed", error));
-  usePluginHubStore.getState().deactivate();
+  dismissCenterSurfaces();
   const { startNewChat, activeEngine, setDraft } = useChatStore.getState();
   startNewChat(workspacePath);
   const key = sessionKey(activeEngine, null, workspacePath);

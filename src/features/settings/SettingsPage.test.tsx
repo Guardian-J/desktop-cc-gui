@@ -2,18 +2,32 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EngineInfo } from "@/lib/ipc";
+import type { EngineInfo, PluginInfo } from "@/lib/ipc";
 
 // The settings page never probes IPC for the rail itself (engine states come
 // from the chat store); a rejecting-any-method proxy keeps section module
-// imports and the stub page inert.
+// imports and the stub page inert. `pluginReadArtwork` is called out so the
+// plugin rail-icon fallback can be asserted.
+const { pluginReadArtwork } = vi.hoisted(() => ({
+  pluginReadArtwork: vi.fn(
+    async (_id: string, _path: string): Promise<string> =>
+      "data:image/png;base64,AAAA",
+  ),
+}));
 vi.mock("@/lib/ipc", () => ({
-  ipc: new Proxy({}, { get: () => async () => null }),
+  ipc: new Proxy(
+    { pluginReadArtwork },
+    {
+      get: (target, prop) =>
+        prop in target ? Reflect.get(target, prop) : async () => null,
+    },
+  ),
 }));
 
 import { settingsRegistry } from "@ccgui/plugin-sdk";
 import i18n from "@/lib/i18n";
 import { useChatStore } from "@/features/chat/store";
+import { usePluginsStore } from "@/features/plugins/manager/usePlugins";
 import SettingsPage from "./SettingsPage";
 
 // React 18's act() requires this flag to be set by the test environment.
@@ -113,6 +127,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  pluginReadArtwork.mockClear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -123,6 +138,35 @@ afterEach(() => {
   container.remove();
   useChatStore.setState({ engines: [] });
 });
+
+function installedPlugin(id: string, icon: string | null): PluginInfo {
+  return {
+    id,
+    name: id,
+    version: "1.0.0",
+    description: "",
+    author: "ccgui",
+    tier: "js",
+    source: "marketplace",
+    enabled: true,
+    quarantined: false,
+    lastError: null,
+    permissions: ["ui:settings-section"],
+    installedAt: 0,
+    minAppVersion: null,
+    icon,
+    screenshots: [],
+  };
+}
+
+/** Rail item button carrying the given label (the icon slot holds no text). */
+function railRow(label: string): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll<HTMLButtonElement>("nav button")].find(
+      (button) => button.textContent?.trim() === label,
+    ) ?? null
+  );
+}
 
 async function render(engines: EngineInfo[], page = "stub") {
   useChatStore.setState({ engines });
@@ -291,6 +335,79 @@ describe("SettingsPage CLI rail", () => {
     );
     expect(systemHeading).toBeTruthy();
     expect(systemHeading?.closest("button")).toBeNull();
+  });
+
+  it("trails the fold chevron after the heading label", async () => {
+    await render([
+      engine("claude", true, true),
+      engine("codex", true, false),
+      engine("qoder", false, true),
+    ]);
+
+    // The chevron is the heading row's trailing element, so the label keeps
+    // the rail's left text inset (same column as a static heading like 系统)
+    // instead of sitting in the item-icon column.
+    for (const key of [
+      "settings.cliManage",
+      "settings.cliNotInstalledGroup",
+      "settings.cliDisabledGroup",
+    ]) {
+      const toggle = groupToggle(key);
+      expect(toggle.firstElementChild?.textContent).toBe(i18n.t(key));
+      expect(toggle.lastElementChild?.tagName.toLowerCase()).toBe("svg");
+    }
+  });
+
+  it("uses the installed plugin's own artwork when the section registers no icon", async () => {
+    usePluginsStore.setState({
+      installed: [installedPlugin("auto-title", "docs/icon.png")],
+    });
+    const dispose = settingsRegistry.register({
+      id: "plugin:auto-title",
+      key: "plugin:auto-title",
+      label: () => "自动命名",
+      group: "plugins",
+      order: 1000,
+      component: () => <div>auto-title page</div>,
+    });
+    try {
+      await render([]);
+      expect(pluginReadArtwork).toHaveBeenCalledWith("auto-title", "docs/icon.png");
+      expect(railRow("自动命名")?.querySelector("img")?.getAttribute("src")).toBe(
+        "data:image/png;base64,AAAA",
+      );
+    } finally {
+      await act(async () => {
+        dispose();
+        usePluginsStore.setState({ installed: [] });
+      });
+    }
+  });
+
+  it("keeps the shared grid glyph for a plugin that ships no artwork", async () => {
+    usePluginsStore.setState({
+      installed: [installedPlugin("plain-plugin", null)],
+    });
+    const dispose = settingsRegistry.register({
+      id: "plugin:plain-plugin",
+      key: "plugin:plain-plugin",
+      label: () => "无素材插件",
+      group: "plugins",
+      order: 1000,
+      component: () => <div>plain page</div>,
+    });
+    try {
+      await render([]);
+      expect(pluginReadArtwork).not.toHaveBeenCalled();
+      const row = railRow("无素材插件");
+      expect(row?.querySelector("img")).toBeNull();
+      expect(row?.querySelector("svg.lucide-layout-grid")).not.toBeNull();
+    } finally {
+      await act(async () => {
+        dispose();
+        usePluginsStore.setState({ installed: [] });
+      });
+    }
   });
 
   it("unfolds the bucket that holds a deep-linked page", async () => {

@@ -304,10 +304,19 @@ function unitStatusOf(statuses: MissionTaskStatus[]): keyof MissionRunCounts {
 export function countRunUnits(run: MissionRun): MissionUnitCounts {
   const counts: MissionUnitCounts = { ...EMPTY_RUN_COUNTS, total: 0 };
   const statuses: MissionTaskStatus[][] = [];
+  // Index nodes and parent→children once; the per-task scans below stay O(n).
+  const nodesById = new Map(run.snapshot.nodes.map((node) => [node.id, node]));
+  const childrenByParent = new Map<string, MissionTaskInstance[]>();
+  for (const task of run.tasks) {
+    if (task.parentTaskId === null) continue;
+    const bucket = childrenByParent.get(task.parentTaskId);
+    if (bucket) bucket.push(task);
+    else childrenByParent.set(task.parentTaskId, [task]);
+  }
   for (const parent of run.tasks) {
-    const parentNode = run.snapshot.nodes.find((node) => node.id === parent.nodeId);
+    const parentNode = nodesById.get(parent.nodeId);
     if (parentNode?.type !== "foreach") continue;
-    const children = run.tasks.filter((task) => task.parentTaskId === parent.id);
+    const children = childrenByParent.get(parent.id) ?? [];
     const itemIds = [...new Set(children.map((child) => child.itemId))];
     for (const itemId of itemIds) {
       if (!itemId) continue;

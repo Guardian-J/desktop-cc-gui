@@ -1,5 +1,6 @@
 import i18n from "@/lib/i18n";
 import { commandRegistry } from "@ccgui/plugin-sdk";
+import { dismissCenterSurfaces } from "@/features/chat/center-surfaces";
 import { useShortcutsStore } from "@/features/shortcuts/store";
 import { usePluginHubStore } from "@/features/plugins/hub/store";
 
@@ -39,6 +40,9 @@ commandRegistry.register({
   // first (hash no-op when already there), then open the installed tab.
   run: () => {
     window.location.hash = "#/";
+    // 其他中心面让位（与侧栏插件入口一致）：否则浏览器页签等还占着中心区，
+    // 插件中心只在画面上层出现，页签高亮对不上。
+    dismissCenterSurfaces();
     usePluginHubStore.getState().openHub("installed");
   },
 });
@@ -48,6 +52,7 @@ commandRegistry.register({
   keywords: keywords("commands.openMarketplaceKeywords"),
   run: () => {
     window.location.hash = "#/";
+    dismissCenterSurfaces();
     usePluginHubStore.getState().openHub("market");
   },
 });

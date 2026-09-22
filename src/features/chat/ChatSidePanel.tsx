@@ -2,7 +2,8 @@ import { useTranslation } from "react-i18next";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import { pluginIdFromRegistryKey } from "@ccgui/plugin-sdk";
 import { cx } from "@/utils/cx";
-import { ChangesTab, resolveActivePanelTab, useSortedPanelTabs } from "./panel-tabs";
+import { ChangesTab } from "./panel-tabs";
+import { resolveActivePanelTab, useSortedPanelTabs } from "./use-panel-tabs";
 import type { ActiveSession } from "./store";
 
 export function ChatSidePanel({

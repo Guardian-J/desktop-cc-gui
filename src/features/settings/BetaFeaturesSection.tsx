@@ -4,7 +4,6 @@ import { Switch } from "@/components/base/switch/switch";
 import {
   SettingsCard,
   SettingsRow,
-  SettingsSectionLabel,
 } from "@/components/application/settings/settings-rows";
 import { errorText } from "@/lib/errors";
 import {
@@ -46,7 +45,6 @@ export function BetaFeaturesSection() {
         </p>
       )}
       <div className="flex w-full flex-col gap-2">
-        <SettingsSectionLabel>{t("settings.betaFeatures")}</SettingsSectionLabel>
         <p className="px-3 text-body-2-regular text-text-secondary">
           {t("settings.betaFeaturesDesc")}
         </p>

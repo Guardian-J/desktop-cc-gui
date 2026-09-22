@@ -80,22 +80,21 @@ export const RollingStat = memo(function RollingStat({
     let outer = 0;
     let inner = 0;
 
-    // 首挂：先确保 0 已 paint，再设目标（触发滚动动画）
-    // 后续：直接在下一帧设目标（display 已是旧值）
-    const apply = () => {
-      if (!cancelled) {
-        setDisplayValue(target);
-        mountedRef.current = true;
-      }
-    };
-
+    // 首挂目标就是 0：display 已经是 0，无需滚动；只记录已应用，避免在
+    // effect 里同步 setState。
     if (!mountedRef.current && target === 0) {
-      apply();
+      mountedRef.current = true;
       return;
     }
 
+    // 首挂：先确保 0 已 paint，再设目标（触发滚动动画）
+    // 后续：同样经两帧设目标（display 已是旧值，过渡起点已 paint）
     outer = window.requestAnimationFrame(() => {
-      inner = window.requestAnimationFrame(apply);
+      inner = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        setDisplayValue(target);
+        mountedRef.current = true;
+      });
     });
     return () => {
       cancelled = true;
