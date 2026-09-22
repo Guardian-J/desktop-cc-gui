@@ -236,9 +236,18 @@ describe("PluginHub", () => {
       buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await act(async () => {});
-    // The rail keeps the same rule: brand, no personal account link.
+    // The rail keeps the same rule: brand, no personal account printed — the
+    // badge itself is the link to the brand account.
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.official"));
     expect(document.body.textContent).not.toContain("zhukunpenglinyutong");
+    const officialBadge = buttonByText(i18n.t("plugins.hub.official"));
+    expect(officialBadge.getAttribute("title")).toBe(
+      i18n.t("plugins.hub.authorGithub", { login: "zhukunpenglinyutong" }),
+    );
+    await act(async () => {
+      officialBadge.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/zhukunpenglinyutong");
   });
 
   it("shows the indexed plugin icon and keeps the letter tile without one", async () => {

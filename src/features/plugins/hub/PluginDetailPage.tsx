@@ -17,6 +17,7 @@ import {
   githubLoginFor,
   indexUpdatedAt,
   isOfficialPlugin,
+  OFFICIAL_PLUGIN_LOGIN,
 } from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
 import { usePluginArtwork } from "./artwork";
@@ -30,8 +31,10 @@ import { useMarketplaceStore } from "../marketplace/store";
 const BADGE =
   "rounded-md bg-background-secondary-default px-1.5 py-0.5 text-xs text-text-secondary";
 const BADGE_OK = "rounded-md bg-status-lime-background px-1.5 py-0.5 text-xs text-status-lime-text";
+// `w-fit`: the rail is a flex column, so a badge without it stretches across
+// the whole 272px rail and reads as a filled row instead of a chip.
 const OFFICIAL_BADGE =
-  "shrink-0 rounded-md bg-status-purple-background px-1.5 py-0.5 text-xs text-status-purple-text";
+  "w-fit shrink-0 rounded-md bg-status-purple-background px-1.5 py-0.5 text-xs text-status-purple-text";
 const RAIL_LABEL = "text-caption-1-regular text-text-tertiary";
 const RAIL_VALUE = "text-body-2-regular text-text-primary";
 const LINK_BUTTON =
@@ -74,11 +77,13 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
 
 /**
  * Developer identity in the rail. First-party plugins show the official badge
- * instead of the account: it is the publisher, not a person to credit. For
- * third-party plugins, when the index resolves a GitHub account
- * (`githubLoginFor`: the indexed `author`, or the repo owner when `author` is
- * only a display name) the whole avatar + name chip links to that profile; a
- * display name alone stays inert text rather than pointing at a guessed URL.
+ * instead of the account: it is the publisher, not a person to credit. The
+ * badge still links to that brand account, so the publisher stays reachable
+ * without printing the login next to it. For third-party plugins, when the
+ * index resolves a GitHub account (`githubLoginFor`: the indexed `author`, or
+ * the repo owner when `author` is only a display name) the whole avatar + name
+ * chip links to that profile; a display name alone stays inert text rather
+ * than pointing at a guessed URL.
  */
 function AuthorChip({
   author,
@@ -90,7 +95,19 @@ function AuthorChip({
   official: boolean;
 }) {
   const { t } = useTranslation();
-  if (official) return <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>;
+  if (official) {
+    const profile = login || OFFICIAL_PLUGIN_LOGIN;
+    return (
+      <button
+        type="button"
+        title={t("plugins.hub.authorGithub", { login: profile })}
+        onClick={() => openExternal(`https://github.com/${profile}`)}
+        className="w-fit cursor-pointer rounded-md outline-none transition-[filter] hover:brightness-95 focus-visible:ring-2 focus-visible:ring-border-focus-ring motion-reduce:transition-none"
+      >
+        <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>
+      </button>
+    );
+  }
   const label = author || login || "";
   const chip = (
     <>

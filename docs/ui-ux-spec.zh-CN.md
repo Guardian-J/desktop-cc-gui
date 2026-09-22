@@ -61,8 +61,9 @@
 - **动效可降级**：过渡类一律带 `motion-reduce:transition-none`；关键帧动画的降级见 [§8](#8-待收敛)。
 - **同一状态只表达一次**：列表行里「已安装 / 可更新」只给一个信号——市场表的右侧按钮就是该行的状态（`安装` → `更新至 vX` → `已安装`），行内不再重复挂徽标；安装中按钮原地换成进度（`plugins.installingPct`）且保持占位不變（`PluginMarketRow.tsx`）。
 - **表格化列表**：插件市场用语义 `<table>` + `table-fixed`，列头是唯一的字段说明（名称 / 开发者 / 安装量 / 版本 / 操作）；整列无数据时整列不渲染（`PluginMarketView` 的 `showDownloads`），不用一列「—」占位。开发者列的头像是该账号的真实 GitHub 头像（`githubAvatarUrl`），加载中或取不到时回落到同一配色的首字母瓷砖，不出现破图。
-- **官方身份用紫色品牌徽标，工具栏下拉同时承担人群范围**：市场表开发者列在 `githubLoginFor` 解析出的账号等于官方账号时（`isOfficialPlugin`，账号 `zhukunpenglinyutong`，author 或 repo owner，大小写不敏感），整格只渲染紫色「CCGUI官方插件」徽标（`status-purple-background` / `status-purple-text`；紫色专属官方，不与中性类型徽标、lime「已安装」混用）——官方插件的账号是隐含信息，不再重复头像与（被截断的）用户名；详情页右栏 `AuthorChip` 同一条判定，第三方插件才展示可点的主页。工具栏下拉（`sortLabel`）语义混合：`综合排序` / `下载量` 显示全部、只是排序不同；`CCGUI官方插件` / `社区插件` 只保留该类并按下载量排序（`sortPlugins` 内 `pluginMatchesAudience`）。空状态的「清除筛选」要把下拉一并复位回 `综合排序`。
-- **开发者只在能落到真实账号时可点**：插件详情页右栏的「开发者」用 `githubLoginFor({ author, repo })` 判定身份——索引 `author` 是 GitHub 账号（或回落到 repo owner）时，整块头像+名称是可点按钮，点击走 `openExternal` 打开 `https://github.com/<login>`，并把目标主页写进 `title`；解析不出账号时保持纯文本，不猜主页地址（`PluginDetailPage.tsx` 的 `AuthorChip`）。
+- **官方身份用紫色品牌徽标，工具栏下拉同时承担人群范围**：市场表开发者列在 `githubLoginFor` 解析出的账号等于官方账号时（`isOfficialPlugin`，账号 `zhukunpenglinyutong`，author 或 repo owner，大小写不敏感），整格只渲染紫色「CCGUI官方插件」徽标（`status-purple-background` / `status-purple-text`；紫色专属官方，不与中性类型徽标、lime「已安装」混用）——官方插件的账号是隐含信息，不再重复头像与（被截断的）用户名；详情页右栏 `AuthorChip` 同一条判定，徽标整块是按钮（`title` 报出目标主页），点击打开该官方账号主页，第三方插件才展示可点的头像+名称。工具栏下拉（`sortLabel`）语义混合：`综合排序` / `下载量` 显示全部、只是排序不同；`CCGUI官方插件` / `社区插件` 只保留该类并按下载量排序（`sortPlugins` 内 `pluginMatchesAudience`）。空状态的「清除筛选」要把下拉一并复位回 `综合排序`。
+- **开发者只在能落到真实账号时可点**：插件详情页右栏的「开发者」用 `githubLoginFor({ author, repo })` 判定身份——索引 `author` 是 GitHub 账号（或回落到 repo owner）时，整块头像+名称是可点按钮，点击走 `openExternal` 打开 `https://github.com/<login>`，并把目标主页写进 `title`；官方徽标同理指向 `OFFICIAL_PLUGIN_LOGIN`；解析不出账号时保持纯文本，不猜主页地址（`PluginDetailPage.tsx` 的 `AuthorChip`）。
+- **带背景的块在 flex 列里必须自适应宽度**：右信息栏 `RailRow` 是 `flex flex-col`，默认 `align-items: stretch` 会把任何块拉伸到整栏宽——带背景的徽标不加 `w-fit` 就变成整行色块。所以 `OFFICIAL_BADGE` 带 `w-fit`，可点的头像+名称块用 `flex w-fit max-w-full`。长文本靠内层 `truncate` 收窄，不靠父级的拉伸。
 - **时间只说数据源里有的**：插件详情页右栏的「最近更新时间」只取索引 `plugins/<id>.json` 的 `updatedAt`（上游 Release 发布时间，`indexUpdatedAt` 解析后按当前语言格式化）；条目没有该字段就不渲染这一行，不用本机安装时间顶替，也不用「—」占位。
 - **插件素材可选、缺失不占位**：插件图标取索引 `icon`（市场行、详情页头部、已安装行共用 `PluginAvatar`），加载中或取不到时回落同一 id 的确定性渐变首字母瓷砖；详情页效果图取索引 `screenshots`，空数组整个图集不渲染（`PluginScreenshotCarousel`），单张加载失败只在该槽位显示占位文案。不出现破图，也不用「—」占位。
 - **插件面板页签只给图标**：聊天右侧面板页签条（`ChatPanelHeader.tsx`）里，插件页签（registry id 前缀 `plugin:`）只在 `PillTab` 的图标槽渲染 16px 图标，插件自报的 `label` 只作 `title` 与 `aria-label`（指针悬停 / 读屏可见，页签条里不占文字宽）；内建「文件 / 变更」保留图标+文字。插件没注册 `icon` 时回落同一插件素材（manifest 图标经 `plugin_read_artwork` → 市场安装会把索引品牌图按该相对路径落到插件目录，离线可用）→ 确定性渐变首字母瓷砖，与插件市场同一条链（`PluginPanelTabIcon.tsx`）。
@@ -176,6 +177,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.21 | 2026-09 | 官方插件徽标整块可点，跳转品牌账号 `zhukunpenglinyutong`（`title` 报出目标主页）；徽标加 `w-fit`，不再被右栏 flex 列拉伸成整行色块；§3 补充规则 |
 | v0.20 | 2026-09 | 市场安装按 manifest 的 `icon` 把索引品牌图落地到插件目录（Release 三件套不含 `docs/` 素材），插件页签的素材回退在离线时也能显示品牌图；§3 补充规则 |
 | v0.19 | 2026-09 | 官方插件开发者列只显示紫色「CCGUI官方插件」徽标（不再展示账号头像/用户名，详情页右栏同规则）；下拉选项改为 CCGUI官方插件 / 社区插件 |
 | v0.18 | 2026-09 | 插件市场官方插件在开发者列与详情页右栏标记紫色「官方」徽标（`isOfficialPlugin`）；排序下拉改为综合排序 / 官方 / 第三方 / 下载量，官方与第三方同时收窄列表；§3 补充规则 |
