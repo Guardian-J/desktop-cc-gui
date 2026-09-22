@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, type ReactNode } from "react";
 import { centerTabRegistry, pluginIdFromRegistryKey, useRegistry } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-chat-composer";
@@ -9,11 +9,23 @@ import { DiffView } from "@/features/git/DiffView";
 import type { DiffTarget } from "@/features/git/store";
 import type { EngineInfo, GitStatus, Workspace } from "@/lib/ipc";
 import { cx } from "@/utils/cx";
+import { creatorChatWorkspace, startCreatorChat } from "@/features/plugins/hub/creator-chat";
+import { focusComposerWhenVisible } from "@/features/chat/focus-composer";
 import { ChatConversation } from "./components/ChatConversation";
 import type { ActiveSession } from "./store";
 
 // CodeMirror + react-markdown are heavy; split them out of the startup chunk.
 const EditorPane = lazy(() => import("@/features/files/EditorPane"));
+// React Flow + dagre are heavy; 任务工作台只在打开时加载。
+const MissionWorkbench = lazy(() =>
+  import("@/features/mission/components/Workbench").then((m) => ({
+    default: m.MissionWorkbench,
+  })),
+);
+// 插件 hub 也在打开时才加载（插件商店/管理不是启动路径）。
+const PluginHub = lazy(() =>
+  import("@/features/plugins/hub/PluginHub").then((m) => ({ default: m.PluginHub })),
+);
 
 /** One stacked center surface: invisible surfaces stay mounted (never
  * display:none) so WKWebView keeps its scroll boxes and editor drafts
@@ -57,6 +69,60 @@ function PluginCenterTab({ tabId, active }: { tabId: string; active: boolean }) 
   );
 }
 
+/** Exactly one center surface may be visible at a time. Single-instance
+ * native tabs race only when handlers set both flags in one commit — the
+ * priority order below keeps the previous last-resort tie-breaker (mission
+ * workbench wins over the plugin hub) and never stacks surfaces. */
+function centerSurfaces(input: {
+  activeFilePath: string | null;
+  activeBrowserId: string | null;
+  activePluginTabId: string | null;
+  pluginHubActive: boolean;
+  missionActive: boolean;
+  diffOpen: boolean;
+}): {
+  chat: boolean;
+  editor: boolean;
+  browser: boolean;
+  plugin: boolean;
+  hub: boolean;
+  mission: boolean;
+} {
+  if (input.diffOpen) {
+    return {
+      chat: false,
+      editor: false,
+      browser: false,
+      plugin: false,
+      hub: false,
+      mission: false,
+    };
+  }
+  const browserInView = input.activeBrowserId !== null;
+  const pluginInView = input.activePluginTabId !== null;
+  const hubInView = input.pluginHubActive && !input.missionActive;
+  const missionInView = input.missionActive;
+  return {
+    chat: !(
+      input.activeFilePath ||
+      browserInView ||
+      pluginInView ||
+      hubInView ||
+      missionInView
+    ),
+    editor:
+      input.activeFilePath !== null &&
+      !browserInView &&
+      !pluginInView &&
+      !hubInView &&
+      !missionInView,
+    browser: browserInView && !missionInView && !hubInView,
+    plugin: pluginInView && !missionInView && !hubInView,
+    hub: hubInView,
+    mission: missionInView,
+  };
+}
+
 /** Center tab content: the chat conversation, open file editors, and the
  * changes diff, stacked so only the active surface is visible. */
 export function ChatCenterPane({
@@ -71,11 +137,14 @@ export function ChatCenterPane({
   activeBrowserId,
   pluginTabs,
   activePluginTabId,
+  pluginHubOpen,
+  pluginHubActive,
+  missionOpen,
+  missionActive,
   diffView,
   diffStatus,
   closeDiff,
-}: {
-  active: ActiveSession | null;
+}: {  active: ActiveSession | null;
   engines: EngineInfo[];
   workspaces: Workspace[];
   startNewChat: (workspacePath: string) => void;
@@ -90,17 +159,40 @@ export function ChatCenterPane({
    *  exclusive with the other surfaces; use-chat-tabs enforces it). */
   pluginTabs: string[];
   activePluginTabId: string | null;
+  /** 原生插件中心页签（侧栏「插件」入口）：是否打开 / 是否在视。 */
+  pluginHubOpen: boolean;
+  pluginHubActive: boolean;
+  /** 任务工作台中心页签：是否打开 / 是否在视。 */
+  missionOpen: boolean;
+  missionActive: boolean;
   diffView: { workspacePath: string; target: DiffTarget } | null;
   diffStatus: GitStatus | undefined;
   closeDiff: () => void;
 }) {
-  // Native nav/title events → store, mounted once while this pane lives.
+  // 原生 nav/title events → store, mounted once while this pane lives.
   useBrowserNavSync();
-  const browserInView = activeBrowserId !== null && !diffView;
-  const pluginInView = activePluginTabId !== null && !diffView;
+  // 插件中心「创建插件」：开一个新会话并把内置 skill 的调用预填进输入框
+  // （skill 由 Rust 侧装进各引擎的 skills 根，见 creator-chat.ts）。聚焦只能在
+  // 这里做——composerInputRef 归本层所有。
+  const handleCreatePluginChat = useCallback(() => {
+    const workspace = creatorChatWorkspace(active, workspaces);
+    if (!workspace) return;
+    startCreatorChat(workspace.path);
+    // 本层刚从插件中心切回聊天：输入框那一帧还在隐藏面里，直接 focus() 会被
+    // 浏览器忽略，交给等待可见的助手（详见 focus-composer.ts）。
+    focusComposerWhenVisible(composerInputRef);
+  }, [active, workspaces, composerInputRef]);
+  const surfaces = centerSurfaces({
+    activeFilePath,
+    activeBrowserId,
+    activePluginTabId,
+    pluginHubActive,
+    missionActive,
+    diffOpen: diffView !== null,
+  });
   return (
     <>
-      <Surface visible={!(activeFilePath || browserInView || pluginInView || diffView)}>
+      <Surface visible={surfaces.chat}>
         <ChatConversation
           active={active}
           engines={engines}
@@ -111,7 +203,7 @@ export function ChatCenterPane({
       </Surface>
 
       {openFiles.length > 0 && (
-        <Surface visible={activeFilePath !== null && !browserInView && !pluginInView && !diffView}>
+        <Surface visible={surfaces.editor}>
           <Suspense fallback={<CenteredSpinner />}>
             {openFiles.map((path) => (
               <SurfaceItem key={path} active={path === activeFilePath}>
@@ -125,10 +217,10 @@ export function ChatCenterPane({
       {/* Browser tabs: one pane per tab, each owning a native child webview
           painted over its placeholder rect (see BrowserPane). */}
       {browserTabs.length > 0 && (
-        <Surface visible={browserInView}>
+        <Surface visible={surfaces.browser}>
           {browserTabs.map((tab) => (
             <SurfaceItem key={tab.id} active={tab.id === activeBrowserId}>
-              <BrowserPane tab={tab} active={browserInView && tab.id === activeBrowserId} />
+              <BrowserPane tab={tab} active={surfaces.browser && tab.id === activeBrowserId} />
             </SurfaceItem>
           ))}
         </Surface>
@@ -137,10 +229,31 @@ export function ChatCenterPane({
       {/* Plugin center tabs: one pane per open tab, keep-alive like the
           other surfaces. */}
       {pluginTabs.length > 0 && (
-        <Surface visible={pluginInView}>
+        <Surface visible={surfaces.plugin}>
           {pluginTabs.map((tabId) => (
             <PluginCenterTab key={tabId} tabId={tabId} active={tabId === activePluginTabId} />
           ))}
+        </Surface>
+      )}
+
+      {/* 插件 hub（原生单实例页签）：商店/已安装管理，页签关闭后保持挂载。 */}
+      {pluginHubOpen && (
+        <Surface visible={surfaces.hub}>
+          <Suspense fallback={<CenteredSpinner />}>
+            <PluginHub
+              onCreatePluginChat={workspaces.length > 0 ? handleCreatePluginChat : null}
+            />
+          </Suspense>
+        </Surface>
+      )}
+
+      {/* 任务工作台（原生单实例页签）：打开后保持挂载，只切可见性，
+          对话与运行视图不因切换页签而丢状态。 */}
+      {missionOpen && (
+        <Surface visible={surfaces.mission}>
+          <Suspense fallback={<CenteredSpinner />}>
+            <MissionWorkbench />
+          </Suspense>
         </Surface>
       )}
 

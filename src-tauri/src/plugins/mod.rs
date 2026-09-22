@@ -141,6 +141,16 @@ pub fn plugin_quarantine(id: String, error: String) -> Result<PluginInfo, String
     Ok(fs::info_for(&state::plugins_dir(), &id, &record))
 }
 
+/// Artwork bytes for the installed-plugin UI (the market/installed row icon
+/// and the detail gallery), returned as a data URL: the webview needs no
+/// filesystem access, `~/.ccgui-next` stays behind the asset protocol's deny
+/// list, and only files shipped by that very plugin can be read.
+#[tauri::command]
+pub fn plugin_read_artwork(id: String, path: String) -> Result<String, String> {
+    manifest::require_valid_id(&id)?;
+    fs::artwork_data_url(&state::plugins_dir(), &id, &path)
+}
+
 #[tauri::command]
 pub fn plugin_read_file(id: String, name: String) -> Result<String, String> {
     manifest::require_valid_id(&id)?;

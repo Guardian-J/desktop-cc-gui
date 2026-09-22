@@ -43,6 +43,14 @@ interface UpdateStore {
 // sit on "checking" forever. Treat a timeout as a failed check.
 const CHECK_TIMEOUT_MS = 15_000;
 
+/** Download progress 0–100, null when the total size is unknown. Shared by
+ *  every surface that renders the download stage (toast, settings row). */
+export function downloadPercent(downloadedBytes: number, totalBytes?: number): number | null {
+  return totalBytes && totalBytes > 0
+    ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
+    : null;
+}
+
 /** Mirrors `LatestReleaseInfo` in src-tauri/src/updater.rs. */
 interface LatestReleaseInfo {
   version: string;

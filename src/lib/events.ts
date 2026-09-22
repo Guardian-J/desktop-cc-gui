@@ -35,6 +35,14 @@ export function listenEngineEvents(
   return listen<EngineEventPayload[]>("engine://event", (e) => cb(e.payload));
 }
 
+/** 任务工作台 agent 节点的事件流（mission::mission_agent_start）：
+ *  与聊天/插件流隔离，前端 mission runtime 按 run id 路由。 */
+export function listenMissionAgentEvents(
+  cb: (events: EngineEventPayload[]) => void,
+): Promise<UnlistenFn> {
+  return listen<EngineEventPayload[]>("mission-agent://event", (e) => cb(e.payload));
+}
+
 export function listenSessionsChanged(cb: () => void): Promise<UnlistenFn> {
   return listen("sessions://changed", () => cb());
 }

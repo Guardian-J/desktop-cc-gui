@@ -71,6 +71,11 @@ export interface PluginManifest {
     commands?: { key: string; title: string; emits?: string }[];
   };
   configSchema?: JsonSchemaObject;
+  /** 市场方形图标：仓库内相对路径（推荐 `docs/icon.png`）或 https URL；
+   *  缺省 = 市场用首字母瓷砖。仅索引消费，宿主安装不读。 */
+  icon?: string;
+  /** 市场详情页效果图：仓库内相对路径或 https URL，≤ 5 张；缺省 = 不渲染图集。 */
+  screenshots?: string[];
 }
 
 export type ComposerSlotId = "addMenu" | "cliMenu" | "permissionMenu";
@@ -116,7 +121,9 @@ export interface PluginContext {
       component: ComponentLike;
       order?: number;
     }): Disposer;
-    /** 聊天右侧面板 tab（权限 ui:panel-tab）。 */
+    /** 聊天右侧面板 tab（权限 ui:panel-tab）。插件 tab 在页签条里只渲染
+     *  图标，`icon` 即用户看到的主体；缺省时回落插件素材 / 首字母瓷砖，
+     *  `label` 作为 title 与可访问名。 */
     registerPanelTab(def: {
       key?: string;
       label: () => string;

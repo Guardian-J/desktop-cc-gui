@@ -18,7 +18,17 @@ The presentation cursor still reveals text per frame. Markdown parses are
 budgeted separately: 32ms up to 4,000 UTF-16 units, 64ms up to 16,000, and 128ms
 above that. Completion bypasses the budget. These limits trade parser work
 against arrival latency; they do not guarantee a frame-time bound for very
-large Markdown documents.
+large Markdown documents. A live row that overran the budget extends its own
+interval (up to 160ms) so a 200 tok/s stream cannot starve the reveal frames.
+
+Open `/tests/browser/thinking-reveal.html` to check the live thinking panel at
+provider speed: the real `ThinkingSurface` replays a 200 tok/s stream (100
+characters every 144ms) and samples the rendered body once per animation
+frame. The burst must be spread across frames — `largestSingleFrameStep` stays
+small and `framesJumpingAtLeast 30 chars` must be 0 after the first paint —
+and the page reports `PASS`. Before this fixture's behavior was fixed the
+panel rendered each burst in one commit, which read as flashing text. No
+model, no IPC, no saved conversation.
 
 Open `/tests/browser/effort-layout.html` to verify the actual model menu keeps
 its trigger width and popover position while cycling all five reasoning levels.
@@ -121,3 +131,45 @@ store's checkout for `v1.0.6` while the panel displays
 snapshot that lagged behind external (CLI) checkouts, silently swallowing
 the click. Real ChangesPanelHeader; only the store's checkout is stubbed.
 No app, no backend.
+
+Open `/tests/browser/thinking-layout.html` to verify full live thinking text.
+Click `Replay thinking` to grow from 2,100 to 8,100 characters, alternating
+long wrapped paragraphs and short code-like lines. The production thinking
+surface must retain `[row-000]`, never shrink from dropping earlier lines,
+and eventually display the exact received text. The result reports PASS,
+`prefixRetained: true`, `maxShrink: 0` and `complete: true`. Ordinary upward
+movement from newly appended lines is reported separately, not treated as
+proof of flicker. The existing manual fold and end-of-thinking fold setting
+are unaffected by removing the live 2,000-character window.
+
+Open `/tests/browser/tail-pin.html` for high-rate streaming scroll regression.
+Click `Replay 100 chars / 144ms`: the production Markdown renderer, virtualizer,
+and follow hooks receive 100-character bursts every 144ms (a synthetic burst
+profile, not a measured model token rate), including Chinese, emoji, bold,
+inline code and a late tool-sized row. The output must report PASS, zero tail
+gaps at resize delivery, and `complete: true` after settling. Scroll upward
+during replay to pause follow; `Resume follow` must return to the tail.
+This checks browser layout/reveal synchronization, not native IPC latency.
+Reload after changing hook implementations to avoid Fast Refresh artifacts.
+
+Open `/tests/browser/git-performance.html` for the Git panel performance
+regression. It mounts the production `ChatSidePanel` with 10,001 synthetic
+changed files and mocked Git actions. Initial Files view must show zero Git
+fetches and zero mounted file rows. Show changes, scroll through the list,
+and verify only the visible window plus overscan is mounted. Opening a file
+or staging it updates `lastAction` without touching a repository. Write a
+commit draft, switch to Files or collapse the sidebar, then return: the draft
+must survive, hidden rows must be removed, and the list must still scroll to
+the final file. The metrics output reports requests, mounted rows and actions.
+
+Open `/tests/browser/plugin-detail-rail.html` to check the plugin detail page
+at a desktop width (1145x731 in the verification run, with the app's 40px tab
+strip and 28px status bar around the real `PluginDetailPage`): a README fence
+whose single PowerShell line is 922px wide inside a 728px column must scroll
+horizontally inside that column, and the expanded 22-permission rail must end
+inside the viewport with its own scrollbar, so `aside.scrollTop` reaches the
+链接 rows while the page stays put. Both were reported broken: the code line
+painted ~190px across the rail, and the pinned 1042px rail could only be read
+by scrolling the README to its end. The readout reports PASS plus the measured
+boxes, `clientHeight`/`scrollHeight` and the page's scrollTop. No app shell,
+no backend, no saved state.

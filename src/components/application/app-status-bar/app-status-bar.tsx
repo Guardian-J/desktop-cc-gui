@@ -5,6 +5,7 @@ import Activity from "lucide-react/dist/esm/icons/activity";
 import Minus from "lucide-react/dist/esm/icons/minus";
 import Plus from "lucide-react/dist/esm/icons/plus";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
+import { ActionFeedbackIcon, useRunningFeedback } from "@/components/base/action-feedback";
 import { ipc, type AppMetrics } from "@/lib/ipc";
 import { listenScanProgress, type ScanProgress } from "@/lib/events";
 import { readStoredNumber, writeStored } from "@/lib/storage";
@@ -113,6 +114,9 @@ export function AppStatusBar() {
 
   const syncPct = sync && sync.total > 0 ? Math.round((sync.done / sync.total) * 100) : 0;
   const syncing = !!sync && !sync.finished;
+  // Spin while the rescan runs, check when it reports finished (same feedback
+  // as the git panel's refresh).
+  const syncFeedback = useRunningFeedback(syncing);
   const triggerSync = useCallback(() => {
     void ipc.rescanSessions().catch(() => {});
   }, []);
@@ -203,7 +207,12 @@ export function AppStatusBar() {
           className={cx(iconButton, syncing && "cursor-default opacity-60")}
           onClick={triggerSync}
         >
-          <RefreshCw className={cx("size-3.5", syncing && "animate-spin")} aria-hidden />
+          <ActionFeedbackIcon
+            icon={RefreshCw}
+            feedback={syncFeedback}
+            spin
+            iconClassName="size-3.5"
+          />
         </button>
 
         {sync && (

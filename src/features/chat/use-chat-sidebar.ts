@@ -3,13 +3,16 @@ import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-chat-composer";
 import { useBrowserStore } from "@/features/browser/store";
-import { useFilesStore } from "@/features/files/store";
+import { useMissionStore } from "@/features/mission/store";
+import { usePluginHubStore } from "@/features/plugins/hub/store";
 import type { AiChatRepo, AiChatRepoSection, ThreadAction } from "@/components/application/ai-chat/ai-chat-sidebar";
 import { ARCHIVED_SECTION_ID } from "@/components/application/ai-chat/use-sidebar-state";
 import type { SessionMeta } from "@/lib/ipc";
 import { isWeb, pickDirectory } from "@/lib/platform";
 import { recentPointerAnchor } from "@/lib/pointer-anchor";
 import { parseDraftSessionKey, sessionKey, useChatStore, sortedWorkspaceGroups } from "./store";
+import { dismissCenterSurfaces } from "./center-surfaces";
+import { focusComposerWhenVisible } from "./focus-composer";
 import { relativeTime } from "./time";
 import { useWorkspaceUIHooks, workspaceLabelSuffix } from "./workspace-ui-bridge";
 import type { ChatPageDialog } from "./ChatPageDialogs";
@@ -184,9 +187,9 @@ export function useChatSidebar({
 
   const handleThreadSelect = useCallback(
     (id: string) => {
-      // Selecting a conversation brings the chat surface back; a browser
-      // tab in view steps aside (it keeps its tab in the strip).
-      useBrowserStore.getState().deactivate();
+      // Selecting a conversation brings the chat surface back; other center
+      // surfaces step aside (their tabs stay in the strip).
+      dismissCenterSurfaces();
       const session = sessionById.get(id);
       if (session) {
         void selectSession(session.engine, session.sessionId, session.workspacePath);
@@ -264,9 +267,11 @@ export function useChatSidebar({
       handleAddWorkspace();
       return;
     }
-    useBrowserStore.getState().deactivate();
+    dismissCenterSurfaces();
     startNewChat(workspace.path);
-    composerInputRef.current?.focus();
+    // 中心面可能刚从别处（插件中心/浏览器）切回来，那时直接 focus() 会被
+    // 浏览器忽略（隐藏元素），交给等可见的助手。
+    focusComposerWhenVisible(composerInputRef);
     collapseSidebarOnMobile();
   }, [workspaces, visibleWorkspaces, archivedIds, active?.workspacePath, startNewChat, handleAddWorkspace, collapseSidebarOnMobile, composerInputRef]);
 
@@ -276,19 +281,33 @@ export function useChatSidebar({
     (workspaceId: string) => {
       const workspace = workspaces.find((w) => w.id === workspaceId);
       if (!workspace) return;
-      useBrowserStore.getState().deactivate();
+      dismissCenterSurfaces();
       startNewChat(workspace.path);
-      composerInputRef.current?.focus();
+      focusComposerWhenVisible(composerInputRef);
       collapseSidebarOnMobile();
     },
     [workspaces, startNewChat, collapseSidebarOnMobile, composerInputRef],
   );
   // Sidebar 新建浏览器 nav entry: open a fresh browser tab in the center
-  // strip. A file tab in view steps aside (same mutual exclusion as
-  // handleTabSelect).
+  // strip. Other center surfaces step aside (same mutual exclusion as
+  // handleTabSelect) — otherwise an active plugin hub/workbench keeps the
+  // center in place while the strip already highlights the new tab.
   const handleNewBrowser = useCallback(() => {
-    useFilesStore.getState().clearActiveFile();
+    dismissCenterSurfaces();
     useBrowserStore.getState().openTab();
+    collapseSidebarOnMobile();
+  }, [collapseSidebarOnMobile]);
+  // Sidebar 任务工作台 nav entry（原生）：打开中心页签的工作台，其他
+  // 中心面（浏览器/文件/插件页/差异）暂时让位；数据留在 mission store。
+  const handleOpenMission = useCallback(() => {
+    dismissCenterSurfaces();
+    useMissionStore.getState().openWorkbench();
+    collapseSidebarOnMobile();
+  }, [collapseSidebarOnMobile]);
+  // Sidebar 插件 nav entry（原生）：打开插件中心中心页签（市场 + 已安装管理）。
+  const handleOpenPlugins = useCallback(() => {
+    dismissCenterSurfaces();
+    usePluginHubStore.getState().openHub();
     collapseSidebarOnMobile();
   }, [collapseSidebarOnMobile]);
   const handleReorderWorkspaces = useCallback(
@@ -344,6 +363,8 @@ export function useChatSidebar({
     handleNewSession,
     handleNewSessionInWorkspace,
     handleNewBrowser,
+    handleOpenPlugins,
+    handleOpenMission,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
     handleCreateGroup,

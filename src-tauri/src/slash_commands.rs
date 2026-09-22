@@ -467,6 +467,31 @@ mod tests {
     }
 
     #[test]
+    fn bundled_creator_skill_is_discoverable_by_the_picker() {
+        // 内置插件开发 skill：随应用分发（src-tauri/resources/skills，由
+        // creator_skill.rs 装进各引擎的 skills 根）。这里用选择器自己的解析
+        // 器读它——frontmatter 写坏等于 `/ccgui-plugin-creator` 从未存在，
+        // 而那是用户可见功能，必须在仓库里就能拦住。
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("skills");
+        let entries = discover_skills_in(&root, "bundled");
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "ccgui-plugin-creator")
+            .expect("bundled creator skill must be discoverable");
+        assert!(
+            entry.kind == SlashEntryKind::Skill,
+            "bundled creator skill must be a skill entry"
+        );
+        let description = entry.description.as_deref().unwrap_or_default();
+        assert!(
+            description.contains("插件"),
+            "description drives skill triggering; got {description:?}"
+        );
+    }
+
+    #[test]
     fn collects_plugin_skills_dirs_at_any_nesting() {
         let root = scratch_dir("plugin-cache");
         let cache = root.join("plugins").join("cache");

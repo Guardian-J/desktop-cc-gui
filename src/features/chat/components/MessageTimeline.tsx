@@ -11,7 +11,7 @@ import { parseUsage } from "../usage";
 import { formatTokens } from "@/utils/format-tokens";
 import { cx } from "@/utils/cx";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
-import { streamParseInterval, useThrottled } from "@/hooks/use-throttled";
+import { useLiveParseInterval, useThrottled } from "@/hooks/use-throttled";
 import { useCopied } from "@/hooks/use-copied";
 import { MessageImages } from "./MessageImages";
 import { GrantCard } from "./GrantCard";
@@ -23,7 +23,7 @@ import { formatDuration } from "./format-duration";
 import { ProcessDisclosure } from "./ProcessDisclosure";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { useScrollFollow, useTailPin } from "./use-scroll-follow";
-import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { ScrollControl } from "./ScrollControl";
 import { pluginIdFromRegistryKey, timelineRowRegistry, useRegistry } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import { useAnchorRailScroll } from "./use-anchor-rail-scroll";
@@ -273,9 +273,11 @@ export const MessageRow = memo(function MessageRow({
 }) {
   // A live row's text grows per store flush; a full markdown reparse per
   // flush scales linearly with reply length (~30ms at 32KB) and starves the
-  // main thread, so the parse is throttled. Settled rows never change and
-  // render as-is.
-  const text = useThrottled(message.text, message.live ? streamParseInterval(message.text.length) : 0);
+  // main thread, so the parse is throttled — and backed off further when the
+  // previous commit overran the frame budget (fast streams need the frames
+  // for the reveal more than they need an extra parse).
+  const parseMs = useLiveParseInterval(message.live === true, message.text.length);
+  const text = useThrottled(message.text, parseMs);
   if (message.role === "grant") {
     // Permission-denial card: actionable directory grant, not a chat bubble.
     return <GrantCard message={message} />;
@@ -472,7 +474,7 @@ export const MessageTimeline = memo(function MessageTimeline({
       index < rows.length ? rowKey(rows[index]) : "streaming-tail",
   });
 
-  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, resumeFollow } = useScrollFollow({ scrollRef });
+  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, scrollToEdge } = useScrollFollow({ scrollRef });
   const {
     searchOpen,
     setSearchOpen,
@@ -550,7 +552,7 @@ export const MessageTimeline = memo(function MessageTimeline({
         getFallbackTitle={(index) => t("chat.anchorUserTitle", { index: index + 1 })}
         onScrollToAnchor={handleScrollToAnchor}
       />
-      <ScrollToBottomButton scrollRef={scrollRef} contentSignal={count} onJump={resumeFollow} />
+      <ScrollControl scrollRef={scrollRef} onJump={scrollToEdge} />
       {searchOpen && (
         <TimelineSearchBar
           query={searchQuery}

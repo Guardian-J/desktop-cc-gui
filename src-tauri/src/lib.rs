@@ -7,6 +7,7 @@ pub mod cli_lifecycle;
 pub mod config;
 pub mod computer_use;
 pub mod computer_use_ax;
+pub mod creator_skill;
 pub mod cu_overlay;
 pub mod db;
 pub mod dsh_host;
@@ -16,6 +17,7 @@ pub mod files;
 pub mod git;
 pub mod history;
 pub mod metrics;
+pub mod mission;
 pub mod open_app;
 pub mod paths;
 pub mod plugins;
@@ -24,6 +26,7 @@ pub mod prompts;
 pub mod proxy;
 pub mod provider_files;
 pub mod provider_models;
+pub mod quit_guard;
 pub mod settings;
 pub mod usage;
 pub mod slash_commands;
@@ -43,6 +46,8 @@ pub struct AppState {
     /// 插件 agent 轮次（plugin_agent_start）的独立事件流：与聊天引擎流
     /// 隔离，chat store 不会把插件 run 当孤儿会话收养。
     pub plugin_sink: Arc<event_sink::EventSink>,
+    /// 任务工作台 agent 节点的独立事件流（mission-agent://event）。
+    pub mission_sink: Arc<event_sink::EventSink>,
     /// Webview + any attached web-access broadcasters (web.rs).
     pub emitters: Arc<event_sink::BroadcastEmit>,
     pub terminals: terminal::TerminalRegistry,
@@ -144,6 +149,10 @@ pub fn run() {
                     emitters.clone(),
                     event_sink::PLUGIN_AGENT_EVENT_NAME,
                 ),
+                mission_sink: event_sink::EventSink::with_name(
+                    emitters.clone(),
+                    event_sink::MISSION_AGENT_EVENT_NAME,
+                ),
                 emitters,
                 terminals: terminal::TerminalRegistry::default(),
                 processes: Arc::new(engine::ProcessRegistry::default()),
@@ -186,6 +195,10 @@ pub fn run() {
             }
             // Initial history scan, non-blocking.
             history::scanner::spawn_scan(scan_db, scan_sink);
+            // 内置「插件开发」skill：同步进已存在引擎的 skills 根（幂等，失败
+            // 只记日志）——skill 只有落在 CLI 自己的根里才会被引擎加载，
+            // 见 creator_skill.rs 模块注释。
+            creator_skill::install_at_startup(app.handle());
             // DSH host autostart: adopt-or-spawn in the background when
             // enabled; failures are logged, never fatal to startup.
             {
@@ -261,6 +274,11 @@ pub fn run() {
             window_builder
                 .build()
                 .expect("failed to create main window");
+            // Cmd+Q / AppleScript `quit` bypass both the window X's
+            // CloseRequested and Tauri's ExitRequested on macOS; without
+            // this hook one stray quit kills every live engine run with no
+            // dialog (see quit_guard.rs).
+            quit_guard::install(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -317,12 +335,14 @@ pub fn run() {
             plugins::plugin_uninstall,
             plugins::plugin_set_enabled,
             plugins::plugin_quarantine,
+            plugins::plugin_read_artwork,
             plugins::plugin_read_file,
             plugins::plugin_storage_get,
             plugins::plugin_storage_set,
             plugins::plugin_storage_delete,
             // plugin marketplace (Phase 3, plan §6)
             plugins::market::plugin_fetch_index,
+            plugins::market::plugin_fetch_market_readme,
             plugins::market::plugin_install_from_marketplace,
             plugins::market::plugin_check_updates,
             // engine
@@ -381,6 +401,9 @@ pub fn run() {
             files::list_file_index,
             // composer `/` slash-command picker
             slash_commands::list_slash_commands,
+            // bundled plugin-development skill (created via the plugin hub's
+            // 创建插件 entry; idempotent per-engine install)
+            creator_skill::creator_skill_install,
             // agents & prompts (composer `#`/`!` pickers)
             agents::agent_list,
             agents::agent_add,
@@ -407,6 +430,7 @@ pub fn run() {
             git::git_status,
             git::git_repository_summaries,
             git::git_file_colors,
+            git::git_tree_status,
             git::git_diff,
             git::git_stage,
             git::git_unstage,
@@ -437,6 +461,8 @@ pub fn run() {
             plugin_caps::plugin_exec_kill,
             plugin_caps::plugin_agent_start,
             plugin_caps::plugin_agent_interrupt,
+            mission::mission_agent_start,
+            mission::mission_agent_interrupt,
             // web access
             web::web_access_start,
             web::web_access_stop,

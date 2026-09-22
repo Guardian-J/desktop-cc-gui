@@ -4,6 +4,8 @@ import Globe from "lucide-react/dist/esm/icons/globe";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
 import Archive from "lucide-react/dist/esm/icons/archive";
 import Info from "lucide-react/dist/esm/icons/info";
+import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Bot from "lucide-react/dist/esm/icons/bot";
 import Smartphone from "lucide-react/dist/esm/icons/smartphone";
 import ChartColumn from "lucide-react/dist/esm/icons/chart-column";
@@ -20,6 +22,8 @@ import { ArchivedSessionsSection } from "./ArchivedSessionsSection";
 import { AgentsPromptsSection } from "./agents-prompts/AgentsPromptsSection";
 import { CliConfigSection } from "./CliConfigSection";
 import { AboutSection } from "./AboutSection";
+import { BetaFeaturesSection } from "./BetaFeaturesSection";
+import { UpdateSection } from "./UpdateSection";
 import { WebAccessSection } from "./WebAccessSection";
 import { UsageSection } from "./UsageSection";
 import { ShortcutsSection } from "@/features/shortcuts/ShortcutsSection";
@@ -32,16 +36,19 @@ import { ENGINE_IDS, type EngineId } from "./providers";
  * registry's upsert semantics make HMR re-runs harmless.
  */
 
-/** Nav-rail mark for one CLI engine: the rail passes size classes but the
- *  dsh mark is an <img> with an intrinsic px size, so pin it at the rail's
- *  md size. The rail colors every icon foreground-icon-secondary (gray);
- *  the monochrome brand glyphs (kimi/grok/codex/pi follow currentColor)
- *  read as disabled at that shade, so bump them to icon-primary. Image and
- *  gradient marks (claude/dsh/omp) carry their own colors and ignore the
- *  text color either way. */
+/** Nav-rail mark for one CLI engine, rendered on the rail's own icon grid
+ *  (16px, same box as the lucide icons in every other row): brand marks are
+ *  full-bleed artwork, so a larger box made them read a size bigger than the
+ *  lucide rows *and* pushed the CLI labels 4px right of every other label.
+ *  The dsh mark is an <img> with an intrinsic px size, so the box has to be
+ *  pinned here rather than left to the shell's size class. The rail colors
+ *  every icon foreground-icon-secondary (gray); the monochrome brand glyphs
+ *  (kimi/grok/codex/pi follow currentColor) read as disabled at that shade,
+ *  so bump them to icon-primary. Image and gradient marks (claude/dsh/omp)
+ *  carry their own colors and ignore the text color either way. */
 const engineNavIcon = (engine: EngineId): SettingsNavItem["icon"] => {
   const EngineNavIcon = ({ className }: { className?: string }) => (
-    <EngineIcon engine={engine} size={20} className={cx(className, "text-foreground-icon-primary")} />
+    <EngineIcon engine={engine} size={16} className={cx(className, "text-foreground-icon-primary")} />
   );
   return EngineNavIcon;
 };
@@ -60,8 +67,8 @@ settingsRegistry.register({
   key: "proxy",
   label: () => i18n.t("settings.proxy"),
   icon: Globe,
-  group: "misc",
-  order: 1,
+  group: "system",
+  order: 4,
   component: ProxySection,
 });
 settingsRegistry.register({
@@ -87,8 +94,8 @@ settingsRegistry.register({
   key: "agentsPrompts",
   label: () => i18n.t("settings.agentsPrompts"),
   icon: Bot,
-  group: "misc",
-  order: 0,
+  group: "system",
+  order: 3,
   component: AgentsPromptsSection,
 });
 settingsRegistry.register({
@@ -119,13 +126,31 @@ settingsRegistry.register({
   component: UsageSection,
 });
 settingsRegistry.register({
+  id: "update",
+  key: "update",
+  label: () => i18n.t("settings.checkUpdates"),
+  icon: RefreshCw,
+  group: "misc",
+  order: 1,
+  component: UpdateSection,
+});
+settingsRegistry.register({
   id: "about",
   key: "about",
   label: () => i18n.t("settings.about"),
   icon: Info,
   group: "misc",
-  order: 3,
+  order: 2,
   component: AboutSection,
+});
+settingsRegistry.register({
+  id: "betaFeatures",
+  key: "betaFeatures",
+  label: () => i18n.t("settings.betaFeatures"),
+  icon: FlaskConical,
+  group: "misc",
+  order: 0,
+  component: BetaFeaturesSection,
 });
 ENGINE_IDS.forEach((engine, index) => {
   settingsRegistry.register({

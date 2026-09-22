@@ -79,12 +79,6 @@ pub struct MessageSearchPage {
     pub pending: i64,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Sort {
-    Relevance,
-    Recency,
-}
-
 // ==================== Indexer ====================
 
 /// Sessions whose stored file stat disagrees with the index stamp (or that
@@ -496,14 +490,9 @@ struct RawHit {
 fn fts_search(
     db: &crate::db::Db,
     tokens: &[&str],
-    sort: Sort,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<RawHit>, String> {
-    let order = match sort {
-        Sort::Relevance => "b.rank ASC, s.updated_at DESC",
-        Sort::Recency => "s.updated_at DESC",
-    };
     let sql = format!(
         "WITH matched AS (
              SELECT rowid, bm25(messages_fts) AS rank
@@ -525,7 +514,7 @@ fn fts_search(
          JOIN sessions s ON s.engine = b.engine AND s.session_id = b.session_id
          LEFT JOIN workspaces w ON w.path = s.workspace_path
          WHERE b.rn = 1
-         ORDER BY {order}, b.engine, b.session_id
+         ORDER BY b.rank ASC, s.updated_at DESC, b.engine, b.session_id
          LIMIT ?2 OFFSET ?3"
     );
     let conn = db.0.lock();
@@ -613,10 +602,11 @@ fn like_search(
 
 /// Blocking search body (spawn_blocking in the command): FTS with bm25 +
 /// snippet() for 3+-char tokens, LIKE with a Rust-side snippet otherwise.
+/// Order is fixed: bm25 relevance (recency as the tie-break) on the FTS
+/// path, recency on the LIKE path (short tokens carry no ranking signal).
 pub fn search(
     db: &crate::db::Db,
     query: &str,
-    sort: &str,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<MessageSearchPage, String> {
@@ -631,14 +621,9 @@ pub fn search(
         });
     }
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    let sort = if sort == "recency" {
-        Sort::Recency
-    } else {
-        Sort::Relevance
-    };
     let needles: Vec<Vec<char>> = tokens.iter().map(|t| lower_chars(t)).collect();
     let raw = if fts_safe(&tokens) {
-        fts_search(db, &tokens, sort, limit, offset)?
+        fts_search(db, &tokens, limit, offset)?
     } else {
         // Short tokens have no ranking signal; recency is the honest order.
         like_search(db, &tokens, limit, offset)?
@@ -677,16 +662,13 @@ pub fn search(
 pub async fn search_messages(
     state: tauri::State<'_, crate::AppState>,
     query: String,
-    sort: Option<String>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<MessageSearchPage, String> {
     let db = Arc::clone(&state.db);
-    tauri::async_runtime::spawn_blocking(move || {
-        search(&db, &query, sort.as_deref().unwrap_or("relevance"), limit, offset)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || search(&db, &query, limit, offset))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -743,12 +725,12 @@ mod tests {
         insert_session(&db, "s1", 100);
         insert_message(&db, "s1", 1, "assistant", "So do not commit; report. 已生成 v1.0.5 版本记录，详见更新日志");
 
-        let page = search(&db, "已生成 v1.0.5 版本记录", "relevance", None, None).unwrap();
+        let page = search(&db, "已生成 v1.0.5 版本记录", None, None).unwrap();
         assert_eq!(page.hits.len(), 1);
         assert_eq!(page.hits[0].session_id, "s1");
         assert!(marked_text(&page.hits[0]).contains("已生成"));
         // Substring across punctuation is a trigram strength.
-        let page = search(&db, "1.0.5", "relevance", None, None).unwrap();
+        let page = search(&db, "1.0.5", None, None).unwrap();
         assert_eq!(page.hits.len(), 1);
     }
 
@@ -764,14 +746,14 @@ mod tests {
         insert_message(&db, "s3", 1, "user", "只有提交这个词");
 
         // 2-char tokens would silently match nothing in trigram FTS.
-        let page = search(&db, "提交 代码", "relevance", None, None).unwrap();
+        let page = search(&db, "提交 代码", None, None).unwrap();
         let ids: Vec<&str> = page.hits.iter().map(|h| h.session_id.as_str()).collect();
         assert_eq!(ids, ["s2", "s1"], "recency order, both tokens required");
         assert!(page.hits[0].snippet.iter().any(|p| p.marked && p.text.contains("提交")));
     }
 
     #[test]
-    fn one_hit_per_session_and_recency_sort() {
+    fn one_hit_per_session_and_relevance_ties_break_by_recency() {
         let scratch = Scratch::new();
         let db = crate::db::Db::open_at(&scratch.0.join("app.db")).unwrap();
         insert_session(&db, "old", 100);
@@ -780,9 +762,11 @@ mod tests {
         insert_session(&db, "new", 200);
         insert_message(&db, "new", 1, "user", "搜索目标关键词 only");
 
-        let page = search(&db, "搜索目标关键词", "recency", None, None).unwrap();
+        // All three matches score identically, so bm25 ties and the
+        // updated_at tie-break decides: newest session first.
+        let page = search(&db, "搜索目标关键词", None, None).unwrap();
         let ids: Vec<&str> = page.hits.iter().map(|h| h.session_id.as_str()).collect();
-        assert_eq!(ids, ["new", "old"], "one row per session, newest first");
+        assert_eq!(ids, ["new", "old"], "one row per session, newest first on a tie");
     }
 
     #[test]
@@ -795,7 +779,7 @@ mod tests {
             .lock()
             .execute("DELETE FROM sessions WHERE session_id='s1'", [])
             .unwrap();
-        let page = search(&db, "删除后不可见", "relevance", None, None).unwrap();
+        let page = search(&db, "删除后不可见", None, None).unwrap();
         assert!(page.hits.is_empty());
         let count: i64 = db
             .0
@@ -847,7 +831,7 @@ mod tests {
 
         assert_eq!(index_pending(&db).unwrap(), 1);
         assert_eq!(pending_count(&db).unwrap(), 0);
-        let page = search(&db, "索引管道", "relevance", None, None).unwrap();
+        let page = search(&db, "索引管道", None, None).unwrap();
         assert_eq!(page.hits.len(), 1);
         assert!(page.pending == 0);
 
@@ -860,7 +844,7 @@ mod tests {
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         register_file_session(&db, "s1", &path);
         assert_eq!(index_pending(&db).unwrap(), 1);
-        let page = search(&db, "追加的新消息", "relevance", None, None).unwrap();
+        let page = search(&db, "追加的新消息", None, None).unwrap();
         assert_eq!(page.hits.len(), 1);
         // Old content stays (replace-then-insert keeps one copy).
         let count: i64 = db
@@ -928,7 +912,7 @@ mod tests {
         }
         assert_eq!(index_pending(&db).unwrap(), 4);
         assert_eq!(pending_count(&db).unwrap(), 0);
-        let page = search(&db, "可索引的正常内容", "relevance", None, None).unwrap();
+        let page = search(&db, "可索引的正常内容", None, None).unwrap();
         assert_eq!(page.hits.len(), 4);
     }
 

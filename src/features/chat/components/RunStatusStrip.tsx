@@ -10,7 +10,8 @@ import {
   deriveTodoList,
   type AgentTaskStep,
 } from "./agent-task-steps";
-import { deriveEditLineStats, type EditLineStat } from "./edit-line-stats";
+import { createEditLineStatsBuilder, type EditLineStat } from "./edit-line-stats";
+import { RollingStat } from "./RollingStat";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -29,7 +30,8 @@ const EMPTY_MESSAGES: Message[] = [];
  *   section's data disappears.
  * - The 已编辑 pill carries line stats (+/−) aggregated over the files this
  *   session edited, counted from the session's own edit tool payloads with
- *   workspace git status as a fallback.
+ *   workspace git status as a fallback. Each number rolls like an odometer as
+ *   the tally grows (see RollingStat) instead of swapping text.
  */
 
 const CHROME_OPEN_KEY = "ccgui.chat.runStatusChromeOpen";
@@ -115,10 +117,22 @@ function collectFileStats(
 }
 
 function LineStats({ stat }: { stat: FileStat }) {
+  // min-w + justify-end: one-digit values keep the pill from twitching, and a
+  // growing digit count pushes leftward instead of shifting the label.
   return (
-    <span className="tabular-nums">
-      <span className="text-[var(--color-status-unseen)]">+{stat.additions}</span>{" "}
-      <span className="text-text-error-primary">−{stat.deletions}</span>
+    <span className="inline-flex items-center gap-1 tabular-nums">
+      <RollingStat
+        className="min-w-[1.5ch] justify-end text-[var(--color-status-unseen)]"
+        prefix="+"
+        value={stat.additions}
+        data-testid="run-status-edit-additions"
+      />
+      <RollingStat
+        className="min-w-[1.5ch] justify-end text-text-error-primary"
+        prefix="−"
+        value={stat.deletions}
+        data-testid="run-status-edit-deletions"
+      />
     </span>
   );
 }
@@ -619,7 +633,8 @@ export const RunStatusStrip = memo(function RunStatusStrip({
   );
   const files = useMemo(() => deriveEditedFiles(messages), [messages]);
   const todos = useMemo(() => deriveTodoList(messages), [messages]);
-  const sessionStats = useMemo(() => deriveEditLineStats(messages), [messages]);
+  const buildEditLineStats = useMemo(createEditLineStatsBuilder, [sessionKey]);
+  const sessionStats = useMemo(() => buildEditLineStats(messages), [buildEditLineStats, messages]);
 
   // git line stats are the fallback for files the session recorded without an
   // edit payload; force-refresh when the turn settles.

@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { getFileTreeIconSvg } from "@/features/files/fileIcons";
+import i18n from "@/lib/i18n";
 /** An active `@` autocomplete trigger at the caret: `start` is the offset
  * of the `@` itself, `query` is the text typed after it. */
 export interface MentionTrigger {
@@ -224,7 +225,7 @@ function chipHtml(path: string): string {
     `<span class="${FILE_TAG_CLASS}" contenteditable="false" data-file-path="${escapedPath}" data-mention="${escapedMention}" title="${escapedPath}">` +
     `<span class="${FILE_TAG_CLASS}-icon">${icon}</span>` +
     `<span class="${FILE_TAG_CLASS}-text">${escapeHtmlText(name)}</span>` +
-    `<span class="${FILE_TAG_CLASS}-close" role="button" aria-label="remove">&times;</span>` +
+    `<span class="${FILE_TAG_CLASS}-close" role="button" aria-label="${escapeHtmlText(i18n.t("chat.removeTag", { name }))}">&times;</span>` +
     `</span>`
   );
 }

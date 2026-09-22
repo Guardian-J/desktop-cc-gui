@@ -56,8 +56,10 @@ export interface PluginContext {
       component: ComponentType;
       order?: number;
     }): Disposer;
-    /** Chat right-panel tab; renders with the active workspace path
-     *  (plan §4.2 #4). */
+    /** Chat right-panel tab (plan §4.2 #4); renders with the active
+     *  workspace path. The strip renders plugin tabs icon-only, so `icon` is
+     *  the visible identity — without one the tab falls back to the plugin's
+     *  artwork / letter tile, and the label stays a title/accessible name. */
     registerPanelTab(def: {
       key?: string;
       label: () => string;
@@ -231,7 +233,7 @@ export interface PluginContext {
     interrupt(runId: string): Promise<void>;
   };
   /** 通用能力出口（0.3.0 起；旧的 `cmd:<command>` 逐命令授权机制已删除）。
-   *  仅四条命令，`pluginId` 由宿主自动注入（插件无需也不能传）：
+   *  仅下列命令，`pluginId` 由宿主自动注入（插件无需也不能传）：
    *
    *  - `plugin_http_request` `{ method, url, headers?, body? }` →
    *    `{ status, body }`：url 限 http/https，host(+端口) 须命中 manifest 的
@@ -245,6 +247,9 @@ export interface PluginContext {
    *    附属进程，宿主跟踪，插件禁用/卸载时自动 kill。
    *  - `plugin_exec_kill` `{}` → `{ killed: number }`：kill 本插件全部
    *    lifecycle="plugin" 子进程（配置变更改名重启用；需任意 exec: 授权）。
+   *  - `plugin_agent_start` / `plugin_agent_interrupt`（0.3.13 起）：
+   *    与 `ctx.agent` 同一能力（需 `agent` 授权）——引擎管线由宿主接管，
+   *    run id 属主前缀在 Rust 侧强制。
    *
    *  授权未命中的调用在 JS 侧即 reject（不打 IPC）；Rust 侧对授权与插件
    *  启用态另有强制（纵深防御）。 */

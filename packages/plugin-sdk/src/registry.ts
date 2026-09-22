@@ -53,7 +53,8 @@ export interface ComposerSlotDef {
 }
 
 /** Chat right-panel tab (plan §4.2 #4). Builtin tabs (files/changes) are
- *  registered through the same registry; plugin tabs render inside a
+ *  registered through the same registry and keep icon + label in the strip;
+ *  plugin tabs render icon-only (label → title/accessible name) inside a
  *  PluginBoundary. */
 export interface PanelTabDef {
   id: string;

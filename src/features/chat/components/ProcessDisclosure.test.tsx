@@ -1,9 +1,16 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/lib/i18n";
 import { ProcessDisclosure } from "./ProcessDisclosure";
 import type { ProcessItem } from "./timeline-rows";
+
+// jsdom reports a reduced-motion preference, which would make every reveal
+// publish its text immediately and hide the pacing under test.
+vi.mock("motion/react", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useReducedMotion: () => false,
+}));
 
 const actEnvironment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
 actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
@@ -168,6 +175,42 @@ describe("ProcessDisclosure thinking expansion", () => {
     });
     expect(headerExpanded()).toBe(true);
     expect(container.textContent).toContain("先分析需求");
+  });
+
+  it("paces a live thinking burst instead of landing it whole", async () => {
+    const opening = "先读文件";
+    await render([{ type: "thinking", text: opening, live: true }], { autoExpand: true, turnLive: true });
+    const body = () => container.querySelector(".whitespace-pre-wrap")?.textContent ?? "";
+    // Mount shows what had already arrived — history must never animate in.
+    expect(body()).toBe(opening);
+
+    // One provider burst (OMP writes ~100 characters every ~144ms at
+    // 200 tok/s) must not appear in a single commit. The reveal is a layout
+    // effect, so this is deterministic: no frame has run yet.
+    const burst = "汉".repeat(100);
+    await render([{ type: "thinking", text: opening + burst, live: true }], { autoExpand: true, turnLive: true });
+    expect(body()).toBe(opening);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    expect(body()).toBe(opening + burst);
+  });
+
+  it("retains the complete revealed thinking prefix beyond 2000 characters", async () => {
+    const long = "开头必须保留 🙂\n" + "句子与代码 `value`。\n".repeat(300);
+    await render([{ type: "thinking", text: long, live: true }], { autoExpand: true, turnLive: true });
+    const panel = () => container.querySelector<HTMLElement>(".whitespace-pre-wrap")!;
+    expect(panel().textContent).toBe(long);
+    expect(panel().className).not.toContain("mask-image");
+
+    const next = long + "新到达的思考内容 👨‍👩‍👧‍👦\n";
+    await render([{ type: "thinking", text: next, live: true }], { autoExpand: true, turnLive: true });
+    expect(panel().textContent).toBe(long);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+    expect(panel().textContent).toBe(next);
+
+    await render([{ type: "thinking", text: next }], { autoExpand: true, turnLive: true });
+    expect(panel().textContent).toBe(next);
+    expect(panel().className).not.toContain("mask-image");
   });
 
   it("clips height when folding instead of fading a scaled ghost", async () => {

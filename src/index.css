@@ -311,6 +311,16 @@ body {
   font-size: inherit;
 }
 
+/* Plugin README fences render as bare <pre>: they don't go through the chat's
+   carded renderer above, so the block itself has to own the horizontal
+   scroll. Without it a single long command painted across the right-hand
+   rail instead of scrolling inside the document column. */
+.prose-plugin-readme pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+}
+
 /* Single-line fence: compact card, copy floats top-right. */
 .md-codeblock-single-wrap {
   position: relative;

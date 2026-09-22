@@ -7,6 +7,7 @@ import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-ch
 import { AppStatusBar } from "@/components/application/app-status-bar/app-status-bar";
 import { isWeb } from "@/lib/platform";
 import { useTitlebarStyle } from "@/features/settings/titlebar";
+import { useBetaFeature } from "@/features/settings/beta-features";
 import PanelLeftOpen from "lucide-react/dist/esm/icons/panel-left-open";
 import { TerminalDock } from "@/features/terminal/TerminalDock";
 import { useTerminalStore } from "@/features/terminal/store";
@@ -136,6 +137,10 @@ export default function ChatPage() {
     activeBrowserId,
     pluginTabs,
     activePluginTabId,
+    pluginHubOpen,
+    pluginHubActive,
+    missionOpen,
+    missionActive,
     diffView,
     closeDiff,
   } = useChatTabs({ setDialog });
@@ -159,6 +164,8 @@ export default function ChatPage() {
     handleNewSession,
     handleNewSessionInWorkspace,
     handleNewBrowser,
+    handleOpenPlugins,
+    handleOpenMission,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
     handleCreateGroup,
@@ -169,6 +176,10 @@ export default function ChatPage() {
     composerInputRef,
     setDialog,
   });
+
+  // 内测功能（设置 → 其他 → 内测功能，默认关闭）：入口按开关显示/隐藏。
+  const betaNewBrowser = useBetaFeature("newBrowser");
+  const betaMissionWorkbench = useBetaFeature("missionWorkbench");
 
   useChatPageLifecycle(init, gitRefresh, active?.workspacePath);
   useChatShortcutHandlers(
@@ -214,7 +225,9 @@ export default function ChatPage() {
         archivedRepos={archivedRepos}
         onNewSessionInWorkspace={handleNewSessionInWorkspace}
         onNewSession={handleNewSession}
-        onNewBrowser={isWeb ? undefined : handleNewBrowser}
+        onNewBrowser={!isWeb && betaNewBrowser ? handleNewBrowser : undefined}
+        onOpenPlugins={handleOpenPlugins}
+        onOpenMission={betaMissionWorkbench ? handleOpenMission : undefined}
         onReorderWorkspaces={handleReorderWorkspaces}
         onDropWorkspaceToSection={handleDropWorkspaceToSection}
         onCreateGroup={handleCreateGroup}
@@ -230,7 +243,7 @@ export default function ChatPage() {
           closeLabel={t("common.close")}
           onReorder={handleTabReorder}
           onNew={handleNewSession}
-          onNewBrowser={isWeb ? undefined : handleNewBrowser}
+          onNewBrowser={!isWeb && betaNewBrowser ? handleNewBrowser : undefined}
           trafficLightInset={sidebarCollapsed && !isWeb}
           leading={
             sidebarCollapsed ? (
@@ -287,6 +300,10 @@ export default function ChatPage() {
             activeBrowserId={activeBrowserId}
             pluginTabs={pluginTabs}
             activePluginTabId={activePluginTabId}
+            pluginHubOpen={pluginHubOpen}
+            pluginHubActive={pluginHubActive}
+            missionOpen={missionOpen}
+            missionActive={missionActive}
             diffView={diffView}
             diffStatus={diffStatus}
             closeDiff={closeDiff}
