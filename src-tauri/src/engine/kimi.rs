@@ -66,6 +66,9 @@ pub(super) fn apply_channel(
     } else {
         command.env_remove("KIMI_MODEL_BASE_URL");
     }
+    if let Some(effort) = req.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        command.env("KIMI_MODEL_THINKING_EFFORT", effort);
+    }
     Ok(())
 }
 
@@ -101,6 +104,9 @@ fn build_command(req: &SendRequest, bin: &str, native_model: bool) -> Result<Bui
     let prompt_text = images::kimi_prompt_with_images(&req.prompt, &req.images, &req.workspace);
     cmd.arg("--prompt");
     cmd.arg(safe_prompt_arg(&prompt_text));
+    if let Some(effort) = req.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        cmd.env("KIMI_MODEL_THINKING_EFFORT", effort);
+    }
     Ok(BuiltCommand {
         command: cmd,
         stdin_payload: None,
@@ -119,6 +125,9 @@ impl Engine for KimiEngine {
     fn supports_images(&self) -> bool {
         // build_command injects absolute image paths + a ReadMediaFile
         // instruction into the prompt; that IS the kimi image transport.
+        true
+    }
+    fn supports_effort(&self) -> bool {
         true
     }
     fn supported_permissions(&self) -> &'static [&'static str] {

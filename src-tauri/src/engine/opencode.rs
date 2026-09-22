@@ -36,6 +36,9 @@ impl Engine for OpenCodeEngine {
         // image transport.
         true
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
 
     fn supported_permissions(&self) -> &'static [&'static str] {
         // serve has no mid-turn approval channel we honor (permission.asked
