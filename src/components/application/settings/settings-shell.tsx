@@ -33,7 +33,7 @@ import { useBrowserOcclusion } from "@/features/browser/occlusion";
  * Shell layout:
  *   root      fixed inset-0, z-100 (dialogs from inside settings portal at
  *             z-110 and still outrank it), fades in on mount.
- *   rail      300px, bg background/secondary, 1px right border, p 10 —
+ *   rail      300px, bg background/secondary, 1px right border, p 14 —
  *             back-to-app row + search box fixed on top (md+ vertical rail
  *             only; mobile closes via the content header's X), then the
  *             group list as the rail's only scroll region — rows never
@@ -46,7 +46,11 @@ import { useBrowserOcclusion } from "@/features/browser/occlusion";
  *             `font-normal`); Body/Medium made our labels read visibly
  *             heavier and darker than Codex at the same size. Item rows stack
  *             without a gap: p-1.5 + the 20px line box = the 32px row,
- *             matching the reference rail's pitch.
+ *             matching the reference rail's pitch. The 14px rail padding
+ *             plus the row's own p-1.5 puts icons/labels at the same 20px
+ *             inset as the session sidebar (p-3 + p-2), and the scrolling
+ *             list carries 12px of its own bottom padding so the last row
+ *             never sits flush against the window edge.
  *   content   px 32, title row fixed, 720px reading column centered in the
  *             pane — the title row and the page body share it (the close
  *             button stays on the pane's right edge), so wide windows keep
@@ -368,7 +372,7 @@ export function SettingsShell({
       {/* Nav rail — the board-team dropdown group/item recipe */}
       <nav
         aria-label={ariaLabel}
-        className="flex w-full shrink-0 flex-row gap-5 overflow-x-auto border-b border-separator-border bg-background-secondary-default p-2.5 md:w-[300px] md:flex-col md:gap-5 md:overflow-x-visible md:border-r md:border-b-0"
+        className="flex w-full shrink-0 flex-row gap-5 overflow-x-auto border-b border-separator-border bg-background-secondary-default p-3.5 md:w-[300px] md:flex-col md:gap-5 md:overflow-x-visible md:border-r md:border-b-0"
       >
         {/* Window drag strip reaching the overlay titlebar (same recipe as
             SidebarDragStrip): clears the floating macOS traffic lights so
@@ -434,7 +438,7 @@ export function SettingsShell({
             children of the horizontal-scrolling nav (unchanged recipe). */}
         <div className="contents md:relative md:min-h-0 md:flex-1">
           <div
-            className="scrollbar-none contents md:flex md:h-full md:w-full md:flex-col md:gap-5 md:overflow-y-auto"
+            className="scrollbar-none contents md:flex md:h-full md:w-full md:flex-col md:gap-5 md:overflow-y-auto md:pb-3"
             onScroll={(e) => setRailScrolled(e.currentTarget.scrollTop > 0)}
           >
             {searching && visibleGroups.length === 0 ? (
