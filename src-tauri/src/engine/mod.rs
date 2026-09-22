@@ -21,6 +21,8 @@ pub mod wsl_transport;
 pub mod pi_family_auth;
 pub mod qoder;
 mod qoder_session;
+mod grok_acp;
+mod codex_app;
 pub mod resolve;
 mod events;
 mod reader;
@@ -109,9 +111,37 @@ pub struct BuiltCommand {
     /// Session id assigned before spawn (grok `-s <uuid>`).
     pub preassigned_session_id: Option<String>,
 }
+/// Which transport one send uses. On `Own` the app spawns no engine child:
+/// the host driver task owns the process (or the connection) and settles the
+/// turn itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// The app spawns the CLI and reads its stdout.
+    Child,
+    /// The engine drives its own transport (host session, ACP, app-server).
+    Own,
+}
+
 pub trait Engine: Send + Sync {
     fn id(&self) -> &'static str;
     fn build_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String>;
+    /// The command a host-transport driver spawns, for engines whose `Own`
+    /// transport is a process of their own (codex app-server, grok ACP). The
+    /// driver spawns it verbatim, so channel flags/env land here exactly as
+    /// they do for a child command.
+    ///
+    /// Default: the placeholder a driver that spawns no local child (qoder,
+    /// dsh, opencode) never touches.
+    fn host_command(&self, _req: &SendRequest, _bin: &str) -> Result<BuiltCommand, String> {
+        Ok(BuiltCommand {
+            command: Command::new("unused-virtual-engine"),
+            stdin_payload: None,
+            keep_stdin_open: false,
+            cleanup_files: Vec::new(),
+            mcp_restore: None,
+            preassigned_session_id: None,
+        })
+    }
     /// Parse one NDJSON stdout line into zero or more events.
     fn parse_line(&self, line: &str, out: &mut Vec<EngineEvent>);
     /// True when the engine drives its own transport (e.g. a host WS session)
@@ -120,6 +150,19 @@ pub trait Engine: Send + Sync {
     /// abort handle, and the transport task settles the turn itself.
     fn drives_own_transport(&self) -> bool {
         false
+    }
+    /// Transport for one send. Default: an engine that drives its own
+    /// transport keeps it for every workspace, so a WSL one has to be
+    /// rejected — the driver spawns locally and its session has no remote
+    /// path. codex and grok override this: their native harness protocol
+    /// carries the question channel for a local workspace, while a remote one
+    /// keeps today's one-shot CLI child, which the ssh wrapper owns.
+    fn transport_for(&self, _wsl: bool) -> Transport {
+        if self.drives_own_transport() {
+            Transport::Own
+        } else {
+            Transport::Child
+        }
     }
     /// Whether this engine accepts image attachments.
     fn supports_images(&self) -> bool;
@@ -347,6 +390,7 @@ fn prepare_launch(
     additional_dirs: Vec<String>,
     provider_id: Option<String>,
     computer_use: Option<bool>,
+    wsl: bool,
 ) -> Result<Launch, String> {
     let engine_impl = engine_by_id(engine).ok_or_else(|| format!("unknown engine: {engine}"))?;
     // 停用 still gates sending. Channel settings apply to this child below;
@@ -399,18 +443,15 @@ fn prepare_launch(
         computer_use: computer_use.filter(|on| *on && engine_impl.supports_computer_use()),
     };
     let bin = engine_bin(&settings, engine);
-    // Host-stream engines never spawn: hand back a placeholder command so
-    // prepare_launch stays shape-compatible; send_message branches to the
-    // virtual path before anything would touch it.
-    let mut built = if engine_impl.drives_own_transport() {
-        BuiltCommand {
-            command: Command::new("unused-virtual-engine"),
-            stdin_payload: None,
-            keep_stdin_open: false,
-            cleanup_files: Vec::new(),
-            mcp_restore: None,
-            preassigned_session_id: None,
-        }
+    // Host-transport engines spawn through their driver instead: codex/grok
+    // hand back the real app-server / ACP command the driver spawns verbatim
+    // (channel flags and env land on it below, as for any child), while the
+    // session-only engines keep the placeholder their driver never touches.
+    let mut built = if engine_impl.transport_for(wsl) == Transport::Own {
+        let mut own = engine_impl.host_command(&req, &bin)?;
+        // The driver spawns this command with the workspace as its cwd.
+        own.command.current_dir(&req.workspace);
+        own
     } else if engine == "kimi" && provider.is_some() {
         kimi::build_channel_command(&req, &bin)?
     } else {
@@ -644,7 +685,9 @@ async fn send_reserved(
     reader_abort: Arc<std::sync::OnceLock<tokio::task::AbortHandle>>,
     computer_use: Option<bool>,
 ) -> Result<SendResult, String> {
-    let launch = prepare_launch(
+    // WSL 远程工作区:引擎进程经 ssh 在发行版内执行(见 wsl_transport)。
+    let wsl_tp = wsl_transport::transport_for_workspace(&state.db, &workspace_path);
+    let mut launch = prepare_launch(
         &engine,
         &workspace_path,
         session_id,
@@ -659,16 +702,22 @@ async fn send_reserved(
         state.db.granted_roots().unwrap_or_default(),
         provider_id,
         computer_use,
+        wsl_tp.is_some(),
     )?;
-
-    // WSL 远程工作区:引擎进程经 ssh 在发行版内执行(见 wsl_transport)。
-    let wsl_tp = wsl_transport::transport_for_workspace(&state.db, &workspace_path);
     // Host-stream engines drive their own transport: no child process — the
-    // registry entry only routes interrupts to the transport task. 远程
-    // 工作区下没有可包装的子进程,本机 host 又对远端路径无意义,显式拒绝。
-    if launch.engine_impl.drives_own_transport() {
+    // registry entry only routes interrupts to the transport task. Their
+    // drivers spawn locally, so a remote workspace either keeps the CLI
+    // transport (codex/grok) or has no path at all — 显式拒绝。
+    if launch.engine_impl.transport_for(wsl_tp.is_some()) == Transport::Own {
+        // 本机驱动没有远端路径:远程工作区显式拒绝(与旧行为一致),而不是
+        // 静默起一个连不上远端工作区的本地会话。codex/grok 在上面退回 child。
         if wsl_tp.is_some() {
             return Err(format!("引擎 {engine} 不支持远程工作区(WSL)"));
+        }
+        // The child path resolves codex's provider credentials further down;
+        // the app-server driver owns its own process, so it needs them here.
+        if engine == "codex" {
+            codex_provider_env::apply(&mut launch.built.command).await;
         }
         return send_host_stream(state, launch, engine, run_id, killed, reader_abort).await;
     }
@@ -908,6 +957,20 @@ async fn send_host_stream(
         "qoder" | "qoder-cn" => tokio::spawn(qoder_session::run_acp_turn(
             core, launch.req, launch.bin, killed, pid,
         )),
+        "grok" => tokio::spawn(grok_acp::run_acp_turn(
+            core,
+            launch.req,
+            launch.built,
+            killed,
+            pid,
+        )),
+        "codex" => tokio::spawn(codex_app::run_app_server_turn(
+            core,
+            launch.req,
+            launch.built,
+            killed,
+            pid,
+        )),
         _ => unreachable!("send_host_stream only routes drives_own_transport engines: {engine}"),
     };
     let _ = reader_abort.set(task.abort_handle());
@@ -929,7 +992,7 @@ pub async fn interrupt_session(
         .await
         .map_err(|e| e.to_string())
 }
-/// Answer a pending question card. Three transports share this command:
+/// Answer a pending question card. Five transports share this command:
 /// - claude (control protocol): the answers merge into the parked tool input
 ///   and ride stdin as a `control_response`.
 /// - omp (rpc-ui): the parked value carries the dialog method; the answer is
@@ -937,6 +1000,9 @@ pub async fn interrupt_session(
 /// - dsh (host session): the parked value is an answer context (origin +
 ///   clientId + eventId + original request); the answer is an HTTP
 ///   `$events/result` outcome.
+/// - grok (ACP) and codex (app-server): the parked value carries the server
+///   request's JSON-RPC id — codex additionally the question-text→id map its
+///   protocol answers by; the answer is the response frame on the CLI's stdin.
 /// `answers` maps each question's text to the chosen option label — an array
 /// of labels for multiSelect questions. `None` means the user
 /// skipped/dismissed. Accepts either the run id or the conversation session
@@ -961,6 +1027,27 @@ pub async fn answer_question(
         .get(&request_id)
         .cloned()
         .ok_or_else(|| "question is no longer pending".to_string())?;
+    // grok's ACP driver parks the server's `_x.ai/ask_user_question` request:
+    // the answer is the JSON-RPC response line on the CLI's stdin.
+    if let Some(acp) = input.get("grokAcp") {
+        let frame = grok_acp::answer_frame(acp, answers.as_ref())?;
+        state.processes.write_line(&session_id, frame.to_string()).await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
+    // codex's app-server driver parks `item/tool/requestUserInput`: same stdin
+    // response, but its answer map is keyed by the question ids the server
+    // issued — the card answers by question text.
+    if let Some(app) = input.get("codexApp") {
+        let frame = codex_app::answer_frame(app, answers.as_ref())?;
+        state.processes.write_line(&session_id, frame.to_string()).await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
     // pi/omp rpc sessions park the render input plus the dialog method: the
     // answer is an extension_ui_response frame on the CLI's stdin.
     if let Some(extui) = input.get("extui") {

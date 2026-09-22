@@ -1,5 +1,6 @@
 use super::{
     command_for_binary, images, safe_prompt_arg, BuiltCommand, Engine, EngineEvent, SendRequest,
+    Transport,
 };
 use serde_json::Value;
 
@@ -465,6 +466,56 @@ fn attach_context_window(mut usage: Value) -> Value {
 impl Engine for GrokEngine {
     fn id(&self) -> &'static str {
         "grok"
+    }
+
+    /// grok's native harness is ACP: `grok agent … stdio` speaks ndjson
+    /// JSON-RPC over the same pipes the app owns, so the model's question tool
+    /// has a channel (`_x.ai/ask_user_question`) that the one-shot headless
+    /// launch never had — there it answered the user's questions itself.
+    fn drives_own_transport(&self) -> bool {
+        true
+    }
+
+    /// A remote workspace keeps the CLI child path: the ACP driver spawns the
+    /// CLI locally and has no ssh path into the distro.
+    fn transport_for(&self, wsl: bool) -> Transport {
+        if wsl {
+            Transport::Child
+        } else {
+            Transport::Own
+        }
+    }
+
+    /// The command the ACP driver spawns, carrying the same model/effort and
+    /// auto-approval intent as the headless launch. The ACP session id comes
+    /// from the CLI (`session/new`), so there is nothing to preassign.
+    fn host_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
+        let mut cmd = command_for_binary(bin);
+        cmd.arg("agent");
+        // Same reason as the headless launch: an approval prompt nobody can
+        // answer must never block the turn.
+        cmd.arg("--always-approve");
+        if let Some(model) = req.model.as_deref() {
+            cmd.arg("-m");
+            cmd.arg(model);
+        }
+        if let Some(effort) = req.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            cmd.arg("--effort");
+            cmd.arg(effort);
+        }
+        cmd.arg("stdio");
+        // Grok 0.2.x has no --no-auto-update flag; disable via env.
+        cmd.env("GROK_DISABLE_AUTOUPDATER", "1");
+        Ok(BuiltCommand {
+            command: cmd,
+            stdin_payload: None,
+            // The driver writes answers for parked questions to this pipe for
+            // the life of the session, so it stays open.
+            keep_stdin_open: true,
+            cleanup_files: Vec::new(),
+            mcp_restore: None,
+            preassigned_session_id: None,
+        })
     }
 
     fn supports_images(&self) -> bool {

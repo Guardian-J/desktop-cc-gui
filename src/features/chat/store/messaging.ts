@@ -37,6 +37,7 @@ import {
   settleOrphanedRuns,
   upsertSessionMetaInto,
 } from "./engine-events";
+import { ASK_OTHER_OPTION, askLoops, beginAskSubmit, revertAskSubmit } from "./ask-loop";
 import { effectivePermission } from "./permissions";
 import {
   buildAgentBlock,
@@ -68,6 +69,13 @@ export interface MessagingDeps {
   get: StoreGet;
   loadHistoryPage: LoadHistoryPage;
   subscribe: StoreSubscribe;
+}
+
+/** The one answer value a question card sends. A multi-select pick arrives as
+ * labels and travels as the text the CLI's free-form editor would have given. */
+function answerText(answers: Record<string, string | string[]>): string {
+  const value = Object.values(answers)[0];
+  return Array.isArray(value) ? value.join(", ") : value ?? "";
 }
 
 export function createMessagingActions(
@@ -459,16 +467,27 @@ export function createMessagingActions(
       ) {
         return;
       }
+      // A multi-select round is answered through the CLI's free-form row, whose
+      // editor then carries the picked labels: replying to the select frame with
+      // a label only toggles the CLI's own set and re-asks the same question.
+      const loop = answers ? beginAskSubmit(key, seq, answerText(answers)) : undefined;
       try {
-        await ipc.answerQuestion(question.runId, question.requestId, answers);
+        await ipc.answerQuestion(
+          question.runId,
+          question.requestId,
+          loop ? { [loop.base]: ASK_OTHER_OPTION } : answers,
+        );
         patchQuestionByRequestId(set, key, question.requestId, (cur) => ({
           ...cur,
           status: answers ? ("answered" as const) : ("dismissed" as const),
           ...(answers ? { answers } : {}),
         }));
+        // Skipping abandons the round: the CLI settles it as cancelled.
+        if (!answers) askLoops.delete(key);
       } catch (error) {
         // The answer never reached the process (the run is gone): surface it;
         // a later question_settled event resolves the still-pending card.
+        if (loop) revertAskSubmit(key, seq);
         patchSession(set, key, { error: errorText(error) });
       }
     },

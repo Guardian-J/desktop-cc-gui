@@ -139,6 +139,7 @@ export const en: Messages = {
     questionKeyboardHint: "Use Tab / arrows to pick, Enter or Space to select",
     questionPrev: "Previous question",
     questionNext: "Next question",
+    questionRemaining: "{{count}} left to answer",
     questionWaiting: "Waiting for your answer…",
     questionSkipped: "Skipped (no answer)",
     questionCancelled: "Question expired",
