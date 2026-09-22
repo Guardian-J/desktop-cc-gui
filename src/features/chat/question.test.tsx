@@ -384,6 +384,14 @@ describe("QuestionCard free-form Other", () => {
     });
   });
 
+  it("does not offer free text when the protocol only accepts declared options", () => {
+    const message = cardMessage();
+    Object.assign(message.question.questions[0], { allowOther: false });
+    act(() => root.render(<QuestionCard message={message as never} />));
+    expect(container.querySelector("input")).toBeNull();
+    expect(buttonByText("A")).toBeTruthy();
+  });
+
   it("an option pick replaces the typed answer (single select)", async () => {
     act(() => root.render(<QuestionCard message={cardMessage() as never} />));
     await act(async () => {

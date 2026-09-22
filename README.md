@@ -65,10 +65,12 @@ Legend: ✅ Supported · ⚠️ Partial · ❌ Not yet supported · 🔁 Not sup
 | Native command `/new` (new session) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Native command `/clear` (clear context) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Native command `/compact` (compact context) | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| Native command `ask` (question cards) | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| Native command `ask` (question cards) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | Native command `/mcp` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Native command `/plugins` | ➖ | ➖ | ➖ | ➖ | ❌ | ✅ | ➖ | ➖ | ➖ | ➖ |
 | Native command `/goal` (persistent goal) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | ➖ | ➖ | ➖ | ➖ |
+
+Kimi question cards use the local CLI's ACP form channel (verified with Kimi 2.0.2), including multiple questions, multiple selections, dismissal, and interruption. Kimi currently accepts declared options only, so these cards do not offer a free-text “Other” answer. WSL workspaces retain the non-interactive CLI fallback and do not support Kimi question cards.
 
 ---
 ## What can ccgui do?

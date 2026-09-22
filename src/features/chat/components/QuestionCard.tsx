@@ -185,7 +185,7 @@ export function QuestionCard({ message }: { message: Message }) {
             </button>
           );
         })}
-        {!current.multiSelect && (
+        {!current.multiSelect && current.allowOther !== false && (
           <input
             data-q-row
             value={other[current.question] ?? ""}

@@ -54,6 +54,7 @@ export interface QuestionSpec {
   question: string;
   header: string;
   multiSelect?: boolean;
+  allowOther?: boolean;
   options: { label: string; description?: string; preview?: string }[];
 }
 

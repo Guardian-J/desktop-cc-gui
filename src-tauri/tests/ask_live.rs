@@ -170,8 +170,8 @@ async fn send(
         prompt.to_string(),
         None,
         None,
-        None,
-        Some("bypass".to_string()),
+        (engine_id == "kimi").then(|| "medium".to_string()),
+        Some(if engine_id == "kimi" { "auto" } else { "bypass" }.to_string()),
         None,
         Some(run_id.to_string()),
         None,
@@ -263,7 +263,7 @@ async fn live_ask(engine_id: &str) {
                 .as_str()
                 .unwrap_or_else(|| panic!("{engine_id}: card has no question text: {card}"))
                 .to_string(),
-            json!(label),
+            if card["multiSelect"] == true { json!([label]) } else { json!(label) },
         );
     }
     println!(
@@ -421,7 +421,11 @@ async fn live_image(engine_id: &str) {
     let workspace = home.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
     let png = workspace.join("probe-blue.png");
-    std::fs::write(&png, BLUE_PNG).unwrap();
+    if engine_id == "kimi" {
+        image::RgbImage::from_pixel(64, 64, image::Rgb([0u8, 0, 255])).save(&png).unwrap();
+    } else {
+        std::fs::write(&png, BLUE_PNG).unwrap();
+    }
     let (app, events) = build_app(&home);
 
     send_with_images(
@@ -454,6 +458,127 @@ async fn grok_asks_and_accepts_the_answer() {
 #[ignore = "needs an authenticated codex CLI, network and minutes"]
 async fn codex_asks_and_accepts_the_answer() {
     live_ask("codex").await;
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI, network and minutes"]
+async fn kimi_asks_and_accepts_the_answer() {
+    live_ask("kimi").await;
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI with K3-256k and network"]
+async fn kimi_explicit_k3_256k_medium_official_channel() {
+    let home = temp_dir("kimi-explicit-model");
+    let workspace = home.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (app, events) = build_app(&home);
+    engine::send_message(
+        app.state::<AppState>(),
+        "kimi".into(),
+        workspace.to_string_lossy().into(),
+        None,
+        "只回复你好，不使用任何工具".into(),
+        None,
+        Some("kimi-code/k3-256k".into()),
+        Some("medium".into()),
+        Some("auto".into()),
+        Some("__local_settings_json__".into()),
+        Some("run-kimi-explicit-model".into()),
+        None,
+    ).await.unwrap();
+    let seen = wait_done("kimi", &events, 1, "explicit UI model and channel").await;
+    assert!(text_of(&seen).contains("你好"));
+    assert_drained("kimi", &app, "explicit model");
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI, network and minutes"]
+async fn kimi_resumes_a_conversation() {
+    live_resume("kimi").await;
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI, network and minutes"]
+async fn kimi_sends_an_image() {
+    live_image("kimi").await;
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI, network and minutes"]
+async fn kimi_stop_settles_a_pending_question() {
+    let engine_id = "kimi";
+    let home = temp_dir("pending-question-interrupt-kimi");
+    let workspace = home.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (app, events) = build_app(&home);
+    let run_id = "run-pending-question-interrupt-kimi";
+
+    send(&app, engine_id, &workspace, None, run_id, PROMPT).await;
+    let seen = wait_for(
+        &events,
+        "pending question before Stop",
+        |seen| count_kind(seen, "question") > 0 || count_kind(seen, "error") > 0,
+        ASK_DEADLINE,
+    )
+    .await;
+    assert_no_error(engine_id, "before Stop on a pending question", &seen);
+    assert_eq!(count_kind(&seen, "done"), 0);
+
+    let killed = engine::interrupt_session(app.state::<AppState>(), run_id.to_string())
+        .await
+        .unwrap_or_else(|error| panic!("{engine_id}: interrupt_session failed: {error}"));
+    assert!(killed, "{engine_id}: pending question run was already gone");
+
+    let seen = wait_for(
+        &events,
+        "settle after Stop on a pending question",
+        |seen| count_kind(seen, "done") > 0 || count_kind(seen, "error") > 0,
+        INTERRUPT_DEADLINE,
+    )
+    .await;
+    assert_no_error(engine_id, "after Stop on a pending question", &seen);
+    assert_eq!(count_kind(&seen, "done"), 1);
+    assert_drained(engine_id, &app, "Stop on a pending question");
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI, network and minutes"]
+async fn kimi_dismisses_a_pending_question() {
+    let engine_id = "kimi";
+    let home = temp_dir("pending-question-dismiss-kimi");
+    let workspace = home.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (app, events) = build_app(&home);
+    let run_id = "run-pending-question-dismiss-kimi";
+
+    send(&app, engine_id, &workspace, None, run_id, PROMPT).await;
+    let seen = wait_for(
+        &events,
+        "pending question before dismissal",
+        |seen| count_kind(seen, "question") > 0 || count_kind(seen, "error") > 0,
+        ASK_DEADLINE,
+    )
+    .await;
+    assert_no_error(engine_id, "before dismissing a pending question", &seen);
+    assert_eq!(count_kind(&seen, "done"), 0);
+    let question = first_kind(&seen, "question").expect("question event");
+
+    engine::answer_question(
+        app.state::<AppState>(),
+        run_id.to_string(),
+        question["data"]["requestId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{engine_id}: question event has no requestId: {question}"))
+            .to_string(),
+        None,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{engine_id}: dismissing question failed: {error}"));
+
+    let seen = wait_done(engine_id, &events, 1, "done after dismissal").await;
+    assert_eq!(count_kind(&seen, "done"), 1);
+    assert_drained(engine_id, &app, "dismissal of a pending question");
 }
 
 #[tokio::test]

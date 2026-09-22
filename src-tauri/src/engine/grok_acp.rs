@@ -1,4 +1,5 @@
-//! grok's native ACP transport (`grok agent --always-approve stdio`).
+//! Shared native ACP turn lifecycle for grok and Kimi.
+//! Kimi's handshake and elicitation forms are implemented in `kimi_acp`.
 //!
 //! grok drives its own channel: the app prepares the command (channel flags,
 //! GROK_HOME staging, model/effort) and this driver owns the child for the
@@ -68,7 +69,7 @@ struct TurnView {
 /// partial output commits as a normal turn end.
 pub(super) async fn run_acp_turn(
     core: TurnCore,
-    req: SendRequest,
+    mut req: SendRequest,
     built: BuiltCommand,
     killed: Arc<AtomicBool>,
     virtual_pid: u32,
@@ -78,6 +79,9 @@ pub(super) async fn run_acp_turn(
         cleanup_files,
         ..
     } = built;
+    if core.engine_id == "kimi" {
+        req.model = super::kimi_acp::selected_model(req.model.as_deref(), &command);
+    }
     let mut state = TurnState::new(req.session_id.clone());
     let mut view = TurnView::default();
     let preassigned_session_id = req.session_id.clone();
@@ -140,7 +144,7 @@ async fn turn_inner(
     command: &mut Command,
     killed: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let mut spawned = spawn_piped_acp(command, "grok", &req.workspace)?;
+    let mut spawned = spawn_piped_acp(command, &core.engine_id, &req.workspace)?;
     // The registry entry exists before this task runs, so a parked question's
     // answer always finds this child's stdin (and the session-id alias clones
     // it later, making `answer_question` work by either key).
@@ -166,14 +170,22 @@ async fn handshake_and_prompt(
 ) -> Result<(), String> {
     acp.routed(
         "initialize",
-        initialize_params(),
+        if core.engine_id == "kimi" { super::kimi_acp::initialization() } else { initialize_params() },
         RPC_HANDSHAKE_TIMEOUT,
         killed,
         None,
         &mut |_| None,
     )
     .await?;
-    let session_id = attach_session(acp, req, killed).await?;
+    let session_id = if core.engine_id == "kimi" {
+        let (session_id, effort) = super::kimi_acp::attach_session(acp, req, killed).await?;
+        if let Some(effort) = effort {
+            core.dispatch_event(state, EngineEvent::Effort(effort));
+        }
+        session_id
+    } else {
+        attach_session(acp, req, killed).await?
+    };
     core.dispatch_event(state, EngineEvent::SessionId(session_id.clone()));
 
     let blocks = prompt_blocks(&req.prompt, &req.images, &req.workspace)?;
@@ -183,8 +195,18 @@ async fn handshake_and_prompt(
     let result = {
         let mut router = |line: &AcpLine| match line {
             AcpLine::Notification { method, params } if method == "session/update" => {
+                if core.engine_id == "kimi" {
+                    if let Some(usage) = super::kimi_acp::usage(params) {
+                        view.last_usage = Some(usage.clone());
+                        core.dispatch_event(state, EngineEvent::Usage(usage));
+                    }
+                }
                 handle_session_update(core, state, view, params);
                 None
+            }
+            AcpLine::AgentRequest { id, method, params }
+                if core.engine_id == "kimi" && method == "elicitation/create" => {
+                super::kimi_acp::park_question(core, state, id, params)
             }
             // The ask is the user's line to answer: return None so the frame is
             // written by `answer_question` (via the registry-held stdin), not
@@ -663,6 +685,29 @@ mod tests {
         // card the CLI would wait on until the prompt times out.
         assert!(park_question(&core, &mut state, &json!(8), &json!({ "questions": [] })).is_some());
         assert_eq!(registry.get("test-run").unwrap().questions.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn kimi_form_parks_all_questions_with_reply_context() {
+        let (mut core, registry, emitter) = test_core();
+        core.engine_id = "kimi".into();
+        let mut state = TurnState::new(None);
+        let params = json!({"mode": "form", "toolCallId": "ask-1", "message": "选哪种？", "requestedSchema": {
+            "required": ["q0"], "properties": {"q0": {
+                "type": "string", "title": "选择", "oneOf": [{"const": "A"}, {"const": "B"}]
+            }}
+        }});
+        assert!(super::super::kimi_acp::park_question(&core, &mut state, &json!(8), &params).is_none());
+        let entry = registry.get("test-run").unwrap();
+        let parked = entry.questions.lock().unwrap()["8"].clone();
+        assert_eq!(parked["questions"][0]["allowOther"], false);
+        let frame = super::super::kimi_acp::answer_frame(&parked["kimiAcp"], Some(&json!({"选哪种？": "B"}))).unwrap();
+        assert_eq!(frame["result"]["content"], json!({"q0": "B"}));
+        core.sink.flush();
+        assert!(emitter.0.lock().unwrap().join(" ").contains("kimiAcp"));
+        let decline = super::super::kimi_acp::park_question(&core, &mut state, &json!(9), &json!({})).unwrap();
+        assert_eq!(decline["result"]["action"], "decline");
+        assert_eq!(entry.questions.lock().unwrap().len(), 1);
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod opencode_server;
 mod opencode_session;
 pub mod images;
 pub mod kimi;
+mod kimi_acp;
 pub mod models;
 pub mod opencode;
 pub mod pi_family;
@@ -957,7 +958,7 @@ async fn send_host_stream(
         "qoder" | "qoder-cn" => tokio::spawn(qoder_session::run_acp_turn(
             core, launch.req, launch.bin, killed, pid,
         )),
-        "grok" => tokio::spawn(grok_acp::run_acp_turn(
+        "grok" | "kimi" => tokio::spawn(grok_acp::run_acp_turn(
             core,
             launch.req,
             launch.built,
@@ -1027,6 +1028,14 @@ pub async fn answer_question(
         .get(&request_id)
         .cloned()
         .ok_or_else(|| "question is no longer pending".to_string())?;
+    if let Some(context) = input.get("kimiAcp") {
+        let frame = kimi_acp::answer_frame(context, answers.as_ref())?;
+        state.processes.write_line(&session_id, frame.to_string()).await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
     // grok's ACP driver parks the server's `_x.ai/ask_user_question` request:
     // the answer is the JSON-RPC response line on the CLI's stdin.
     if let Some(acp) = input.get("grokAcp") {
@@ -1461,17 +1470,17 @@ mod permission_tests {
     }
 
     #[test]
-    fn kimi_maps_plan_and_bypass() {
+    fn kimi_prompt_mode_never_combines_interactive_permission_flags() {
         let e = kimi::KimiEngine;
         let auto = argv(&e, &req(Some("auto")));
         assert!(!auto.contains(&"--yolo".to_string()));
         assert!(!auto.contains(&"--plan".to_string()));
 
-        let plan = argv(&e, &req(Some("plan")));
-        assert!(plan.contains(&"--plan".to_string()));
+        assert!(e.build_command(&req(Some("plan")), "kimi").is_err());
 
         let bypass = argv(&e, &req(Some("bypass")));
-        assert!(bypass.contains(&"--yolo".to_string()));
+        assert!(!bypass.contains(&"--yolo".to_string()));
+        assert!(!bypass.contains(&"--auto".to_string()));
 
         // Manual is unsupported: falls back to auto (no flags).
         let manual = argv(&e, &req(Some("manual")));

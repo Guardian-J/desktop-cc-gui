@@ -1,6 +1,6 @@
 use super::{
     command_for_binary, images, push_session_id, safe_prompt_arg, BuiltCommand, Engine,
-    EngineEvent, SendRequest,
+    EngineEvent, SendRequest, Transport,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -122,6 +122,31 @@ impl Engine for KimiEngine {
         "kimi"
     }
 
+    fn drives_own_transport(&self) -> bool {
+        true
+    }
+
+    fn transport_for(&self, wsl: bool) -> Transport {
+        if wsl {
+            Transport::Child
+        } else {
+            Transport::Own
+        }
+    }
+
+    fn host_command(&self, _req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
+        let mut command = command_for_binary(bin);
+        command.arg("acp");
+        Ok(BuiltCommand {
+            command,
+            stdin_payload: None,
+            keep_stdin_open: true,
+            cleanup_files: Vec::new(),
+            mcp_restore: None,
+            preassigned_session_id: None,
+        })
+    }
+
     fn supports_images(&self) -> bool {
         // build_command injects absolute image paths + a ReadMediaFile
         // instruction into the prompt; that IS the kimi image transport.
@@ -131,9 +156,6 @@ impl Engine for KimiEngine {
         true
     }
     fn supported_permissions(&self) -> &'static [&'static str] {
-        // One-shot --prompt runs cannot ask mid-turn ("manual" out); kimi's
-        // non-interactive default policy already auto-approves ("auto" = no
-        // flag).
         &["auto", "plan", "bypass"]
     }
 
@@ -196,6 +218,29 @@ impl Engine for KimiEngine {
 #[cfg(test)]
 mod channel_tests {
     use super::*;
+
+    #[test]
+    fn kimi_uses_interactive_transport_locally_and_preserves_remote_fallback() {
+        assert!(KimiEngine.transport_for(false) == super::super::Transport::Own);
+        assert!(KimiEngine.transport_for(true) == super::super::Transport::Child);
+        let req = SendRequest {
+            session_id: None,
+            workspace: std::env::temp_dir(),
+            prompt: "ask".into(),
+            images: vec![],
+            model: Some("native-model".into()),
+            effort: Some("medium".into()),
+            service_tier: None,
+            permission: Some("auto".into()),
+            additional_dirs: vec![],
+            provider_id: None,
+            computer_use: None,
+        };
+        let built = KimiEngine.host_command(&req, "kimi").unwrap();
+        let args: Vec<_> = built.command.as_std().get_args().collect();
+        assert_eq!(args, ["acp"]);
+        assert!(built.keep_stdin_open);
+    }
 
     #[test]
     fn independent_channel_uses_ephemeral_model_instead_of_native_alias() {
