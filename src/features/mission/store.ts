@@ -6,6 +6,7 @@ import type {
   MissionFlowDefinition,
   MissionInboxItem,
   MissionRun,
+  MissionRunExecution,
 } from "./types";
 
 /** 中心页签 key 前缀；use-chat-tabs 按它路由 select/close。 */
@@ -58,6 +59,8 @@ interface MissionStoreState {
   createFlow: () => string;
   /** 更新草稿（调用方先跑校验；此处只写状态）。 */
   updateDraft: (flowId: string, draft: MissionFlowDefinition) => void;
+  /** 固定/清除流程的执行配置（null = 跟随当前会话/默认）。 */
+  setFlowExecution: (flowId: string, execution: MissionRunExecution | null) => void;
   appendMessage: (flowId: string, message: MissionConversationMessage) => void;
   /** 插入或替换运行快照。 */
   upsertRun: (run: MissionRun) => void;
@@ -185,6 +188,12 @@ export const useMissionStore = create<MissionStoreState>()((set, get) => ({
         flow.id === flowId
           ? { ...flow, draft, name: draft.name, goal: draft.goal, updatedAt: Date.now() }
           : flow,
+      ),
+    })),
+  setFlowExecution: (flowId, execution) =>
+    set((state) => ({
+      flows: state.flows.map((flow) =>
+        flow.id === flowId ? { ...flow, execution, updatedAt: Date.now() } : flow,
       ),
     })),
   appendMessage: (flowId, message) =>

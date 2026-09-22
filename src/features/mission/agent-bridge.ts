@@ -45,6 +45,8 @@ export interface MissionAgentRunOptions {
   sessionId?: string | null;
   prompt: string;
   model?: string | null;
+  /** 思考档位；null/undefined = 引擎默认。 */
+  effort?: string | null;
   providerId?: string | null;
   /** 该节点是否声明只读（逐节点工具白名单）。 */
   readOnly?: boolean;
@@ -73,6 +75,7 @@ export async function startMissionAgentRun(
       sessionId: options.sessionId ?? null,
       prompt: options.prompt,
       model: options.model ?? null,
+      effort: options.effort ?? null,
       providerId: options.providerId ?? null,
       allowedTools: options.readOnly ? [...MISSION_READ_ONLY_TOOLS] : null,
     });

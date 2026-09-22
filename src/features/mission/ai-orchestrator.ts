@@ -78,14 +78,18 @@ export async function sendMissionMessage(flowId: string, text: string): Promise<
 
   store.appendMessage(flowId, message("user", trimmed));
 
-  const execution = resolveMissionExecution();
+  const current = useMissionStore.getState().flows.find((item) => item.id === flowId);
+  if (!current) return;
+  // 优先流程固定的执行配置；失效时回退到当前会话/默认环境（生成不阻塞）。
+  let resolution = resolveMissionExecution(current);
+  if (resolution.invalidReason || !resolution.execution) {
+    resolution = resolveMissionExecution(null);
+  }
+  const execution = resolution.execution;
   if (!execution) {
     store.appendMessage(flowId, message("assistant", i18n.t("mission.conversationHintNoEngine")));
     return;
   }
-
-  const current = useMissionStore.getState().flows.find((item) => item.id === flowId);
-  if (!current) return;
   const prompt = buildMissionProposalPrompt({
     flowName: current.name,
     flowGoal: current.goal,
@@ -101,6 +105,7 @@ export async function sendMissionMessage(flowId: string, text: string): Promise<
       workspacePath: execution.workspacePath,
       prompt,
       model: execution.model,
+      effort: execution.effort,
       providerId: execution.providerId,
       readOnly: false,
     });

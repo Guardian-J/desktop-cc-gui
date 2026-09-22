@@ -40,13 +40,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isMissionFlow(value: unknown): value is MissionFlow {
   if (!isRecord(value)) return false;
-  return (
-    typeof value.id === "string" &&
-    typeof value.name === "string" &&
-    Array.isArray(value.messages) &&
-    (value.draft === null || isRecord(value.draft)) &&
-    Array.isArray(value.runIds)
-  );
+  if (
+    !(
+      typeof value.id === "string" &&
+      typeof value.name === "string" &&
+      Array.isArray(value.messages) &&
+      (value.draft === null || isRecord(value.draft)) &&
+      Array.isArray(value.runIds)
+    )
+  ) {
+    return false;
+  }
+  // 执行配置（可选）：形状不对就丢弃，不因为一条坏记录阻止整个回放。
+  const execution = (value as Record<string, unknown>).execution;
+  if (execution !== undefined && execution !== null) {
+    if (
+      !isRecord(execution) ||
+      typeof execution.engine !== "string" ||
+      typeof execution.workspacePath !== "string"
+    ) {
+      (value as Record<string, unknown>).execution = null;
+    }
+  }
+  return true;
 }
 
 function isMissionRun(value: unknown): value is MissionRun {

@@ -1075,6 +1075,24 @@ export const zh = {
     demoChangeLine1: "逐项处理 30 个输入，最多并发 {{concurrency}} 个",
     demoChangeLine2: "高风险等待确认，其他任务继续；失败自动重试 {{retries}} 次",
 
+    // 执行环境（流程级，方案之外的用户确认方案 B）
+    executionTitle: "执行环境",
+    executionFollowSession: "跟随当前会话",
+    executionFollowSessionOn: "当前跟随聊天会话",
+    executionEngine: "引擎",
+    executionModel: "模型",
+    executionModelDefault: "引擎默认模型",
+    executionModelDefaultShort: "默认模型",
+    executionWorkspace: "工作区",
+    executionHint: "只影响需要调用模型的 agent 节点；演示流程仍走本地模拟。切换只影响下一次运行。",
+    executionModelLoadFailed: "模型列表读取失败，将使用引擎默认模型。",
+    executionNoEngines: "没有可用引擎，请先在设置中启用。",
+    executionNoWorkspace: "还没有工作区，请先在侧栏添加。",
+    executionRunSnapshot: "本次运行的环境（启动时固定）",
+    executionPin: "固定到本流程",
+    executionUnpin: "恢复跟随会话",
+    runExecution: "运行环境：{{engine}} · {{model}}",
+
     // 画布
     canvasEmptyTitle: "从一句话，到一张流程。",
     canvasEmptyDesc: "在左侧描述目标。\n节点和它们之间的关系，会出现在这里。",
@@ -1245,6 +1263,8 @@ export const zh = {
     issueForeachUnknownOver: "foreach 节点「{{node}}」的数据来源「{{over}}」不是上游节点",
     issueForeachEmptyBody: "foreach 节点「{{node}}」的子流程为空",
     issueNestedForeach: "暂不支持 foreach 嵌套：节点「{{node}}」",
+    issueEngineUnavailable: "执行配置的引擎不可用：{{engine}}（可能被禁用或卸载）",
+    issueWorkspaceMissing: "执行配置的工作区不存在：{{path}}",
     issueInvalidCondition: "连线「{{edge}}」的条件表达式非法：{{condition}}",
     issueForeachConcurrency: "foreach 节点「{{node}}」并发上限必须在 1–10 之间",
     issueDanglingBranch: "节点「{{node}}」之后没有可达的终结路径",

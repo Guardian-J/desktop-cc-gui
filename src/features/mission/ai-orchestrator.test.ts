@@ -8,7 +8,14 @@ import type { EngineInfo } from "@/lib/ipc";
  */
 
 interface MockChatState {
-  active: { engine: string; sessionId: string; workspacePath: string } | null;
+  active: {
+    engine: string;
+    sessionId: string;
+    workspacePath: string;
+    model?: string;
+    provider?: string;
+    effort?: string;
+  } | null;
   engines: EngineInfo[];
   workspaces: Array<{ path: string }>;
 }
@@ -295,6 +302,34 @@ describe("mission AI orchestration", () => {
     const started = startMissionRun(flowId);
     expect(started.ok).toBe(false);
     expect(started.issues?.some((issue) => issue.code === "readOnlyUnsupported")).toBe(true);
+  });
+
+  it("passes the session execution overrides to the generator", async () => {
+    chatState.active = {
+      engine: "claude",
+      sessionId: "s1",
+      workspacePath: "/tmp/mission-workspace",
+      model: "anthropic/opus",
+      provider: "channel-1",
+      effort: "high",
+    };
+    let capturedModel: unknown = null;
+    let capturedProvider: unknown = null;
+    let capturedEffort: unknown = null;
+    setMissionPromptRunnerForTest((options) => {
+      capturedModel = options.model;
+      capturedProvider = options.providerId;
+      capturedEffort = options.effort;
+      return {
+        promise: Promise.resolve({ text: proposalJson(proposalDefinition()) }),
+        interrupt: () => {},
+      };
+    });
+    const flowId = useMissionStore.getState().createFlow();
+    await sendMissionMessage(flowId, "审查所有 PR");
+    expect(capturedModel).toBe("anthropic/opus");
+    expect(capturedProvider).toBe("channel-1");
+    expect(capturedEffort).toBe("high");
   });
 
   it("reports engine absence instead of pretending to generate", async () => {

@@ -1109,6 +1109,24 @@ export const en: Messages = {
     demoChangeLine1: "Process 30 inputs one by one, at most {{concurrency}} at once",
     demoChangeLine2: "High-risk items wait for confirmation while others continue; failures retry {{retries}} time(s)",
 
+    // Execution environment (flow-level; confirmed option B)
+    executionTitle: "Execution environment",
+    executionFollowSession: "Follow the current session",
+    executionFollowSessionOn: "Following the chat session",
+    executionEngine: "Engine",
+    executionModel: "Model",
+    executionModelDefault: "Engine default model",
+    executionModelDefaultShort: "Default model",
+    executionWorkspace: "Workspace",
+    executionHint: "Affects agent nodes that call a model only; the demo flow stays local. Changes apply to the next run.",
+    executionModelLoadFailed: "Could not read the model list; the engine default will be used.",
+    executionNoEngines: "No engine is available; enable one in Settings first.",
+    executionNoWorkspace: "No workspace yet; add one from the sidebar first.",
+    executionRunSnapshot: "This run's environment (pinned at start)",
+    executionPin: "Pin to this flow",
+    executionUnpin: "Follow the session again",
+    runExecution: "Runtime environment: {{engine}} · {{model}}",
+
     // Canvas
     canvasEmptyTitle: "From one sentence to a flow.",
     canvasEmptyDesc: "Describe the goal on the left.\nThe nodes and their connections appear here.",
@@ -1279,6 +1297,8 @@ export const en: Messages = {
     issueForeachUnknownOver: "foreach node \"{{node}}\" reads from \"{{over}}\", which is not an upstream node",
     issueForeachEmptyBody: "foreach node \"{{node}}\" has an empty sub-flow",
     issueNestedForeach: "Nested foreach is not supported yet: node \"{{node}}\"",
+    issueEngineUnavailable: "The engine in the execution configuration is unavailable: {{engine}} (disabled or uninstalled?)",
+    issueWorkspaceMissing: "The workspace in the execution configuration no longer exists: {{path}}",
     issueInvalidCondition: "Edge \"{{edge}}\" has an invalid condition: {{condition}}",
     issueForeachConcurrency: "foreach node \"{{node}}\" concurrency must be between 1 and 10",
     issueDanglingBranch: "Node \"{{node}}\" has no reachable terminal path",

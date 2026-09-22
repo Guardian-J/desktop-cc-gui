@@ -158,6 +158,9 @@ export interface MissionFlow {
   name: string;
   goal: string;
   draft: MissionFlowDefinition | null;
+  /** 流程级执行配置（引擎/模型/工作区）；不属 AI 可编辑的定义，
+   *  启动运行时固定进快照。null = 按当前会话/默认推导。 */
+  execution?: MissionRunExecution | null;
   /** 每次启动运行固定一份快照；旧运行永远读到自己的版本。 */
   versions: MissionFlowDefinition[];
   runIds: string[];
@@ -192,12 +195,16 @@ export interface MissionTaskInstance {
   endedAt?: number;
 }
 
-/** 运行绑定的执行上下文（原生 agent 节点用；演示流程可为空）。 */
+/** 运行绑定的执行上下文（原生 agent 节点用；演示流程可为 null）。 */
 export interface MissionRunExecution {
   engine: string;
   workspacePath: string;
+  /** 模型选择；null = 引擎默认（settings.default_models → CLI 默认）。 */
   model: string | null;
+  /** 渠道（provider）选择；null = 引擎当前渠道。 */
   providerId: string | null;
+  /** 思考档位；null = 引擎默认。 */
+  effort: string | null;
 }
 
 export interface MissionRun {

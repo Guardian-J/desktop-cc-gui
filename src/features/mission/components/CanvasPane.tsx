@@ -28,6 +28,7 @@ import {
   type MissionCanvasNodeData,
   type MissionItemNodeData,
 } from "./canvas/mission-graph";
+import { ExecutionPicker, RunEnvironment } from "./ExecutionPicker";
 import { NodeInspector } from "./NodeInspector";
 
 /**
@@ -185,6 +186,7 @@ export function CanvasPane() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <ExecutionPicker flow={flow} run={mode === "run" ? run : null} />
           <div className="flex gap-0.5 rounded-md bg-background-secondary-default p-0.5">
             <button
               type="button"
@@ -285,6 +287,7 @@ export function CanvasPane() {
             </span>
           ))}
           <span>{t("mission.concurrencyNote", { concurrency: run.snapshot.settings.concurrency })}</span>
+          {run.execution && <RunEnvironment execution={run.execution} />}
           {/* 演示流程可手动注入失败，现场体验恢复链路；真实引擎不提供该入口。 */}
           {unitCounts.running > 0 && usesOnlySimulatedCapabilities(run.snapshot) && (
             <Button

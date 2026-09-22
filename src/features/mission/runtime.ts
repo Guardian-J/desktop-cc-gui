@@ -121,27 +121,65 @@ export function ensureMissionSeeded(): void {
 }
 
 /**
- * 运行上下文：优先当前聊天会话的引擎/工作区；没有会话时取第一个可用
- * 引擎与第一个工作区。都没有则返回 null（原生 agent 节点无法执行）。
+ * 运行上下文解析（方案之外的取舍，用户确认的方案 B）：
+ *  1. 流程固定了执行配置（引擎/模型/工作区）→ 用它，失效则明确报错；
+ *  2. 否则跟随当前聊天会话（含其模型/渠道/effort 覆盖）；
+ *  3. 否则取第一个可用引擎与第一个工作区；
+ *  4. 都没有 → null（原生 agent 节点无法执行）。
  */
-export function resolveMissionExecution(): MissionRunExecution | null {
+export type MissionExecutionInvalidReason = "engineUnavailable" | "workspaceMissing";
+
+export interface MissionExecutionResolution {
+  execution: MissionRunExecution | null;
+  /** 流程固定配置失效的原因（启动时如实报错，不静默回退）。 */
+  invalidReason?: MissionExecutionInvalidReason;
+  source: "flow" | "session" | "default" | "none";
+}
+
+function engineUsable(
+  engine: string,
+  engines: Array<{ id: string; available: boolean; enabled: boolean }>,
+): boolean {
+  const info = engines.find((row) => row.id === engine);
+  return !!info && info.available && info.enabled;
+}
+
+export function resolveMissionExecution(flow?: MissionFlow | null): MissionExecutionResolution {
   const chat = useChatStore.getState();
-  if (chat.active) {
+  const stored = flow?.execution ?? null;
+  if (stored) {
+    if (!engineUsable(stored.engine, chat.engines)) {
+      return { execution: null, invalidReason: "engineUnavailable", source: "flow" };
+    }
+    if (!chat.workspaces.some((workspace) => workspace.path === stored.workspacePath)) {
+      return { execution: null, invalidReason: "workspaceMissing", source: "flow" };
+    }
+    return { execution: { ...stored }, source: "flow" };
+  }
+  if (chat.active && engineUsable(chat.active.engine, chat.engines)) {
     return {
-      engine: chat.active.engine,
-      workspacePath: chat.active.workspacePath,
-      model: null,
-      providerId: null,
+      execution: {
+        engine: chat.active.engine,
+        workspacePath: chat.active.workspacePath,
+        model: chat.active.model ?? null,
+        providerId: chat.active.provider ?? null,
+        effort: chat.active.effort ?? null,
+      },
+      source: "session",
     };
   }
   const engine = chat.engines.find((info) => info.available && info.enabled);
   const workspace = chat.workspaces[0];
-  if (!engine || !workspace) return null;
+  if (!engine || !workspace) return { execution: null, source: "none" };
   return {
-    engine: engine.id,
-    workspacePath: workspace.path,
-    model: null,
-    providerId: null,
+    execution: {
+      engine: engine.id,
+      workspacePath: workspace.path,
+      model: null,
+      providerId: null,
+      effort: null,
+    },
+    source: "default",
   };
 }
 
@@ -190,10 +228,31 @@ export function startMissionRun(
 
   // 只读节点必须由引擎真正兑现工具约束；否则不启动（不假装只读）。
   const readOnlyNodes = collectReadOnlyNodes(flow.draft.nodes);
-  let execution = executionOverride !== undefined ? executionOverride : resolveMissionExecution();
+  const resolution: MissionExecutionResolution =
+    executionOverride !== undefined
+      ? { execution: executionOverride, source: "flow" }
+      : resolveMissionExecution(flow);
+  if (resolution.invalidReason) {
+    const stored = flow.execution;
+    return {
+      ok: false,
+      error: `execution configuration is invalid: ${resolution.invalidReason}`,
+      issues: [
+        {
+          code: resolution.invalidReason,
+          severity: "unavailable",
+          params:
+            resolution.invalidReason === "engineUnavailable"
+              ? { engine: stored?.engine ?? "" }
+              : { path: stored?.workspacePath ?? "" },
+        },
+      ],
+    };
+  }
+  const execution = resolution.execution;
   if (readOnlyNodes.length > 0) {
     const engineInfo = execution
-      ? useChatStore.getState().engines.find((info) => info.id === execution!.engine)
+      ? useChatStore.getState().engines.find((info) => info.id === execution.engine)
       : undefined;
     if (!execution || !engineInfo?.supportsToolConstraints) {
       const blocked = readOnlyNodes.slice(0, 3).map((node) => ({
@@ -220,7 +279,6 @@ export function startMissionRun(
     if (hasNativeAgent) {
       return { ok: false, error: "no engine/workspace available for native agent nodes" };
     }
-    execution = null;
   }
 
   const engine = getScheduler();

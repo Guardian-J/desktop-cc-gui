@@ -35,6 +35,7 @@ export const missionAgentNodeRunner: MissionAgentRunner = async ({
     workspacePath: execution.workspacePath,
     prompt,
     model: execution.model,
+    effort: execution.effort,
     providerId: execution.providerId,
     readOnly: node.agent?.readOnly === true,
     signal,

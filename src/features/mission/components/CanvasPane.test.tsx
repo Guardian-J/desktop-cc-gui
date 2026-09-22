@@ -32,9 +32,14 @@ class ResizeObserverStub {
   constructor(_transform?: string) {}
 };
 
-vi.mock("@/features/chat/store", () => ({
-  useChatStore: { getState: () => ({ active: null, engines: [], workspaces: [] }) },
-}));
+vi.mock("@/features/chat/store", () => {
+  const state = { active: null, engines: [], workspaces: [] };
+  const useChatStore = Object.assign(
+    (selector: (s: typeof state) => unknown) => selector(state),
+    { getState: () => state },
+  );
+  return { useChatStore };
+});
 vi.mock("@/lib/ipc", () => ({
   ipc: { missionAgentStart: vi.fn(), missionAgentInterrupt: vi.fn() },
 }));

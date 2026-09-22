@@ -157,6 +157,42 @@ describe("persistence storage", () => {
       "run-7",
     ]);
   });
+
+  it("round-trips the pinned execution config and drops a corrupted one", () => {
+    saveMissionState({
+      version: 1,
+      flows: [
+        {
+          ...flow(),
+          execution: {
+            engine: "claude",
+            workspacePath: "/w1",
+            model: "model-a",
+            providerId: "channel-1",
+            effort: "high",
+          },
+        },
+      ],
+      runs: [],
+      inbox: [],
+    });
+    const loaded = loadMissionState();
+    expect(loaded?.flows[0].execution?.engine).toBe("claude");
+    expect(loaded?.flows[0].execution?.model).toBe("model-a");
+
+    localStorage.setItem(
+      MISSION_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        flows: [{ ...flow(), execution: { engine: 42 } }],
+        runs: [],
+        inbox: [],
+      }),
+    );
+    const degraded = loadMissionState();
+    expect(degraded?.flows).toHaveLength(1);
+    expect(degraded?.flows[0].execution).toBeNull();
+  });
 });
 
 describe("initMissionPersistence", () => {

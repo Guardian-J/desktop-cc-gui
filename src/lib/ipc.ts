@@ -835,6 +835,7 @@ export const ipc = {
     sessionId: string | null;
     prompt: string;
     model: string | null;
+    effort: string | null;
     providerId: string | null;
     /** 只读白名单；null = 不加约束（普通 agent 节点）。 */
     allowedTools: string[] | null;
