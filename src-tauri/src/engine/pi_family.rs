@@ -1555,7 +1555,19 @@ mod tests {
         };
         let built = engine.build_command(&req, "omp").unwrap();
         let payload = built.stdin_payload.expect("rpc stdin payload");
-        assert!(payload.contains(r#"{"id":"ccgui-effort","level":"high","type":"set_thinking_level"}"#));
+        let commands: Vec<serde_json::Value> = payload
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("valid RPC command JSON"))
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                serde_json::json!({"id": "ccgui-negotiate", "type": "negotiate_protocol", "protocolVersion": 2}),
+                serde_json::json!({"id": "ccgui-effort", "type": "set_thinking_level", "level": "high"}),
+                serde_json::json!({"id": "ccgui-state", "type": "get_state"}),
+                serde_json::json!({"id": "ccgui-prompt", "type": "prompt", "message": "hi"}),
+            ]
+        );
     }
 
     #[test]
