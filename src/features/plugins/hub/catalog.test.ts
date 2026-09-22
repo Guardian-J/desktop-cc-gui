@@ -5,6 +5,7 @@ import {
   categoryCounts,
   githubAvatarUrl,
   githubLoginFor,
+  indexUpdatedAt,
   pluginAvatarGradient,
   pluginInitial,
   pluginMatchesQuery,
@@ -26,6 +27,7 @@ const entry = (id: string, overrides: Partial<MarketPlugin> = {}): MarketPlugin 
   permissions: [],
   downloads: null,
   screenshots: [],
+  updatedAt: null,
   ...overrides,
 });
 
@@ -111,6 +113,21 @@ describe("githubAvatarUrl", () => {
   it("asks GitHub for the account avatar at 2× the chip size, capped", () => {
     expect(githubAvatarUrl("libo-zhou", 20)).toBe("https://github.com/libo-zhou.png?size=40");
     expect(githubAvatarUrl("libo-zhou", 400)).toBe("https://github.com/libo-zhou.png?size=460");
+  });
+});
+
+describe("indexUpdatedAt", () => {
+  it("reads the index stamp and refuses anything that is not a date", () => {
+    expect(indexUpdatedAt("2026-09-20T08:30:00Z")?.toISOString()).toBe(
+      "2026-09-20T08:30:00.000Z",
+    );
+    // Entries registered before the field existed, plus hostile index rows:
+    // the rail hides rather than printing "Invalid Date".
+    expect(indexUpdatedAt(null)).toBeNull();
+    expect(indexUpdatedAt(undefined)).toBeNull();
+    expect(indexUpdatedAt("")).toBeNull();
+    expect(indexUpdatedAt("v0.7.0")).toBeNull();
+    expect(indexUpdatedAt("2026-13-45T00:00:00Z")).toBeNull();
   });
 });
 

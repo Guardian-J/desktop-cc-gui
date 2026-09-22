@@ -73,6 +73,7 @@ class ResizeObserverStub {
 vi.stubGlobal("ResizeObserver", ResizeObserverStub);
 
 const DOWNLOADS = 47;
+const UPDATED_AT = "2026-09-20T08:30:00Z";
 
 const MARKET_ENTRY: MarketPlugin = {
   id: "react-doctor",
@@ -86,6 +87,7 @@ const MARKET_ENTRY: MarketPlugin = {
   sdkVersion: "^0.3",
   permissions: ["storage", "exec:claude", "ui:status-bar"],
   downloads: DOWNLOADS,
+  updatedAt: UPDATED_AT,
   screenshots: [
     "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/shot-1.png",
     "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/shot-2.png",
@@ -326,6 +328,11 @@ describe("PluginHub", () => {
     // Grant-shaped permissions read as sentences, not raw ids.
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.permissions.storage"));
     expect(document.body.textContent).toContain("claude");
+    // Freshness is the index stamp, formatted for the active locale.
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.updatedAt"));
+    expect(document.body.textContent).toContain(
+      new Date(UPDATED_AT).toLocaleDateString(i18n.language),
+    );
 
     const repoLink = [...document.body.querySelectorAll("button")].find((candidate) =>
       candidate.textContent?.includes(i18n.t("plugins.hub.repo")),
@@ -343,6 +350,18 @@ describe("PluginHub", () => {
       );
     });
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.tableName"));
+  });
+
+  it("hides the update time for index entries without a stamp", async () => {
+    pluginFetchIndex.mockImplementation(async () => [{ ...MARKET_ENTRY, updatedAt: null }]);
+    await render();
+    await act(async () => {
+      buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {});
+
+    // No stamp means no row — the rail never shows a placeholder date.
+    expect(document.body.textContent).not.toContain(i18n.t("plugins.hub.updatedAt"));
   });
 
   it("manages installed plugins: uninstall confirmation and quarantine retry", async () => {

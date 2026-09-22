@@ -72,6 +72,11 @@ struct IndexDetail {
     #[serde(default)]
     tier: String,
     version: String,
+    /// Index-repo stamp of the pinned release's publish time (RFC 3339 UTC).
+    /// Entries registered before the field existed omit it — the rail row
+    /// then hides instead of inventing a date.
+    #[serde(default)]
+    updated_at: Option<String>,
     #[serde(default)]
     min_app_version: Option<String>,
     #[serde(default)]
@@ -97,6 +102,8 @@ pub struct MarketPlugin {
     pub author: String,
     pub tier: String,
     pub version: String,
+    /// Pinned release's publish time (RFC 3339 UTC), straight from the index.
+    pub updated_at: Option<String>,
     pub min_app_version: Option<String>,
     pub sdk_version: Option<String>,
     pub permissions: Vec<String>,
@@ -292,6 +299,7 @@ async fn fetch_index_entries() -> Result<Vec<CachedEntry>, String> {
                 author: entry.author.clone(),
                 tier: detail.tier,
                 version: detail.version,
+                updated_at: detail.updated_at,
                 min_app_version: detail.min_app_version,
                 sdk_version: detail.sdk_version,
                 permissions: detail.permissions,
@@ -643,6 +651,22 @@ mod tests {
         assert_eq!(resolve_asset_url(repo, "docs\\shot.png"), None);
         assert_eq!(resolve_asset_url(repo, ""), None);
         assert_eq!(resolve_asset_url("not-a-slug", "docs/shot.png"), None);
+    }
+
+    #[test]
+    fn index_detail_update_time_is_optional() {
+        let detail: IndexDetail = serde_json::from_str(
+            r#"{ "id": "demo", "version": "1.0.0", "updatedAt": "2026-09-20T08:30:00Z" }"#,
+        )
+        .expect("index detail with a timestamp parses");
+        assert_eq!(detail.updated_at.as_deref(), Some("2026-09-20T08:30:00Z"));
+
+        // Entries registered before the field existed must keep parsing: the
+        // whole row is dropped otherwise, timestamp or not.
+        let detail: IndexDetail =
+            serde_json::from_str(r#"{ "id": "demo", "version": "1.0.0" }"#)
+                .expect("index detail without a timestamp parses");
+        assert_eq!(detail.updated_at, None);
     }
 
     #[test]

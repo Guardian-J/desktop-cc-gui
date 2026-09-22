@@ -11,7 +11,7 @@ import { CenteredSpinner } from "@/components/base/empty-state";
 import { ConfirmDialog } from "@/components/dialogs";
 import { isWeb, openExternal } from "@/lib/platform";
 import { ipc, type MarketPlugin, type PluginInfo } from "@/lib/ipc";
-import { categorizePlugin, githubAvatarUrl, githubLoginFor } from "./catalog";
+import { categorizePlugin, githubAvatarUrl, githubLoginFor, indexUpdatedAt } from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
 import { PluginReadme } from "./PluginReadme";
 import { PluginScreenshotCarousel } from "./PluginScreenshotCarousel";
@@ -152,7 +152,7 @@ export function PluginDetailPage({
   installed?: PluginInfo;
   onClose: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const install = useMarketplaceStore((s) => s.install);
   const installing = useMarketplaceStore((s) => (s.installing?.id === id ? s.installing : null));
   const update = useMarketplaceStore((s) => s.updates.find((u) => u.id === id));
@@ -174,6 +174,9 @@ export function PluginDetailPage({
     ? installed.permissions
     : (entry?.permissions ?? []);
   const downloads = entry?.downloads ?? null;
+  // Upstream freshness, not local install state: the index stamps this when
+  // it registers the pinned release, so an old install still reads honestly.
+  const updatedAt = indexUpdatedAt(entry?.updatedAt);
   const minAppVersion = entry?.minAppVersion ?? installed?.minAppVersion ?? null;
   const sdkVersion = entry?.sdkVersion ?? null;
   const screenshots = entry?.screenshots ?? [];
@@ -364,6 +367,12 @@ export function PluginDetailPage({
                   <span className={RAIL_VALUE}>
                     {t("plugins.hub.downloadsShort", { n: downloads.toLocaleString() })}
                   </span>
+                </RailRow>
+              )}
+
+              {updatedAt && (
+                <RailRow label={t("plugins.hub.updatedAt")}>
+                  <span className={RAIL_VALUE}>{updatedAt.toLocaleDateString(i18n.language)}</span>
                 </RailRow>
               )}
 

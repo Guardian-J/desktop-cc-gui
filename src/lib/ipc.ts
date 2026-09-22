@@ -727,6 +727,9 @@ export interface MarketPlugin {
   author: string;
   tier: "declarative" | "js";
   version: string;
+  /** Index-repo stamp of the pinned release's publish time (RFC 3339 UTC);
+   *  null when the index entry predates the field — the rail hides the row. */
+  updatedAt: string | null;
   minAppVersion: string | null;
   sdkVersion: string | null;
   permissions: string[];

@@ -51,6 +51,7 @@ function entry(over: Partial<MarketPlugin> = {}): MarketPlugin {
     permissions: ["storage"],
     downloads: null,
     screenshots: [],
+    updatedAt: null,
     ...over,
   };
 }

@@ -105,6 +105,15 @@ export function githubAvatarUrl(login: string, cssSize: number): string {
   return `https://github.com/${login}.png?size=${size}`;
 }
 
+/** Index `updatedAt` (RFC 3339 UTC) → Date. An absent or unparsable stamp
+ *  yields null so the detail rail skips the row instead of printing
+ *  "Invalid Date" — the index is off-machine data, never trusted blindly. */
+export function indexUpdatedAt(raw?: string | null): Date | null {
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 /** Downloads desc, then name; entries without a count trail the ranked ones
  *  and keep the incoming (index) order among themselves. */
 export function sortByDownloads(entries: MarketPlugin[]): MarketPlugin[] {

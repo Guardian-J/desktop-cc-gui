@@ -925,6 +925,7 @@ export const zh = {
       minAppShort: "CC GUI ≥ {{version}}",
       compatibility: "兼容",
       sdkVersion: "SDK",
+      updatedAt: "最近更新时间",
       permissionsTitle: "权限",
       permissionsEmpty: "无需额外权限",
       permissionsCount: "{{n}} 项",
