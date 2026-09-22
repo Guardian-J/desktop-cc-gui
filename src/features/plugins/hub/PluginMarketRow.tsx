@@ -121,7 +121,7 @@ export function PluginMarketRow({
     >
       <td className={CELL}>
         <div className="flex min-w-0 items-center gap-3">
-          <PluginAvatar id={entry.id} name={entry.name} size={36} />
+          <PluginAvatar id={entry.id} name={entry.name} src={entry.icon} size={36} />
           <button
             type="button"
             onClick={() => onOpenDetail(entry.id)}

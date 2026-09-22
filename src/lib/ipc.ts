@@ -740,6 +740,10 @@ export interface MarketPlugin {
    *  backend from the index's repo-relative paths. Empty when the plugin
    *  ships no screenshots. */
   screenshots: string[];
+  /** Market identity tile: absolute https URL, already resolved by the
+   *  backend from the index's repo-relative path. Null when the index
+   *  carries no icon — the row keeps its deterministic letter tile. */
+  icon: string | null;
 }
 
 /** One installed marketplace plugin with a newer indexed version. */

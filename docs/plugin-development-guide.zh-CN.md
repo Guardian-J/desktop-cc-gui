@@ -146,7 +146,8 @@ ccgui-plugin-hello/
       //                                                              ^ secret 字段仅写入不回显
     }
   },
-  "screenshots": ["docs/screenshot-1.png"],   // ≤ 5 张，市场详情页展示
+  "icon": "docs/icon.png",                  // 可选：市场方形图标，见 §5.1
+  "screenshots": ["docs/screenshot-1.png"], // 可选：≤ 5 张，市场详情页展示，见 §5.1；数组顺序 = 展示顺序
   "keywords": ["usage", "token"]               // ≤ 8 个，市场搜索
 }
 ```
@@ -160,6 +161,36 @@ ccgui-plugin-hello/
 | `minAppVersion` 真实 | CI 会检查插件用到的 SDK API 在该宿主版本是否已存在 |
 | `permissions` 最小化 | CI 对比代码实际行为与声明，多余声明会在 PR 中评论要求删减 |
 | `description` 诚实 | 功能描述与实际行为不符 = 拒审 |
+
+### 5.1 市场展示素材（icon / screenshots，均可选）
+
+两个字段只影响插件市场的展示，宿主安装/运行都不读；**不填也能上架**：
+
+- 缺 `icon`：市场列表/详情页用插件名首字母的确定性渐变瓷砖（同一 id 每台机器配色一致）。
+- 缺 `screenshots`：详情页不渲染图集，README 直接顶到标题下方。
+
+**图片放哪里**：放在插件仓库里，用相对路径引用；推荐统一放 `docs/`，README 也能直接贴同一张图。也接受绝对 `https://` URL，但仓库内相对路径更稳（不依赖第三方图床）。
+
+```jsonc
+// manifest.json
+"icon": "docs/icon.png",
+"screenshots": [
+  "docs/screenshot-1.png",   // 第一张是详情页首屏（hero），放最能说明功能的一张
+  "docs/screenshot-2.png"
+]
+```
+
+**素材要求**：
+
+| 项 | 规则 |
+|---|---|
+| `icon` | 正方形；PNG / SVG / WebP / JPG；建议 ≥ 128×128（256 更稳）；不要带白边/透明大边距 |
+| `screenshots` | ≤ 5 张，数组顺序即展示顺序；PNG / JPG / WebP / GIF / SVG；建议宽度 ≥ 1200，界面截图用 16:9～16:10 |
+| 路径 | 相对仓库根、不逃逸（`..`/绝对路径/反斜杠被拒绝）；单条 ≤ 1024 字符 |
+
+**图片在默认分支（HEAD）上按路径读取，不锁 Release tag**：改进或替换同名文件后，用户刷新市场/详情页即可看到新图，无需发版。因此路径要稳定，不要用带哈希的构建产物名。
+
+**如何进入市场**：manifest 是唯一事实源，索引仓机器人登记新版本时会把 `icon` / `screenshots` 镜像进 `plugins/<id>.json`（App 实际读的是索引）。只改进素材、不改版本的场景可以直接向索引仓提一个只改这两个字段的 PR。
 
 ## 6. 插件 SDK API 参考
 
@@ -328,19 +359,27 @@ minisign -Sm dist/main.js -p your-plugin.pub   # main.js.minisig 一并传到 Re
 2. 在 `community-plugins.json` 追加一条（保持按 id 字典序）：
 
 ```json
-{ "id": "usage-stats", "repo": "zhangsan/ccgui-plugin-usage-stats" }
+{ "id": "usage-stats", "repo": "zhangsan/ccgui-plugin-usage-stats", "name": "用量统计", "description": "统计各引擎 token 用量与花费", "author": "zhangsan" }
 ```
 
-3. 新增 `plugins/usage-stats.json`：
+3. 新增 `plugins/usage-stats.json`（`icon` / `screenshots` 由 manifest 镜像而来，机器人登记新版本时自动写入；首次上架照抄 manifest 的值即可，都不填就省略）：
 
 ```json
 {
   "id": "usage-stats",
-  "name": "用量统计",
-  "author": "zhangsan",
-  "description": "统计各引擎 token 用量与花费",
-  "keywords": ["usage", "token"],
-  "signingPubkey": null
+  "repo": "zhangsan/ccgui-plugin-usage-stats",
+  "tier": "js",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.2",
+  "sdkVersion": "^0.3",
+  "permissions": ["storage", "ui:settings-section"],
+  "sha256": {
+    "main.js": "<64 位小写 hex>",
+    "manifest.json": "<64 位小写 hex>",
+    "styles.css": "<64 位小写 hex>"
+  },
+  "icon": "docs/icon.png",
+  "screenshots": ["docs/screenshot-1.png"]
 }
 ```
 
@@ -363,6 +402,8 @@ App 市场页 → Rust 拉索引 → 用户点安装 → 从 Release 下载三�
 4. App 端每 24h 比对索引版本，向用户提示可更新。
 
 > 「版本登记 PR」里的 `updatedAt` 取该 Release 的发布时间（RFC 3339 UTC，如 `2026-09-20T08:30:00Z`）；机器人开 PR 时自动写入，CI 只校验格式。App 详情页用它显示「最近更新时间」，值缺失只是不显示这一行。
+>
+> 同一 PR 还会带上 manifest 里的 `icon` / `screenshots`（见 §5.1）：改了素材路径就随下一次发版自动进索引；只换图内容（路径不变）则连发版都不需要。
 
 ### 10.4 下架
 

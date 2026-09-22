@@ -92,6 +92,7 @@ const MARKET_ENTRY: MarketPlugin = {
     "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/shot-1.png",
     "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/shot-2.png",
   ],
+  icon: "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/icon.png",
 };
 
 function installedPlugin(overrides: Partial<PluginInfo> & { id: string }): PluginInfo {
@@ -209,6 +210,23 @@ describe("PluginHub", () => {
     expect(avatar).not.toBeNull();
   });
 
+  it("shows the indexed plugin icon and keeps the letter tile without one", async () => {
+    pluginFetchIndex.mockImplementation(async () => [
+      MARKET_ENTRY,
+      { ...MARKET_ENTRY, id: "plain-plugin", name: "Plain Plugin", icon: null },
+    ]);
+    await render();
+
+    const rows = () => [...document.body.querySelectorAll<HTMLTableRowElement>("tbody tr")];
+    const iconRow = rows().find((row) => row.textContent?.includes("React Doctor"))!;
+    expect(iconRow.querySelector(`img[src="${MARKET_ENTRY.icon}"]`)).not.toBeNull();
+
+    // No icon in the index = the deterministic initial tile, never a broken img.
+    const plainRow = rows().find((row) => row.textContent?.includes("Plain Plugin"))!;
+    expect(plainRow.querySelector(`img[src="${MARKET_ENTRY.icon}"]`)).toBeNull();
+    expect(plainRow.querySelector<HTMLElement>("div[aria-hidden]")?.textContent).toBe("P");
+  });
+
   it("filters by category, by query, and clears an empty result", async () => {
     pluginFetchIndex.mockImplementation(async () => [
       MARKET_ENTRY,
@@ -312,6 +330,9 @@ describe("PluginHub", () => {
     ).toBeNull();
     // README markdown rendered below the gallery.
     expect(document.body.textContent).toContain("一键运行代码体检。");
+    // The detail header keeps the indexed icon, not just the letter tile.
+    expect(document.body.querySelector(`img[src="${MARKET_ENTRY.icon}"]`)).not.toBeNull();
+
     // Carousel: two screenshots, counter + navigation affordances.
     expect(
       document.body.textContent,

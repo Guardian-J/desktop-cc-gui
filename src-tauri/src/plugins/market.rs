@@ -89,6 +89,10 @@ struct IndexDetail {
     /// that fail `resolve_asset_url` are dropped instead of rendered.
     #[serde(default)]
     screenshots: Vec<String>,
+    /// Square plugin icon: an absolute https URL or a repo-relative path.
+    /// Optional — a row without one keeps its deterministic letter tile.
+    #[serde(default)]
+    icon: Option<String>,
 }
 
 /// Marketplace listing as the frontend sees it (index entry + detail merge).
@@ -114,6 +118,10 @@ pub struct MarketPlugin {
     /// Detail-page carousel: absolute https URLs, repo-relative paths
     /// resolved against the plugin's default branch. Empty = no gallery.
     pub screenshots: Vec<String>,
+    /// Market identity tile: absolute https URL or repo-relative path,
+    /// resolved like the screenshots. None = the caller renders the
+    /// deterministic letter tile.
+    pub icon: Option<String>,
 }
 
 /// Cache row: the public listing plus the install-only fields (hashes).
@@ -309,6 +317,10 @@ async fn fetch_index_entries() -> Result<Vec<CachedEntry>, String> {
                     .iter()
                     .filter_map(|raw| resolve_asset_url(&entry.repo, raw))
                     .collect(),
+                icon: detail
+                    .icon
+                    .as_deref()
+                    .and_then(|raw| resolve_asset_url(&entry.repo, raw)),
             },
             sha256: detail.sha256,
         });
@@ -651,6 +663,32 @@ mod tests {
         assert_eq!(resolve_asset_url(repo, "docs\\shot.png"), None);
         assert_eq!(resolve_asset_url(repo, ""), None);
         assert_eq!(resolve_asset_url("not-a-slug", "docs/shot.png"), None);
+    }
+
+    #[test]
+    fn index_detail_icon_is_optional_and_resolves_like_a_screenshot() {
+        let detail: IndexDetail = serde_json::from_str(
+            r#"{ "id": "demo", "version": "1.0.0", "icon": "docs/icon.png" }"#,
+        )
+        .expect("index detail with an icon parses");
+        assert_eq!(
+            detail
+                .icon
+                .as_deref()
+                .and_then(|raw| resolve_asset_url("owner/demo", raw))
+                .as_deref(),
+            Some("https://raw.githubusercontent.com/owner/demo/HEAD/docs/icon.png")
+        );
+
+        // Entries registered before the field existed must keep parsing — a
+        // missing icon just means the row falls back to the letter tile.
+        let detail: IndexDetail =
+            serde_json::from_str(r#"{ "id": "demo", "version": "1.0.0" }"#)
+                .expect("index detail without an icon parses");
+        assert_eq!(detail.icon, None);
+
+        // Malformed paths are refused, not rendered.
+        assert_eq!(resolve_asset_url("owner/demo", "../icon.png"), None);
     }
 
     #[test]

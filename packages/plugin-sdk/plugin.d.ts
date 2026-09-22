@@ -71,6 +71,11 @@ export interface PluginManifest {
     commands?: { key: string; title: string; emits?: string }[];
   };
   configSchema?: JsonSchemaObject;
+  /** 市场方形图标：仓库内相对路径（推荐 `docs/icon.png`）或 https URL；
+   *  缺省 = 市场用首字母瓷砖。仅索引消费，宿主安装不读。 */
+  icon?: string;
+  /** 市场详情页效果图：仓库内相对路径或 https URL，≤ 5 张；缺省 = 不渲染图集。 */
+  screenshots?: string[];
 }
 
 export type ComposerSlotId = "addMenu" | "cliMenu" | "permissionMenu";

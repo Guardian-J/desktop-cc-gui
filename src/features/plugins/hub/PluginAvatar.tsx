@@ -3,12 +3,12 @@ import { cx } from "@/utils/cx";
 import { pluginAvatarGradient, pluginInitial } from "./catalog";
 
 /**
- * Market/index entries carry no artwork, so every plugin row gets the same
- * deterministic gradient tile with its initial (see catalog.ts). A developer
- * chip passes the GitHub account's real avatar as `src`: it fills the tile,
- * and the gradient initial shows while it loads or when it fails (offline,
- * renamed account). Purely decorative: `aria-hidden`, the row text carries
- * the identity.
+ * Market identity tile. The artwork is optional — an index entry without an
+ * `icon` gets the same deterministic gradient tile with its initial (see
+ * catalog.ts) on every machine. `src` also carries the developer's GitHub
+ * avatar for the small author chip: it fills the tile, and the gradient
+ * initial shows while it loads or when it fails (offline, renamed account).
+ * Purely decorative: `aria-hidden`, the row text carries the identity.
  */
 export function PluginAvatar({
   id,

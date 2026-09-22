@@ -27,6 +27,7 @@ const entry = (id: string, overrides: Partial<MarketPlugin> = {}): MarketPlugin 
   permissions: [],
   downloads: null,
   screenshots: [],
+  icon: null,
   updatedAt: null,
   ...overrides,
 });

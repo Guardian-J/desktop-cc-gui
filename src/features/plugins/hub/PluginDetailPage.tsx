@@ -223,7 +223,7 @@ export function PluginDetailPage({
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-6 px-6 py-6">
           <header className="flex flex-wrap items-start gap-4">
-            <PluginAvatar id={id} name={name} size={56} />
+            <PluginAvatar id={id} name={name} src={entry?.icon ?? null} size={56} />
             <div className="flex min-w-0 flex-1 flex-col gap-2">
               <h2 className="text-title-3-medium text-text-primary">{name}</h2>
               {description && (

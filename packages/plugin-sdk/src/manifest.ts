@@ -46,6 +46,14 @@ export interface PluginManifest {
   };
   /** JSON Schema object; the settings UI auto-renders a config form. */
   configSchema?: JsonSchemaObject;
+  /** 市场展示用的方形图标：仓库内相对路径（推荐放 `docs/`，如
+   *  `docs/icon.png`）或绝对 https URL。缺省 = 市场用插件名首字母瓷砖。
+   *  仅市场索引消费，宿主安装/运行不读它。 */
+  icon?: string;
+  /** 市场详情页的效果图：仓库内相对路径或绝对 https URL，≤ 5 张，按数组
+   *  顺序展示。缺省 = 详情页不渲染图集。图片在插件仓库默认分支上按路径读取，
+   *  换图无需发版。 */
+  screenshots?: string[];
 }
 
 /** Subset of JSON Schema the declarative config form renders. */

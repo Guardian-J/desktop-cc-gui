@@ -48,6 +48,13 @@ export function PluginInstalledRow({
   const update = useMarketplaceStore((s) => s.updates.find((u) => u.id === plugin.id));
   const installing = useMarketplaceStore((s) => s.installing);
   const install = useMarketplaceStore((s) => s.install);
+  // Artwork lives in the index, not in the installed record: an installed row
+  // shows the icon only while the market listing is loaded, and falls back to
+  // the deterministic tile offline. A primitive selector keeps re-renders
+  // tied to the icon itself, not to every index refresh.
+  const icon = useMarketplaceStore(
+    (s) => s.entries.find((entry) => entry.id === plugin.id)?.icon ?? null,
+  );
   const [confirming, setConfirming] = useState(false);
   // Same spin → check feedback as every other refresh action. On success the
   // row turns healthy and this button unmounts, so the flash is just the
@@ -65,7 +72,7 @@ export function PluginInstalledRow({
   // disable it so a half-cleared quarantine can't be toggled.
   return (
     <div className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-background-primary-hover">
-      <PluginAvatar id={plugin.id} name={plugin.name} />
+      <PluginAvatar id={plugin.id} name={plugin.name} src={icon} />
       <button
         type="button"
         onClick={() => onOpenDetail(plugin.id)}
