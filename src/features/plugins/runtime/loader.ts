@@ -7,7 +7,7 @@ import {
   type PluginContextBackend,
   type PluginHandle,
 } from "./context";
-import { bridgeUsageEvents } from "./events";
+import { bridgePluginAgentEvents, bridgeUsageEvents } from "./events";
 import { installHardening, runAsPlugin } from "./hardening";
 import { validateManifest } from "./permissions";
 import { applyDeclarativePlugin } from "../declarative/interpreter";
@@ -351,6 +351,7 @@ async function doBootstrap(
 ): Promise<PluginInfo[]> {
   installHardening();
   bridgeUsageEvents();
+  bridgePluginAgentEvents();
   // Backend listing is best-effort for builtins: a corrupt plugins.json must
   // not take builtin plugins down with it. But a failed list is a transient
   // startup condition, not a terminal one — load builtins, then rethrow so
