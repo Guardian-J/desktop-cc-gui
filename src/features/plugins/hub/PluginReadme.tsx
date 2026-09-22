@@ -49,9 +49,10 @@ const REHYPE_PLUGINS: Pluggable[] = [
  * Long-form plugin intro: the repository README rendered as a document.
  * Relative URLs are resolved against the plugin repo (`image` → raw file,
  * `link` → GitHub blob page), and only http(s) links leave the app. Reuses
- * the chat markdown typography scope (`.prose-chat`), which already owns
- * headings, tables, code blocks and hljs tokens; the first h1 is hidden
- * because the detail hero already shows the plugin name.
+ * the chat markdown typography scope (`.prose-chat`, which owns headings,
+ * tables, code blocks and hljs tokens; `prose-plugin-readme` then owns the
+ * README-only bits, e.g. the horizontal scroll on a bare <pre>). The first h1
+ * is hidden because the detail hero already shows the plugin name.
  */
 export const PluginReadme = memo(function PluginReadme({
   markdown,
@@ -90,7 +91,7 @@ export const PluginReadme = memo(function PluginReadme({
   );
 
   return (
-    <div className="prose-chat text-body-regular text-text-primary [&>h1:first-child]:hidden">
+    <div className="prose-chat prose-plugin-readme text-body-regular text-text-primary [&>h1:first-child]:hidden">
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}

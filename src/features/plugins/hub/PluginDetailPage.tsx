@@ -32,6 +32,18 @@ const LINK_BUTTON =
 const INSTALLING_BUTTON =
   "flex h-9 items-center gap-1.5 rounded-2lg border border-border-button-default bg-background-primary-default px-2.5 text-body-medium whitespace-nowrap text-text-tertiary";
 
+/**
+ * Right-hand rail. It sticks under the detail header and, because its rows can
+ * be taller than the window (a 22-permission plugin after 展开全部), it scrolls
+ * inside that box: a pinned rail without a height bound pushed its 链接 rows
+ * below the viewport, where only scrolling the README to its end revealed them.
+ * 10.5rem: session tab strip 2.5 + hub header 3 + status bar 1.75 + sticky
+ * top 1.5 + bottom gap 1.75. The rail scrolls from there, so taller window
+ * chrome costs a few pixels of that gap instead of hiding rows.
+ */
+const RAIL =
+  "flex flex-col gap-5 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100dvh-10.5rem)] lg:overflow-y-auto lg:overscroll-contain lg:border-l lg:border-separator-border lg:pl-6";
+
 /** One label + value block in the right-hand rail. */
 function RailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -305,7 +317,7 @@ export function PluginDetailPage({
               )}
             </div>
 
-            <aside className="flex flex-col gap-5 lg:sticky lg:top-6 lg:self-start lg:border-l lg:border-separator-border lg:pl-6">
+            <aside className={RAIL}>
               <RailRow label={t("plugins.hub.author")}>
                 <span className="flex min-w-0 items-center gap-2">
                   {author && (

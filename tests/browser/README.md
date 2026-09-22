@@ -161,3 +161,15 @@ or staging it updates `lastAction` without touching a repository. Write a
 commit draft, switch to Files or collapse the sidebar, then return: the draft
 must survive, hidden rows must be removed, and the list must still scroll to
 the final file. The metrics output reports requests, mounted rows and actions.
+
+Open `/tests/browser/plugin-detail-rail.html` to check the plugin detail page
+at a desktop width (1145x731 in the verification run, with the app's 40px tab
+strip and 28px status bar around the real `PluginDetailPage`): a README fence
+whose single PowerShell line is 922px wide inside a 728px column must scroll
+horizontally inside that column, and the expanded 22-permission rail must end
+inside the viewport with its own scrollbar, so `aside.scrollTop` reaches the
+链接 rows while the page stays put. Both were reported broken: the code line
+painted ~190px across the rail, and the pinned 1042px rail could only be read
+by scrolling the README to its end. The readout reports PASS plus the measured
+boxes, `clientHeight`/`scrollHeight` and the page's scrollTop. No app shell,
+no backend, no saved state.
