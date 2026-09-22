@@ -1,13 +1,10 @@
 import { useTranslation } from "react-i18next";
 import PanelRightClose from "lucide-react/dist/esm/icons/panel-right-close";
 import PanelRightOpen from "lucide-react/dist/esm/icons/panel-right-open";
-import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
-import { ActionFeedbackIcon, useRunningFeedback } from "@/components/base/action-feedback";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
 import { HeaderOpenActions } from "@/features/open-app/HeaderOpenActions";
 import { LaunchScriptActions } from "@/features/launch-script/LaunchScriptActions";
 import { pluginPanelTabIcon } from "@/features/plugins/hub/PluginPanelTabIcon";
-import { useFilesStore } from "@/features/files/store";
 import { cx } from "@/utils/cx";
 import { PANEL_TOGGLE_CLASSES } from "./panel-toggle-classes";
 import { resolveActivePanelTab, useSortedPanelTabs } from "./panel-tabs";
@@ -34,16 +31,12 @@ export function ChatPanelHeader({
   dragging: "sidebar" | "panel" | null;
 }) {
   const { t } = useTranslation();
-  const treeRefreshing = useFilesStore((s) => s.refreshing);
   // Builtin tabs (files/changes) register at module scope in ./panel-tabs;
   // plugin tabs arrive via ctx.ui.registerPanelTab (plan §4.2 #4).
   const panelTabs = useSortedPanelTabs();
   // Persisted tab may point at an unloaded plugin tab; fall back to the
   // first tab (read-side only, see resolveActivePanelTab).
   const activeTab = resolveActivePanelTab(panelTabs, panelTab);
-  // Same spin → check → idle feedback as the git panel's refresh: the store
-  // flag covers refreshes started anywhere, not just this click.
-  const refreshFeedback = useRunningFeedback(treeRefreshing);
   // One toggle for both directions; labels/icons follow the collapsed state.
   const toggleLabel = t(
     panelCollapsed ? "openApp.expandPanel" : "openApp.collapsePanel",
@@ -73,10 +66,10 @@ export function ChatPanelHeader({
         )}
       </button>
       {
-        // Panel chrome (tab pills + refresh) lives in the titlebar: same
-        // width as the panel below, border-l continuing the panel's left
-        // edge. Always mounted so width animates in sync with the panel;
-        // stays put in changes mode so its pills remain reachable.
+        // Panel chrome (tab pills) lives in the titlebar: same width as the
+        // panel below, border-l continuing the panel's left edge. Always
+        // mounted so width animates in sync with the panel; stays put in
+        // changes mode so its pills remain reachable.
       }
       <div className="hidden h-full items-center xl:flex">
         <div
@@ -113,22 +106,6 @@ export function ChatPanelHeader({
                 );
               })}
             </PillTabList>
-            {activeTab === "files" && (
-              <button
-                type="button"
-                title={t("common.refresh")}
-                aria-label={t("common.refresh")}
-                disabled={treeRefreshing}
-                onClick={() => void useFilesStore.getState().refreshTree()}
-                className={cx(PANEL_TOGGLE_CLASSES, "disabled:opacity-50")}
-              >
-                <ActionFeedbackIcon
-                  icon={RefreshCw}
-                  feedback={refreshFeedback}
-                  spin
-                />
-              </button>
-            )}
           </div>
         </div>
       </div>
