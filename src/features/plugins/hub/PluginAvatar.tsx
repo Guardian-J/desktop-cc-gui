@@ -10,11 +10,14 @@ export function PluginAvatar({
   id,
   name,
   size = 40,
+  shape = "tile",
   className,
 }: {
   id: string;
   name: string;
   size?: number;
+  /** `circle` is the small author chip in market rows; entries use the tile. */
+  shape?: "tile" | "circle";
   className?: string;
 }) {
   const { from, to } = pluginAvatarGradient(id);
@@ -22,7 +25,8 @@ export function PluginAvatar({
     <div
       aria-hidden
       className={cx(
-        "flex shrink-0 select-none items-center justify-center rounded-xl font-medium text-white shadow-xs",
+        "flex shrink-0 select-none items-center justify-center font-medium text-white shadow-xs",
+        shape === "circle" ? "rounded-full" : "rounded-xl",
         className,
       )}
       style={{

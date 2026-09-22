@@ -110,7 +110,10 @@ export function PluginHub() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[860px] flex-col gap-2 px-6 py-6">
+        {/* 1080px: the market table needs the width its columns promise (the
+            已安装 rows live with the same chrome so switching tabs doesn't
+            shift the frame). */}
+        <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-2 px-6 py-6">
           {view === "market" ? (
             <PluginMarketView onOpenDetail={setDetailId} />
           ) : (

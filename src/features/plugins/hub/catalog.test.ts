@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { MarketPlugin } from "@/lib/ipc";
 import {
   categorizePlugin,
-  groupByCategory,
+  categoryCounts,
   pluginAvatarGradient,
   pluginInitial,
   pluginMatchesQuery,
   resolveReadmeUrl,
-  selectFeatured,
   sortByDownloads,
+  sortPlugins,
 } from "./catalog";
 
 const entry = (id: string, overrides: Partial<MarketPlugin> = {}): MarketPlugin => ({
@@ -97,34 +97,41 @@ describe("sortByDownloads", () => {
   });
 });
 
-describe("selectFeatured", () => {
-  it("returns [] when the index carries no stats (an arbitrary set is not 精选)", () => {
-    expect(selectFeatured([entry("a"), entry("b")])).toEqual([]);
+describe("sortPlugins", () => {
+  const input = [
+    entry("b", { downloads: 1, name: "Bravo" }),
+    entry("a", { downloads: 9, name: "Alpha" }),
+    entry("c", { downloads: null, name: "Charlie" }),
+  ];
+
+  it("defaults to the downloads-ranked order and leaves the input alone", () => {
+    expect(sortPlugins(input, "smart").map((item) => item.id)).toEqual(["a", "b", "c"]);
+    expect(input.map((item) => item.id)).toEqual(["b", "a", "c"]);
   });
 
-  it("takes the most-downloaded entries up to the limit", () => {
-    const featured = selectFeatured(
-      [
-        entry("a", { downloads: 1 }),
-        entry("b", { downloads: 30 }),
-        entry("c", { downloads: 10 }),
-        entry("d", { downloads: 20 }),
-      ],
-      2,
-    );
-    expect(featured.map((item) => item.id)).toEqual(["b", "d"]);
+  it("sorts by name regardless of downloads", () => {
+    expect(sortPlugins(input, "name").map((item) => item.id)).toEqual(["a", "b", "c"]);
   });
 });
 
-describe("groupByCategory", () => {
-  it("renders categories in fixed order and drops empty ones", () => {
-    const groups = groupByCategory([
-      entry("rainbow", { name: "彩虹", description: "彩虹主题" }),
-      entry("doctor", { name: "Doctor", description: "代码体检" }),
-      entry("misc", { name: "Misc", description: "nothing" }),
+describe("categoryCounts", () => {
+  it("counts each category in fixed order and drops the empty ones", () => {
+    expect(
+      categoryCounts([
+        entry("rainbow", { name: "彩虹", description: "彩虹主题" }),
+        entry("doctor", { name: "Doctor", description: "代码体检" }),
+        entry("doctor-2", { name: "Doctor two", description: "代码健检" }),
+        entry("misc", { name: "Misc", description: "nothing" }),
+      ]),
+    ).toEqual([
+      { category: "dev", count: 2 },
+      { category: "appearance", count: 1 },
+      { category: "other", count: 1 },
     ]);
-    expect(groups.map((group) => group.category)).toEqual(["dev", "appearance", "other"]);
-    expect(groups[0].entries.map((item) => item.id)).toEqual(["doctor"]);
+  });
+
+  it("returns nothing for an empty index", () => {
+    expect(categoryCounts([])).toEqual([]);
   });
 });
 

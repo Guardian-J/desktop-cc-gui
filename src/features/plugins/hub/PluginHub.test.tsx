@@ -1,10 +1,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MarketPlugin, PluginInfo } from "@/lib/ipc";
+import type { MarketPlugin, PluginInfo, PluginUpdate } from "@/lib/ipc";
 
 const pluginFetchIndex = vi.fn(async (_force?: boolean): Promise<MarketPlugin[]> => []);
-const pluginCheckUpdates = vi.fn(async () => []);
+const pluginCheckUpdates = vi.fn(async (): Promise<PluginUpdate[]> => []);
 const pluginFetchMarketReadme = vi.fn(
   async (_id: string): Promise<string> => "# React Doctor\n\n一键运行代码体检。",
 );
@@ -169,39 +169,120 @@ describe("PluginHub", () => {
     });
   }
 
-  it("browses the market with featured/category sections and installs from +", async () => {
+  it("browses the market table: column headers, counted chips, install from the row", async () => {
     await render();
 
+    for (const key of [
+      "tableName",
+      "tableDeveloper",
+      "tableDownloads",
+      "tableVersion",
+      "tableActions",
+    ]) {
+      expect(document.body.textContent).toContain(i18n.t(`plugins.hub.${key}`));
+    }
     expect(document.body.textContent).toContain("React Doctor");
-    expect(document.body.textContent).toContain(i18n.t("plugins.hub.sectionFeatured"));
-    expect(document.body.textContent).toContain(i18n.t("plugins.hub.categories.dev"));
+
+    // 分类 chips carry the count, so the filter row describes the index.
+    const chip = [...document.body.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].find(
+      (candidate) => candidate.textContent?.includes(i18n.t("plugins.hub.categories.dev")),
+    );
+    expect(chip?.textContent).toContain("1");
 
     await act(async () => {
-      buttonByLabel(i18n.t("plugins.hub.install")).dispatchEvent(
+      buttonByText(i18n.t("plugins.hub.install")).dispatchEvent(
         new MouseEvent("click", { bubbles: true }),
       );
     });
     expect(pluginInstallFromMarketplace).toHaveBeenCalledWith("react-doctor");
   });
 
-  it("marks installed market entries with a check instead of the install button", async () => {
+  it("filters by category, by query, and clears an empty result", async () => {
+    pluginFetchIndex.mockImplementation(async () => [
+      MARKET_ENTRY,
+      {
+        ...MARKET_ENTRY,
+        id: "composer-rainbow-border",
+        name: "彩虹跑马灯边界线",
+        description: "为聊天输入框添加彩虹跑马灯",
+        author: "libo-zhou",
+        downloads: 5,
+      },
+    ]);
+    await render();
+
+    const chipFor = (label: string) =>
+      [...document.body.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].find(
+        (candidate) => candidate.textContent?.includes(label),
+      );
+    const rows = () => document.body.querySelectorAll("tbody tr").length;
+
+    expect(rows()).toBe(2);
+    await act(async () => {
+      chipFor(i18n.t("plugins.hub.categories.dev"))!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(rows()).toBe(1);
+    expect(document.body.textContent).not.toContain("彩虹跑马灯边界线");
+
+    // React's value tracker needs the native setter before a synthetic change.
+    const search = document.body.querySelector<HTMLInputElement>(
+      `input[placeholder="${i18n.t("plugins.hub.searchPlaceholder")}"]`,
+    )!;
+    expect(search).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        search,
+        "not-a-plugin",
+      );
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.noMatch"));
+
+    await act(async () => {
+      buttonByText(i18n.t("plugins.hub.clearFilters")).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(rows()).toBe(2);
+  });
+
+  it("marks installed market entries with the installed action instead of install", async () => {
     pluginList.mockImplementation(async () => [installedPlugin({ id: "react-doctor" })]);
     await render();
     await act(async () => {
       // The market view refreshes the installed list on mount.
     });
 
-    expect(document.body.querySelector('button[aria-label="安装"]')).toBeNull();
-    expect(document.body.querySelector('[aria-label="已安装"]')).not.toBeNull();
+    expect(() => buttonByText(i18n.t("plugins.hub.install"))).toThrow();
+    expect(buttonByText(i18n.t("plugins.hub.installed"))).toBeDefined();
   });
 
-  it("hides the download badge when the index has no stats", async () => {
+  it("turns the installed action into an update when the index is newer", async () => {
+    pluginFetchIndex.mockImplementation(async () => [{ ...MARKET_ENTRY, version: "0.3.0" }]);
+    pluginCheckUpdates.mockImplementation(async () => [
+      { id: "react-doctor", currentVersion: "0.2.0", latestVersion: "0.3.0" },
+    ]);
+    pluginList.mockImplementation(async () => [
+      installedPlugin({ id: "react-doctor", version: "0.2.0" }),
+    ]);
+    await render();
+    await act(async () => {});
+
+    expect(buttonByText(i18n.t("plugins.hub.updateTo", { version: "0.3.0" }))).toBeDefined();
+    expect(() => buttonByText(i18n.t("plugins.hub.install"))).toThrow();
+  });
+
+  it("drops the installs column when the index has no stats", async () => {
     pluginFetchIndex.mockImplementation(async () => [{ ...MARKET_ENTRY, downloads: null }]);
     await render();
+
+    expect(document.body.textContent).not.toContain(i18n.t("plugins.hub.tableDownloads"));
     expect(document.body.textContent).not.toContain(DOWNLOADS.toLocaleString());
   });
 
-  it("opens the full-page detail: carousel, README, permissions and repo link", async () => {
+  it("opens the full-page detail: carousel, README, rail and repo link", async () => {
     await render();
     await act(async () => {
       buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -217,7 +298,7 @@ describe("PluginHub", () => {
         `button[aria-label="${i18n.t("plugins.hub.refresh")}"]`,
       ),
     ).toBeNull();
-    // README markdown rendered below the hero.
+    // README markdown rendered below the gallery.
     expect(document.body.textContent).toContain("一键运行代码体检。");
     // Carousel: two screenshots, counter + navigation affordances.
     expect(
@@ -225,6 +306,12 @@ describe("PluginHub", () => {
     ).toContain(i18n.t("plugins.hub.screenshotCounter", { current: 1, total: 2 }));
     expect(buttonByLabel(i18n.t("plugins.hub.screenshotNext"))).toBeDefined();
 
+    // The rail carries author / compatibility / permissions / links.
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.author"));
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.compatibility"));
+    expect(document.body.textContent).toContain(
+      i18n.t("plugins.hub.minAppShort", { version: MARKET_ENTRY.minAppVersion! }),
+    );
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.permissionsTitle"));
     // Grant-shaped permissions read as sentences, not raw ids.
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.permissions.storage"));
@@ -241,11 +328,11 @@ describe("PluginHub", () => {
 
     // Back returns to the browse surface.
     await act(async () => {
-      buttonByLabel(i18n.t("plugins.hub.backToList")).dispatchEvent(
+      buttonByText(i18n.t("plugins.hub.backToList")).dispatchEvent(
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    expect(document.body.textContent).toContain(i18n.t("plugins.hub.sectionFeatured"));
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.tableName"));
   });
 
   it("manages installed plugins: uninstall confirmation and quarantine retry", async () => {

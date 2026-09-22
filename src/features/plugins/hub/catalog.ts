@@ -95,28 +95,33 @@ export function sortByDownloads(entries: MarketPlugin[]): MarketPlugin[] {
   });
 }
 
-/** 精选 = most-downloaded entries. Empty when the index has no stats at all
- *  (rendering an arbitrary "featured" set would be a lie). */
-export function selectFeatured(entries: MarketPlugin[], limit = 4): MarketPlugin[] {
-  if (!entries.some((entry) => entry.downloads != null)) return [];
-  return sortByDownloads(entries).slice(0, limit);
+/** Sort orders offered by the market table toolbar. `smart` is the default:
+ *  downloads first (uncounted entries keep the index order at the tail), name
+ *  as the tiebreak — see `sortByDownloads`. */
+export type PluginSort = "smart" | "name";
+
+/** Rows in table order. Sorting copies; callers keep their filtered array. */
+export function sortPlugins(entries: MarketPlugin[], sort: PluginSort): MarketPlugin[] {
+  if (sort === "name") return [...entries].sort((a, b) => a.name.localeCompare(b.name));
+  return sortByDownloads(entries);
 }
 
-/** Category sections for the entries that are not featured, in fixed
- *  category order, downloads-first inside each group. */
-export function groupByCategory(
+/**
+ * Counts for the category chips: the filter row shows the shape of the index
+ * before anything is clicked. Empty categories are dropped (a chip reading 0
+ * is a dead end), and `other` keeps its fixed position at the end.
+ */
+export function categoryCounts(
   entries: MarketPlugin[],
-): Array<{ category: PluginCategory; entries: MarketPlugin[] }> {
-  const byCategory = new Map<PluginCategory, MarketPlugin[]>();
+): Array<{ category: PluginCategory; count: number }> {
+  const counts = new Map<PluginCategory, number>();
   for (const entry of entries) {
     const category = categorizePlugin(entry);
-    const group = byCategory.get(category) ?? [];
-    group.push(entry);
-    byCategory.set(category, group);
+    counts.set(category, (counts.get(category) ?? 0) + 1);
   }
   return PLUGIN_CATEGORIES.flatMap((category) => {
-    const group = byCategory.get(category);
-    return group?.length ? [{ category, entries: sortByDownloads(group) }] : [];
+    const count = counts.get(category) ?? 0;
+    return count > 0 ? [{ category, count }] : [];
   });
 }
 

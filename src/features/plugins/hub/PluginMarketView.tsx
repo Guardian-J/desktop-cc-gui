@@ -7,43 +7,67 @@ import { Input } from "@/components/base/input/input";
 import { CenteredSpinner } from "@/components/base/empty-state";
 import {
   categorizePlugin,
-  groupByCategory,
-  PLUGIN_CATEGORIES,
+  categoryCounts,
   pluginMatchesQuery,
-  selectFeatured,
+  sortPlugins,
   type PluginCategory,
+  type PluginSort,
 } from "./catalog";
 import { PluginMarketRow } from "./PluginMarketRow";
 import { usePluginsStore } from "../manager/usePlugins";
 import { useMarketplaceStore } from "../marketplace/store";
 
-const SELECT_TRIGGER = "min-w-32";
+const SELECT_TRIGGER = "min-w-36";
+const TH = "px-4 py-2.5 text-left text-caption-1-medium text-text-tertiary";
 
-/** One titled block of market rows. */
-function MarketSection({
-  title,
-  children,
+/**
+ * One category filter chip. Counts come from `categoryCounts` so the row shows
+ * the shape of the index before anything is clicked.
+ */
+function CategoryChip({
+  label,
+  count,
+  selected,
+  onSelect,
 }: {
-  title: string;
-  children: React.ReactNode;
+  label: string;
+  count: number;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   return (
-    <section className="flex w-full flex-col gap-2">
-      <h3 className="px-1 text-body-medium text-text-primary">{title}</h3>
-      <div className="flex flex-col divide-y divide-separator-border rounded-2xl border border-separator-border bg-background-primary-default">
-        {children}
-      </div>
-    </section>
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onSelect}
+      className={
+        selected
+          ? "flex cursor-pointer items-center gap-1.5 rounded-full bg-background-secondary-default px-3 py-1.5 text-body-2-medium text-text-primary"
+          : "flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-body-2-medium text-text-secondary transition-colors hover:bg-background-primary-hover hover:text-text-primary"
+      }
+    >
+      {label}
+      <span className="text-caption-1-regular text-text-tertiary tabular-nums">{count}</span>
+    </button>
   );
 }
 
-/** 市场 tab: hero + search/filter toolbar + 精选 / category sections. */
+/**
+ * 市场 tab: category chips + search/sort toolbar over the market table.
+ *
+ * The table replaced the hero/section storefront (plan A): one row per plugin,
+ * columns that can be compared down the page, and the install/update/installed
+ * state carried by the action button instead of duplicated badges. Everything
+ * the old layout still owns — index refresh, install progress, the web-only
+ * guard — keeps its existing behaviour.
+ */
 export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) {
   const { t } = useTranslation();
   const { entries, loaded, error, fetchIndex, checkUpdates } = useMarketplaceStore();
   const refreshInstalled = usePluginsStore((s) => s.refresh);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"all" | PluginCategory>("all");
+  const [sort, setSort] = useState<PluginSort>("smart");
   const refreshAction = useActionFeedback({ spin: true });
   const refreshing = refreshAction.feedback === "running";
 
@@ -64,66 +88,68 @@ export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) 
     void refreshInstalled();
   }, [fetchIndex, checkUpdates, refreshInstalled]);
 
+  const counts = useMemo(() => categoryCounts(entries), [entries]);
+  // The column only exists when the index actually carries stats (counts are
+  // decorative, never a gate) — an all-dashes column is noise.
+  const showDownloads = useMemo(
+    () => entries.some((entry) => entry.downloads != null),
+    [entries],
+  );
   const filtering = query.trim().length > 0 || category !== "all";
   const filtered = useMemo(
     () =>
-      entries.filter(
-        (entry) =>
-          pluginMatchesQuery(entry, query) &&
-          (category === "all" || categorizePlugin(entry) === category),
+      sortPlugins(
+        entries.filter(
+          (entry) =>
+            pluginMatchesQuery(entry, query) &&
+            (category === "all" || categorizePlugin(entry) === category),
+        ),
+        sort,
       ),
-    [entries, query, category],
-  );
-  // 精选 only in the default unfiltered view — a filtered list is a result
-  // set, not a storefront.
-  const featured = useMemo(() => (filtering ? [] : selectFeatured(filtered)), [filtering, filtered]);
-  const featuredIds = useMemo(() => new Set(featured.map((entry) => entry.id)), [featured]);
-  const groups = useMemo(
-    () => groupByCategory(filtered.filter((entry) => !featuredIds.has(entry.id))),
-    [filtered, featuredIds],
-  );
-  const availableCategories = useMemo(
-    () => PLUGIN_CATEGORIES.filter((item) => entries.some((e) => categorizePlugin(e) === item)),
-    [entries],
+    [entries, query, category, sort],
   );
 
   return (
-    <div className="flex w-full flex-col gap-6">
-      <div className="relative overflow-hidden rounded-2xl border border-separator-border bg-background-secondary-default px-6 py-7">
+    <div className="flex w-full flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div
-          aria-hidden
-          className="pointer-events-none absolute -right-20 -top-28 size-72 rounded-full bg-accent-500/15 blur-3xl"
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute -bottom-32 -left-16 size-64 rounded-full bg-accent-300/20 blur-3xl"
-        />
-        <h2 className="relative text-title-2-medium text-text-primary">
-          {t("plugins.hub.heroTitle")}
-        </h2>
-        <p className="relative mt-1 max-w-xl text-body-regular text-text-secondary">
-          {t("plugins.hub.heroSubtitle")}
-        </p>
-        <div className="relative mt-5 flex flex-wrap items-center gap-2">
+          role="group"
+          aria-label={t("plugins.hub.categoryFilter")}
+          className="flex flex-wrap items-center gap-1"
+        >
+          <CategoryChip
+            label={t("plugins.hub.categoryAll")}
+            count={entries.length}
+            selected={category === "all"}
+            onSelect={() => setCategory("all")}
+          />
+          {counts.map(({ category: id, count }) => (
+            <CategoryChip
+              key={id}
+              label={t(`plugins.hub.categories.${id}`)}
+              count={count}
+              selected={category === id}
+              onSelect={() => setCategory(id)}
+            />
+          ))}
+        </div>
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Select
+            aria-label={t("plugins.hub.sortLabel")}
+            selectedKey={sort}
+            onSelectionChange={(key) => setSort(String(key) as PluginSort)}
+            triggerClassName={SELECT_TRIGGER}
+          >
+            <SelectItem id="smart">{t("plugins.hub.sortSmart")}</SelectItem>
+            <SelectItem id="name">{t("plugins.hub.sortName")}</SelectItem>
+          </Select>
           <Input
             value={query}
             onChange={setQuery}
             placeholder={t("plugins.hub.searchPlaceholder")}
-            className="w-72 max-w-full"
+            className="w-64 max-w-full"
           />
-          <Select
-            aria-label={t("plugins.hub.categoryAll")}
-            selectedKey={category}
-            onSelectionChange={(key) => setCategory(String(key) as "all" | PluginCategory)}
-            triggerClassName={SELECT_TRIGGER}
-          >
-            <SelectItem id="all">{t("plugins.hub.categoryAll")}</SelectItem>
-            {availableCategories.map((item) => (
-              <SelectItem key={item} id={item}>
-                {t(`plugins.hub.categories.${item}`)}
-              </SelectItem>
-            ))}
-          </Select>
           <button
             type="button"
             aria-label={t("plugins.hub.refresh")}
@@ -132,11 +158,7 @@ export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) 
             onClick={handleRefresh}
             className="cursor-pointer rounded-lg p-2 text-foreground-icon-secondary transition-colors hover:bg-background-primary-hover hover:text-foreground-icon-primary disabled:cursor-default disabled:opacity-60"
           >
-            <ActionFeedbackIcon
-              icon={RefreshCw}
-              feedback={refreshAction.feedback}
-              spin
-            />
+            <ActionFeedbackIcon icon={RefreshCw} feedback={refreshAction.feedback} spin />
           </button>
         </div>
       </div>
@@ -159,30 +181,63 @@ export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) 
       {!loaded ? (
         <CenteredSpinner className="py-16" />
       ) : filtered.length === 0 ? (
-        <p className="px-1 py-10 text-center text-body-regular text-text-tertiary">
-          {entries.length === 0 ? t("plugins.hub.empty") : t("plugins.hub.noMatch")}
-        </p>
+        <div className="flex flex-col items-center gap-3 px-4 py-14">
+          <p className="text-body-regular text-text-tertiary">
+            {entries.length === 0 ? t("plugins.hub.empty") : t("plugins.hub.noMatch")}
+          </p>
+          {filtering && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setCategory("all");
+              }}
+              className="cursor-pointer rounded-lg bg-background-secondary-default px-3 py-1.5 text-body-2-medium text-text-primary transition-colors hover:bg-background-secondary-hover"
+            >
+              {t("plugins.hub.clearFilters")}
+            </button>
+          )}
+        </div>
       ) : (
         <>
-          {featured.length > 0 && (
-            <MarketSection title={t("plugins.hub.sectionFeatured")}>
-              {featured.map((entry) => (
-                <PluginMarketRow key={entry.id} entry={entry} onOpenDetail={onOpenDetail} />
-              ))}
-            </MarketSection>
-          )}
-          {groups.map((group) => (
-            <MarketSection
-              key={group.category}
-              title={t(`plugins.hub.categories.${group.category}`)}
-            >
-              {group.entries.map((entry) => (
-                <PluginMarketRow key={entry.id} entry={entry} onOpenDetail={onOpenDetail} />
-              ))}
-            </MarketSection>
-          ))}
+          <div className="overflow-hidden rounded-2xl border border-separator-border bg-background-primary-default">
+            <table className="w-full table-fixed border-collapse">
+              <thead>
+                <tr className="border-b border-separator-border">
+                  <th scope="col" className={TH}>
+                    {t("plugins.hub.tableName")}
+                  </th>
+                  <th scope="col" className={`${TH} w-[180px]`}>
+                    {t("plugins.hub.tableDeveloper")}
+                  </th>
+                  {showDownloads && (
+                    <th scope="col" className={`${TH} w-[96px] text-right`}>
+                      {t("plugins.hub.tableDownloads")}
+                    </th>
+                  )}
+                  <th scope="col" className={`${TH} w-[96px] text-right`}>
+                    {t("plugins.hub.tableVersion")}
+                  </th>
+                  <th scope="col" className={`${TH} w-[150px] text-right`}>
+                    {t("plugins.hub.tableActions")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((entry) => (
+                  <PluginMarketRow
+                    key={entry.id}
+                    entry={entry}
+                    onOpenDetail={onOpenDetail}
+                    showDownloads={showDownloads}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
           <p className="px-1 text-body-2-regular text-text-tertiary">
             {t("plugins.market.hint")}
+            {showDownloads ? ` ${t("plugins.hub.downloadsHint")}` : ""}
           </p>
         </>
       )}
