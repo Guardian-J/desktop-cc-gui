@@ -453,12 +453,16 @@ describe("PluginHub", () => {
       new Date(UPDATED_AT).toLocaleDateString(i18n.language),
     );
 
-    const repoLink = [...document.body.querySelectorAll("button")].find((candidate) =>
-      candidate.textContent?.includes(i18n.t("plugins.hub.repo")),
-    );
-    expect(repoLink).toBeDefined();
+    const repoLink = buttonContaining(i18n.t("plugins.hub.repo"));
+    // Each destination names its surface with an icon (GitHub mark / tag /
+    // issue dot), so the three links are tellable apart before reading them.
+    expect(repoLink.querySelector(".lucide-github")).not.toBeNull();
+    expect(buttonContaining(i18n.t("plugins.hub.releases")).querySelector(".lucide-tag"))
+      .not.toBeNull();
+    expect(buttonContaining(i18n.t("plugins.hub.issues")).querySelector(".lucide-circle-dot"))
+      .not.toBeNull();
     await act(async () => {
-      repoLink!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      repoLink.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(openExternal).toHaveBeenCalledWith(`https://github.com/${MARKET_ENTRY.repo}`);
 
