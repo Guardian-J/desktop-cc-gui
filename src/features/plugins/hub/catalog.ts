@@ -1,0 +1,131 @@
+import type { MarketPlugin } from "@/lib/ipc";
+
+/**
+ * Browsing helpers for the plugin hub. The central index carries no icon or
+ * category field (see src-tauri/src/plugins/market.rs), so the hub derives a
+ * stable avatar and a browse category locally — deterministic output keeps
+ * rows from reshuffling between renders and is cheap to unit-test.
+ */
+
+export type PluginCategory = "dev" | "productivity" | "integration" | "appearance" | "other";
+
+/** Section order in the market list. `other` always closes the page. */
+export const PLUGIN_CATEGORIES: PluginCategory[] = [
+  "dev",
+  "productivity",
+  "integration",
+  "appearance",
+  "other",
+];
+
+/** First matching rule wins; ids/names/descriptions are searched lowercase. */
+const CATEGORY_RULES: Array<{ category: PluginCategory; pattern: RegExp }> = [
+  {
+    category: "dev",
+    pattern:
+      /代码|体检|重构|调试|构建|lint|doctor|test|调试|开发工具|wsl|shell|终端|git|index|索引/,
+  },
+  {
+    category: "productivity",
+    pattern: /命名|标题|title|token|速度|统计|usage|效率|翻译|总结|笔记|计时|提醒|定时/,
+  },
+  {
+    category: "integration",
+    pattern:
+      /供应商|渠道|模型|provider|model|余额|balance|网关|gateway|账号|订阅|api|连接|集成|mcp|同步|登录/,
+  },
+  {
+    category: "appearance",
+    pattern: /彩虹|主题|外观|界面|样式|字体|rainbow|theme|dimmer|border|图标|icon|壁纸|动画/,
+  },
+];
+
+export function categorizePlugin(entry: {
+  id: string;
+  name: string;
+  description: string;
+}): PluginCategory {
+  const haystack = `${entry.id}\n${entry.name}\n${entry.description}`.toLowerCase();
+  for (const rule of CATEGORY_RULES) {
+    if (rule.pattern.test(haystack)) return rule.category;
+  }
+  return "other";
+}
+
+/** Avatar glyph: uppercase Latin initials, CJK/emoji pass through. Uses the
+ *  code-point array so a surrogate pair (emoji name) is not split. */
+export function pluginInitial(name: string): string {
+  const first = Array.from(name.trim())[0];
+  if (!first) return "?";
+  return /[a-z]/i.test(first) ? first.toUpperCase() : first;
+}
+
+/** Deterministic gradient per plugin id — same id, same colors on every
+ *  machine and render. Eight hues, no hashing dependency. */
+const AVATAR_PALETTE: Array<readonly [string, string]> = [
+  ["#60a5fa", "#2563eb"],
+  ["#34d399", "#059669"],
+  ["#fbbf24", "#d97706"],
+  ["#f472b6", "#db2777"],
+  ["#a78bfa", "#7c3aed"],
+  ["#22d3ee", "#0891b2"],
+  ["#fb7185", "#e11d48"],
+  ["#f97316", "#ea580c"],
+];
+
+export function pluginAvatarGradient(id: string): { from: string; to: string } {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  const [from, to] = AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+  return { from, to };
+}
+
+/** Downloads desc, then name; entries without a count trail the ranked ones
+ *  and keep the incoming (index) order among themselves. */
+export function sortByDownloads(entries: MarketPlugin[]): MarketPlugin[] {
+  return [...entries].sort((a, b) => {
+    if (a.downloads != null && b.downloads != null && a.downloads !== b.downloads) {
+      return b.downloads - a.downloads;
+    }
+    if (a.downloads != null && b.downloads == null) return -1;
+    if (a.downloads == null && b.downloads != null) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/** 精选 = most-downloaded entries. Empty when the index has no stats at all
+ *  (rendering an arbitrary "featured" set would be a lie). */
+export function selectFeatured(entries: MarketPlugin[], limit = 4): MarketPlugin[] {
+  if (!entries.some((entry) => entry.downloads != null)) return [];
+  return sortByDownloads(entries).slice(0, limit);
+}
+
+/** Category sections for the entries that are not featured, in fixed
+ *  category order, downloads-first inside each group. */
+export function groupByCategory(
+  entries: MarketPlugin[],
+): Array<{ category: PluginCategory; entries: MarketPlugin[] }> {
+  const byCategory = new Map<PluginCategory, MarketPlugin[]>();
+  for (const entry of entries) {
+    const category = categorizePlugin(entry);
+    const group = byCategory.get(category) ?? [];
+    group.push(entry);
+    byCategory.set(category, group);
+  }
+  return PLUGIN_CATEGORIES.flatMap((category) => {
+    const group = byCategory.get(category);
+    return group?.length ? [{ category, entries: sortByDownloads(group) }] : [];
+  });
+}
+
+/** Case-insensitive match over the fields the market row shows. */
+export function pluginMatchesQuery(entry: MarketPlugin, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [entry.id, entry.name, entry.description, entry.author]
+    .join("\n")
+    .toLowerCase()
+    .includes(needle);
+}

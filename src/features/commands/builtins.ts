@@ -1,6 +1,7 @@
 import i18n from "@/lib/i18n";
 import { commandRegistry } from "@ccgui/plugin-sdk";
 import { useShortcutsStore } from "@/features/shortcuts/store";
+import { usePluginHubStore } from "@/features/plugins/hub/store";
 
 /**
  * Builtin palette commands, registered through the same commandRegistry the
@@ -34,10 +35,11 @@ commandRegistry.register({
   id: "builtin:openPlugins",
   title: () => i18n.t("commands.openPlugins"),
   keywords: keywords("commands.openPluginsKeywords"),
-  // The settings page reads the section key from ?page=; "plugins" is the
-  // 插件管理 section registered by startPluginSystem.
+  // The hub is a center tab on the chat route: leave the settings overlay
+  // first (hash no-op when already there), then open the installed tab.
   run: () => {
-    window.location.hash = "#/settings?page=plugins";
+    window.location.hash = "#/";
+    usePluginHubStore.getState().openHub("installed");
   },
 });
 commandRegistry.register({
@@ -45,7 +47,8 @@ commandRegistry.register({
   title: () => i18n.t("commands.openMarketplace"),
   keywords: keywords("commands.openMarketplaceKeywords"),
   run: () => {
-    window.location.hash = "#/settings?page=marketplace";
+    window.location.hash = "#/";
+    usePluginHubStore.getState().openHub("market");
   },
 });
 commandRegistry.register({

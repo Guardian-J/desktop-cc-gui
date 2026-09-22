@@ -131,3 +131,23 @@ store's checkout for `v1.0.6` while the panel displays
 snapshot that lagged behind external (CLI) checkouts, silently swallowing
 the click. Real ChangesPanelHeader; only the store's checkout is stubbed.
 No app, no backend.
+
+Open `/tests/browser/tail-pin.html` for high-rate streaming scroll regression.
+Click `Replay 100 chars / 144ms`: the production Markdown renderer, virtualizer,
+and follow hooks receive 100-character bursts every 144ms (a synthetic burst
+profile, not a measured model token rate), including Chinese, emoji, bold,
+inline code and a late tool-sized row. The output must report PASS, zero tail
+gaps at resize delivery, and `complete: true` after settling. Scroll upward
+during replay to pause follow; `Resume follow` must return to the tail.
+This checks browser layout/reveal synchronization, not native IPC latency.
+Reload after changing hook implementations to avoid Fast Refresh artifacts.
+
+Open `/tests/browser/git-performance.html` for the Git panel performance
+regression. It mounts the production `ChatSidePanel` with 10,001 synthetic
+changed files and mocked Git actions. Initial Files view must show zero Git
+fetches and zero mounted file rows. Show changes, scroll through the list,
+and verify only the visible window plus overscan is mounted. Opening a file
+or staging it updates `lastAction` without touching a repository. Write a
+commit draft, switch to Files or collapse the sidebar, then return: the draft
+must survive, hidden rows must be removed, and the list must still scroll to
+the final file. The metrics output reports requests, mounted rows and actions.

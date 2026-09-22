@@ -127,6 +127,10 @@ pub struct AppSettings {
     /// until the user folds it (设置 → 通用 → 行为 → 思考过程).
     #[serde(default)]
     pub thinking_auto_collapse: Option<bool>,
+    /// Beta entry points (设置 → 其他 → 内测功能): feature id -> enabled.
+    /// Empty/missing = the entry stays hidden; every id is off by default.
+    #[serde(default)]
+    pub beta_features: HashMap<String, bool>,
     /// Terminal shell override; None/empty = auto-detect from $SHELL/COMSPEC.
     /// Validated with the same spawn-target rules as bin overrides.
     #[serde(default)]
@@ -265,6 +269,7 @@ impl Default for AppSettings {
             decrease_ui_scale_shortcut: default_decrease_ui_scale_shortcut(),
             reset_ui_scale_shortcut: default_reset_ui_scale_shortcut(),
             thinking_auto_collapse: None,
+            beta_features: HashMap::new(),
             terminal_shell_path: None,
             dsh_host: None,
             dsh_port: None,

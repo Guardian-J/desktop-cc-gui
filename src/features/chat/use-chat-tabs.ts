@@ -5,9 +5,12 @@ import FileText from "lucide-react/dist/esm/icons/file-text";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import Globe from "lucide-react/dist/esm/icons/globe";
 import Network from "lucide-react/dist/esm/icons/network";
+import Puzzle from "lucide-react/dist/esm/icons/puzzle";
 import { BROWSER_TAB_PREFIX, useBrowserStore, type BrowserTab } from "@/features/browser/store";
 import { browserTabLabel } from "@/features/browser/address";
+import { useBetaFeature } from "@/features/settings/beta-features";
 import { MISSION_WORKBENCH_TAB_KEY, useMissionStore } from "@/features/mission/store";
+import { PLUGIN_HUB_TAB_KEY, usePluginHubStore } from "@/features/plugins/hub/store";
 import { centerTabRegistry, useRegistry } from "@ccgui/plugin-sdk";
 import type { LucideIcon } from "lucide-react";
 import { PLUGIN_TAB_PREFIX, usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
@@ -22,6 +25,9 @@ import type { ChatPageDialog } from "./ChatPageDialogs";
 const FILE_TAB_PREFIX = "file:";
 // The changes diff opens as a center tab too; a single instance at a time.
 const DIFF_TAB_KEY = "diff:";
+// Stable empty list for a hidden beta entry: keeps the tab memos from
+// recomputing on every render while the flag is off.
+const NO_BROWSER_TABS: BrowserTab[] = [];
 
 /** Center tab strip data: session/file/diff tab items, the active key, and
  * the select/close/reorder handlers routing each tab kind to its store.
@@ -94,6 +100,16 @@ export function useChatTabs({
   // 任务工作台中心页签（单实例）：开关与激活态都在 mission store。
   const missionOpen = useMissionStore((s) => s.open);
   const missionActive = useMissionStore((s) => s.active);
+  // 插件中心页签（原生单实例）：侧栏「插件」入口的落地页。
+  const hubOpen = usePluginHubStore((s) => s.open);
+  const hubActive = usePluginHubStore((s) => s.active);
+  // 内测入口关闭时对应的中心面整体隐藏（store 状态保留，重新开启即恢复）。
+  const browserEntryEnabled = useBetaFeature("newBrowser");
+  const missionEntryEnabled = useBetaFeature("missionWorkbench");
+  const visibleBrowserTabs = browserEntryEnabled ? browserTabs : NO_BROWSER_TABS;
+  const visibleActiveBrowserId = browserEntryEnabled ? activeBrowserId : null;
+  const visibleMissionOpen = missionEntryEnabled && missionOpen;
+  const visibleMissionActive = missionEntryEnabled && missionActive;
   // Flat streaming map: its reference changes only when a session actually
   // starts/stops streaming, so these selectors do not rescan bySession on
   // every per-frame stream flush.
@@ -181,19 +197,35 @@ export function useChatTabs({
   // Browser tabs trail the file tabs in the same strip.
   const browserTabItems = useMemo(
     () =>
-      browserTabs.map((tab) => ({
+      visibleBrowserTabs.map((tab) => ({
         key: BROWSER_TAB_PREFIX + tab.id,
         label: browserTabLabel(tab, t("browser.newTab")),
         title: tab.url,
         icon: Globe,
         streaming: false,
       })),
-    [browserTabs, t],
+    [visibleBrowserTabs, t],
+  );
+  // 插件中心页签插在 SDK 插件页签之后、任务工作台之前。
+  const hubTabItems = useMemo(
+    () =>
+      hubOpen
+        ? [
+            {
+              key: PLUGIN_HUB_TAB_KEY,
+              label: t("plugins.hub.title"),
+              title: t("plugins.hub.title"),
+              icon: Puzzle as LucideIcon,
+              streaming: false,
+            },
+          ]
+        : [],
+    [hubOpen, t],
   );
   // 任务工作台页签插在插件页签之后、差异页签之前。
   const missionTabItems = useMemo(
     () =>
-      missionOpen
+      visibleMissionOpen
         ? [
             {
               key: MISSION_WORKBENCH_TAB_KEY,
@@ -204,7 +236,7 @@ export function useChatTabs({
             },
           ]
         : [],
-    [missionOpen, t],
+    [visibleMissionOpen, t],
   );
   const tabItems = useMemo(
     () => [
@@ -212,6 +244,7 @@ export function useChatTabs({
       ...fileTabItems,
       ...browserTabItems,
       ...pluginTabItems,
+      ...hubTabItems,
       ...missionTabItems,
       ...(diffView
         ? [
@@ -225,13 +258,14 @@ export function useChatTabs({
           ]
         : []),
     ],
-    [sessionTabItems, fileTabItems, browserTabItems, pluginTabItems, missionTabItems, diffView],
+    [sessionTabItems, fileTabItems, browserTabItems, pluginTabItems, hubTabItems, missionTabItems, diffView],
   );
   const activeTabKey = activeCenterTabKey({
     diffView,
-    activeBrowserId,
+    activeBrowserId: visibleActiveBrowserId,
     activePluginTabId,
-    missionActive,
+    hubActive,
+    missionActive: visibleMissionActive,
     activeFilePath,
     active,
   });
@@ -281,12 +315,16 @@ export function useChatTabs({
     threadStreaming,
     openFiles,
     activeFilePath,
-    browserTabs,
-    activeBrowserId,
+    // Hidden beta surfaces report empty/inactive so ChatCenterPane unmounts
+    // them; the handlers below keep the raw store values for close actions.
+    browserTabs: visibleBrowserTabs,
+    activeBrowserId: visibleActiveBrowserId,
     pluginTabs,
     activePluginTabId,
-    missionOpen,
-    missionActive,
+    pluginHubOpen: hubOpen,
+    pluginHubActive: hubActive,
+    missionOpen: visibleMissionOpen,
+    missionActive: visibleMissionActive,
     diffView,
     closeDiff,
   };
@@ -305,11 +343,12 @@ interface SessionTabItem {
 
 /** Tab-kind routing shared by select/close/reorder: keys carry a prefix so
  *  each kind lands in its own store. */
-type TabKind = "session" | "file" | "browser" | "plugin" | "mission";
+type TabKind = "session" | "file" | "browser" | "plugin" | "hub" | "mission";
 
 function tabKindOf(key: string): TabKind {
   if (key.startsWith(BROWSER_TAB_PREFIX)) return "browser";
   if (key.startsWith(PLUGIN_TAB_PREFIX)) return "plugin";
+  if (key === PLUGIN_HUB_TAB_KEY) return "hub";
   if (key === MISSION_WORKBENCH_TAB_KEY) return "mission";
   if (key.startsWith(FILE_TAB_PREFIX)) return "file";
   return "session";
@@ -323,6 +362,7 @@ function activeCenterTabKey({
   diffView,
   activeBrowserId,
   activePluginTabId,
+  hubActive,
   missionActive,
   activeFilePath,
   active,
@@ -330,6 +370,7 @@ function activeCenterTabKey({
   diffView: unknown;
   activeBrowserId: string | null;
   activePluginTabId: string | null;
+  hubActive: boolean;
   missionActive: boolean;
   activeFilePath: string | null;
   active: ActiveSession | null;
@@ -337,6 +378,7 @@ function activeCenterTabKey({
   if (diffView) return DIFF_TAB_KEY;
   if (activeBrowserId) return BROWSER_TAB_PREFIX + activeBrowserId;
   if (activePluginTabId) return PLUGIN_TAB_PREFIX + activePluginTabId;
+  if (hubActive) return PLUGIN_HUB_TAB_KEY;
   if (missionActive) return MISSION_WORKBENCH_TAB_KEY;
   if (activeFilePath) return FILE_TAB_PREFIX + activeFilePath;
   return active ? sessionKey(active.engine, active.sessionId, active.workspacePath) : null;
@@ -420,14 +462,24 @@ function useChatTabHandlers({
       // Selecting any other tab dismisses the diff so the tab shows.
       closeDiff();
       const kind = tabKindOf(tabKey);
+      if (kind === "hub") {
+        clearActiveFile();
+        deactivateBrowserTab();
+        deactivatePluginTab();
+        useMissionStore.getState().deactivate();
+        usePluginHubStore.getState().activate();
+        return;
+      }
       if (kind === "mission") {
         clearActiveFile();
         deactivateBrowserTab();
         deactivatePluginTab();
+        usePluginHubStore.getState().deactivate();
         useMissionStore.getState().activate();
         return;
       }
       useMissionStore.getState().deactivate();
+      usePluginHubStore.getState().deactivate();
       if (kind === "browser") {
         clearActiveFile();
         deactivatePluginTab();
@@ -458,6 +510,10 @@ function useChatTabHandlers({
         return;
       }
       const kind = tabKindOf(tabKey);
+      if (kind === "hub") {
+        usePluginHubStore.getState().close();
+        return;
+      }
       if (kind === "mission") {
         useMissionStore.getState().close();
         return;
@@ -489,8 +545,8 @@ function useChatTabHandlers({
       if (draggedKey === DIFF_TAB_KEY || targetKey === DIFF_TAB_KEY) return;
       const kind = tabKindOf(draggedKey);
       if (kind !== tabKindOf(targetKey)) return;
-      // 任务工作台是单实例页签，不参与拖拽排序。
-      if (kind === "mission") return;
+      // 任务工作台与插件中心是单实例页签，不参与拖拽排序。
+      if (kind === "mission" || kind === "hub") return;
       if (kind === "browser") {
         const draggedId = draggedKey.slice(BROWSER_TAB_PREFIX.length);
         const targetId = targetKey.slice(BROWSER_TAB_PREFIX.length);
@@ -531,6 +587,7 @@ function useChatTabHandlers({
   const handleTabCloseAll = useCallback(() => {
     closeDiff();
     useMissionStore.getState().close();
+    usePluginHubStore.getState().close();
     for (const item of sessionTabItems) {
       closeTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);
     }
@@ -552,6 +609,7 @@ function useChatTabHandlers({
   const handleTabCloseInactive = useCallback(() => {
     if (activeTabKey !== DIFF_TAB_KEY) closeDiff();
     if (activeTabKey !== MISSION_WORKBENCH_TAB_KEY) useMissionStore.getState().close();
+    if (activeTabKey !== PLUGIN_HUB_TAB_KEY) usePluginHubStore.getState().close();
     for (const item of sessionTabItems) {
       if (item.key === activeTabKey || item.streaming) continue;
       closeTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);

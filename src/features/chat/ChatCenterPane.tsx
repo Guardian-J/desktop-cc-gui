@@ -20,6 +20,10 @@ const MissionWorkbench = lazy(() =>
     default: m.MissionWorkbench,
   })),
 );
+// 插件 hub 也在打开时才加载（插件商店/管理不是启动路径）。
+const PluginHub = lazy(() =>
+  import("@/features/plugins/hub/PluginHub").then((m) => ({ default: m.PluginHub })),
+);
 
 /** One stacked center surface: invisible surfaces stay mounted (never
  * display:none) so WKWebView keeps its scroll boxes and editor drafts
@@ -77,6 +81,8 @@ export function ChatCenterPane({
   activeBrowserId,
   pluginTabs,
   activePluginTabId,
+  pluginHubOpen,
+  pluginHubActive,
   missionOpen,
   missionActive,
   diffView,
@@ -98,6 +104,9 @@ export function ChatCenterPane({
    *  exclusive with the other surfaces; use-chat-tabs enforces it). */
   pluginTabs: string[];
   activePluginTabId: string | null;
+  /** 原生插件中心页签（侧栏「插件」入口）：是否打开 / 是否在视。 */
+  pluginHubOpen: boolean;
+  pluginHubActive: boolean;
   /** 任务工作台中心页签：是否打开 / 是否在视。 */
   missionOpen: boolean;
   missionActive: boolean;
@@ -109,12 +118,16 @@ export function ChatCenterPane({
   useBrowserNavSync();
   const browserInView = activeBrowserId !== null && !diffView;
   const pluginInView = activePluginTabId !== null && !diffView;
+  // Single-instance native tabs: if both flags were ever set at once, the
+  // mission workbench wins (handlers keep them mutually exclusive; this is
+  // the last-resort tie-breaker so the surfaces never stack).
+  const hubInView = pluginHubActive && !diffView && !missionActive;
   const missionInView = missionActive && !diffView;
   return (
     <>
       <Surface
         visible={
-          !(activeFilePath || browserInView || pluginInView || missionInView || diffView)
+          !(activeFilePath || browserInView || pluginInView || hubInView || missionInView || diffView)
         }
       >
         <ChatConversation
@@ -129,7 +142,12 @@ export function ChatCenterPane({
       {openFiles.length > 0 && (
         <Surface
           visible={
-            activeFilePath !== null && !browserInView && !pluginInView && !missionInView && !diffView
+            activeFilePath !== null &&
+            !browserInView &&
+            !pluginInView &&
+            !hubInView &&
+            !missionInView &&
+            !diffView
           }
         >
           <Suspense fallback={<CenteredSpinner />}>
@@ -145,7 +163,7 @@ export function ChatCenterPane({
       {/* Browser tabs: one pane per tab, each owning a native child webview
           painted over its placeholder rect (see BrowserPane). */}
       {browserTabs.length > 0 && (
-        <Surface visible={browserInView && !missionInView}>
+        <Surface visible={browserInView && !missionInView && !hubInView}>
           {browserTabs.map((tab) => (
             <SurfaceItem key={tab.id} active={tab.id === activeBrowserId}>
               <BrowserPane tab={tab} active={browserInView && tab.id === activeBrowserId} />
@@ -157,10 +175,19 @@ export function ChatCenterPane({
       {/* Plugin center tabs: one pane per open tab, keep-alive like the
           other surfaces. */}
       {pluginTabs.length > 0 && (
-        <Surface visible={pluginInView && !missionInView}>
+        <Surface visible={pluginInView && !missionInView && !hubInView}>
           {pluginTabs.map((tabId) => (
             <PluginCenterTab key={tabId} tabId={tabId} active={tabId === activePluginTabId} />
           ))}
+        </Surface>
+      )}
+
+      {/* 插件 hub（原生单实例页签）：商店/已安装管理，页签关闭后保持挂载。 */}
+      {pluginHubOpen && (
+        <Surface visible={hubInView}>
+          <Suspense fallback={<CenteredSpinner />}>
+            <PluginHub />
+          </Suspense>
         </Surface>
       )}
 

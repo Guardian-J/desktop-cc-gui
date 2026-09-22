@@ -57,4 +57,28 @@ describe("SidebarPrimaryNav", () => {
     });
     expect(onOpenMission).toHaveBeenCalledTimes(1);
   });
+
+  it("puts the 插件 hub entry directly under 新建会话", () => {
+    const onOpenPlugins = vi.fn();
+    act(() => {
+      root.render(
+        <SidebarPrimaryNav
+          onNewSession={() => {}}
+          onOpenPlugins={onOpenPlugins}
+        />,
+      );
+    });
+
+    const labels = [...container.querySelectorAll("button")].map((button) =>
+      button.getAttribute("aria-label"),
+    );
+    expect(labels[0]).toBe("新建会话");
+    expect(labels[1]).toBe("插件");
+
+    const entry = container.querySelector<HTMLButtonElement>('button[aria-label="插件"]')!;
+    act(() => {
+      entry.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(onOpenPlugins).toHaveBeenCalledTimes(1);
+  });
 });

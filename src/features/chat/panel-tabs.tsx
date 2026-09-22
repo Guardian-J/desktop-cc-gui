@@ -20,8 +20,8 @@ import { ChangesPanel } from "@/features/git/ChangesPanel";
 
 /** ChangesPanel keeps its per-workspace remount (key) and full-width class
  *  exactly as it was inlined in ChatSidePanel. */
-const ChangesTab = ({ workspacePath }: { workspacePath: string }) => (
-  <ChangesPanel key={workspacePath} workspacePath={workspacePath} className="w-full" />
+export const ChangesTab = ({ workspacePath, visible = true }: { workspacePath: string; visible?: boolean }) => (
+  <ChangesPanel key={workspacePath} workspacePath={workspacePath} visible={visible} className="w-full" />
 );
 
 panelTabRegistry.register({

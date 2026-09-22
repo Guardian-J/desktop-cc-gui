@@ -385,6 +385,10 @@ struct GitFilesArgs {
     files: Vec<String>,
 }
 #[derive(Deserialize)]
+struct GitTreeArgs {
+    levels: Vec<crate::git::GitTreeLevel>,
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GitCommitArgs {
     path: String,
@@ -561,7 +565,7 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
             let a: SessionIdArgs = parse_args(&raw)?;
             ser(crate::engine::interrupt_session(app.state(), a.session_id).await)
         }
-        "list_engines" => ser(Ok(crate::engine::list_engines())),
+        "list_engines" => ser(crate::engine::list_engines().await),
         "list_engine_models" => {
             let a: EngineArgs = parse_args(&raw)?;
             ser(
@@ -893,7 +897,11 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         "git_file_colors" => {
             let a: GitFilesArgs = parse_args(&raw)?;
-            ser(Ok(crate::git::git_file_colors(a.path, a.files)))
+            ser(crate::git::git_file_colors(a.path, a.files).await)
+        }
+        "git_tree_status" => {
+            let a: GitTreeArgs = parse_args(&raw)?;
+            ser(crate::git::git_tree_status(a.levels).await)
         }
         "git_diff" => {
             let a: GitDiffArgs = parse_args(&raw)?;

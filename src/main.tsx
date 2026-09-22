@@ -5,6 +5,7 @@ import "./index.css";
 import i18n from "./lib/i18n";
 import { ipc } from "./lib/ipc";
 import { applyTheme, THEME_STORAGE_KEY } from "./features/settings/theme";
+import { hydrateBetaFeatures } from "./features/settings/beta-features";
 
 // Apply the locally cached theme synchronously, before first paint, so the
 // window never flashes the wrong color scheme while settings load.
@@ -23,6 +24,10 @@ void ipc
     }
   })
   .catch(() => {});
+
+// 内测入口（设置 → 其他 → 内测功能）决定侧栏和页签条是否渲染，随启动设置
+// 一起水合（共用同一个缓存的 settings promise）。
+void hydrateBetaFeatures();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

@@ -414,6 +414,7 @@ pub fn run() {
             git::git_status,
             git::git_repository_summaries,
             git::git_file_colors,
+            git::git_tree_status,
             git::git_diff,
             git::git_stage,
             git::git_unstage,

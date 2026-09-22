@@ -100,7 +100,15 @@ export class StreamReveal {
   }
   update(text: string, animate: boolean) {
     if (text === this.text) {
-      if (!animate) this.finish();
+      if (!animate) {
+        this.finish();
+        return;
+      }
+      // A pending drain must survive a cancelled frame loop (effect cleanup on
+      // HMR/Fast Refresh, StrictMode's double effect, a remount that keeps the
+      // controller). Re-arm it without moving the deadline, so an unchanged
+      // snapshot can never leave half-revealed text on screen.
+      if (this.holdback > 0) this.run(this.clock.now());
       return;
     }
     const now = this.clock.now();

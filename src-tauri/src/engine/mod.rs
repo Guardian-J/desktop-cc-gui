@@ -347,7 +347,13 @@ pub(crate) fn engine_bin(settings: &crate::settings::AppSettings, engine_id: &st
     resolve::resolve_launchable_cli_binary(cli_binary_name(engine_id))
 }
 #[tauri::command]
-pub fn list_engines() -> Vec<EngineInfo> {
+pub async fn list_engines() -> Result<Vec<EngineInfo>, String> {
+    tauri::async_runtime::spawn_blocking(list_engines_blocking)
+        .await
+        .map_err(|error| format!("engine detection task failed: {error}"))
+}
+
+fn list_engines_blocking() -> Vec<EngineInfo> {
     let settings = crate::settings::read_settings().unwrap_or_default();
     let config = crate::config::read_config().unwrap_or_default();
     crate::config::ENGINES
@@ -1261,6 +1267,48 @@ pub async fn answer_question(
 #[cfg(test)]
 mod permission_tests {
     use super::*;
+
+    #[test]
+    fn list_engines_ipc_runs_off_handler_thread() {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![list_engines])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "engine-test", Default::default())
+            .build()
+            .unwrap();
+        let handler_thread = std::thread::current().id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let webview: &tauri::Webview<tauri::test::MockRuntime> = window.as_ref();
+        webview.clone().on_message(
+            tauri::webview::InvokeRequest {
+                cmd: "list_engines".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .unwrap(),
+                body: tauri::ipc::InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+            Box::new(move |_, _, response, _, _| {
+                sender.send((std::thread::current().id(), response)).unwrap();
+            }),
+        );
+        let (response_thread, response) = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(matches!(response, tauri::ipc::InvokeResponse::Ok(_)));
+        assert_ne!(
+            handler_thread, response_thread,
+            "engine detection ran inline on the IPC handler"
+        );
+    }
 
     #[test]
     fn every_registered_engine_has_an_adapter() {

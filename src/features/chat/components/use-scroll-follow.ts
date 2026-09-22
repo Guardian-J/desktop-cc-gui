@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   type MutableRefObject,
   type RefObject,
@@ -217,7 +218,7 @@ export function useTailPin({
   // Scroll to bottom when switching sessions (new page loaded) or when a new
   // message is appended while following the tail.
   const lastCountRef = useRef(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!scrollRef.current || count === 0) return;
     const grew = count > lastCountRef.current;
     const switched = lastCountRef.current === 0;
@@ -228,34 +229,25 @@ export function useTailPin({
   // Keep the tail pinned while stream rows grow, if the user is at bottom.
   // `items` changes identity on every flush, so this tracks both thinking
   // and text growth.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!scrollRef.current || !streaming || !isFollowing()) return;
-    const frame = requestAnimationFrame(() => {
-      if (isFollowing()) scrollToBottom();
-    });
-    return () => cancelAnimationFrame(frame);
+    scrollToBottom();
   }, [items, streaming, count, isFollowing, scrollToBottom, scrollRef]);
 
   // Rows re-measure after mount (tool calls render taller than the 72px
   // estimate); each measurement grows the virtual total height after the
   // count/items effects above already ran. Follow those late size changes
   // so the tail stays pinned while tools appear.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     const inner = el?.querySelector<HTMLElement>("[data-virtual-inner]");
     if (!el || !inner || typeof ResizeObserver === "undefined") return;
-    let raf = 0;
     const observer = new ResizeObserver(() => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        if (isFollowing()) scrollToBottom();
-      });
+      if (isFollowing()) scrollToBottom();
     });
     observer.observe(inner);
     return () => {
       observer.disconnect();
-      if (raf) cancelAnimationFrame(raf);
     };
   }, [isFollowing, scrollToBottom, scrollRef]);
 }

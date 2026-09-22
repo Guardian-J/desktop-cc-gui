@@ -177,7 +177,7 @@ export default memo(function Markdown({
   const plan = useMemo(createRevealPlan, [mathText, contributions]);
   // Show already-received text on mount (including virtualizer remounts);
   // smooth only subsequent arrivals, never replay a paragraph from empty.
-  const controller = useLiveReveal(plan.text, streaming);
+  const controller = useLiveReveal(plan, streaming);
   // Stable components map: a new reference makes ReactMarkdown discard its
   // HAST tree and re-parse the whole document.
   const hostComponents = useMemo<Components>(

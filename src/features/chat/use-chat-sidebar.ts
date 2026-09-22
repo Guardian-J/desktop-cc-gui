@@ -6,6 +6,7 @@ import { useBrowserStore } from "@/features/browser/store";
 import { useFilesStore } from "@/features/files/store";
 import { useGitStore } from "@/features/git/store";
 import { useMissionStore } from "@/features/mission/store";
+import { usePluginHubStore } from "@/features/plugins/hub/store";
 import { usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
 import type { AiChatRepo, AiChatRepoSection, ThreadAction } from "@/components/application/ai-chat/ai-chat-sidebar";
 import { ARCHIVED_SECTION_ID } from "@/components/application/ai-chat/use-sidebar-state";
@@ -300,8 +301,19 @@ export function useChatSidebar({
     useFilesStore.getState().clearActiveFile();
     useBrowserStore.getState().deactivate();
     usePluginTabsStore.getState().deactivate();
+    usePluginHubStore.getState().deactivate();
     useGitStore.getState().closeDiff();
     useMissionStore.getState().openWorkbench();
+    collapseSidebarOnMobile();
+  }, [collapseSidebarOnMobile]);
+  // Sidebar 插件 nav entry（原生）：打开插件中心中心页签（市场 + 已安装管理）。
+  const handleOpenPlugins = useCallback(() => {
+    useFilesStore.getState().clearActiveFile();
+    useBrowserStore.getState().deactivate();
+    usePluginTabsStore.getState().deactivate();
+    useGitStore.getState().closeDiff();
+    useMissionStore.getState().deactivate();
+    usePluginHubStore.getState().openHub();
     collapseSidebarOnMobile();
   }, [collapseSidebarOnMobile]);
   const handleReorderWorkspaces = useCallback(
@@ -357,6 +369,7 @@ export function useChatSidebar({
     handleNewSession,
     handleNewSessionInWorkspace,
     handleNewBrowser,
+    handleOpenPlugins,
     handleOpenMission,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,

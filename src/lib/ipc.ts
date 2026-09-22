@@ -279,6 +279,9 @@ export interface AppSettings {
   /** Thinking-process row behavior once its thinking settles: true/absent =
    *  auto-fold (default), false = stay expanded until the user folds it. */
   thinkingAutoCollapse?: boolean | null;
+  /** Beta entry points (设置 → 其他 → 内测功能): feature id -> enabled.
+   *  Missing/false = the entry stays hidden (default off). */
+  betaFeatures?: Record<string, boolean> | null;
   /** Terminal shell override; null/empty = auto-detect. */
   terminalShellPath: string | null;
   /** DSH host address (default "127.0.0.1"). */
@@ -503,6 +506,17 @@ export interface RepositorySummary {
 /** Per-entry git state for one loaded tree level. `repository` marks an
  *  exact repo-root directory (blue name); plain folders never carry color. */
 export type FileTreeColor = "modified" | "untracked" | "repository";
+
+export interface GitTreeLevel {
+  path: string;
+  files: string[];
+  directories: string[];
+}
+
+export interface GitTreeStatus {
+  repositories: RepositorySummary[];
+  fileColors: Record<string, Record<string, FileTreeColor>>;
+}
 
 export interface BranchInfo {
   name: string;
@@ -1051,6 +1065,8 @@ export const ipc = {
     invoke<RepositorySummary[]>("git_repository_summaries", { paths }),
   gitFileColors: (path: string, files: string[]) =>
     invoke<Record<string, FileTreeColor>>("git_file_colors", { path, files }),
+  gitTreeStatus: (levels: GitTreeLevel[]) =>
+    invoke<GitTreeStatus>("git_tree_status", { levels }),
   gitDiff: (path: string, file: string, staged: boolean) =>
     invoke<string>("git_diff", { path, file, staged }),
   gitStage: (path: string, files: string[]) => invoke<void>("git_stage", { path, files }),

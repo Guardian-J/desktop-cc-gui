@@ -4,6 +4,7 @@ import Globe from "lucide-react/dist/esm/icons/globe";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
 import Archive from "lucide-react/dist/esm/icons/archive";
 import Info from "lucide-react/dist/esm/icons/info";
+import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Bot from "lucide-react/dist/esm/icons/bot";
 import Smartphone from "lucide-react/dist/esm/icons/smartphone";
@@ -21,6 +22,7 @@ import { ArchivedSessionsSection } from "./ArchivedSessionsSection";
 import { AgentsPromptsSection } from "./agents-prompts/AgentsPromptsSection";
 import { CliConfigSection } from "./CliConfigSection";
 import { AboutSection } from "./AboutSection";
+import { BetaFeaturesSection } from "./BetaFeaturesSection";
 import { UpdateSection } from "./UpdateSection";
 import { WebAccessSection } from "./WebAccessSection";
 import { UsageSection } from "./UsageSection";
@@ -140,6 +142,15 @@ settingsRegistry.register({
   group: "misc",
   order: 1,
   component: AboutSection,
+});
+settingsRegistry.register({
+  id: "betaFeatures",
+  key: "betaFeatures",
+  label: () => i18n.t("settings.betaFeatures"),
+  icon: FlaskConical,
+  group: "misc",
+  order: 2,
+  component: BetaFeaturesSection,
 });
 ENGINE_IDS.forEach((engine, index) => {
   settingsRegistry.register({
