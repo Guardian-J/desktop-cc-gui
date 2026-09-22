@@ -63,9 +63,11 @@ const REMOTE_CSS = /@import|url\(\s*['"]?https?:/i;
 /** Shared stylesheet mount: tagged `<style data-plugin=id>` in <head>,
  *  disposer removes it. Remote references rejected (plan §8 gate rule).
  *
- *  `layered` wraps the css in `@layer ccgui-plugins` — declared ahead of
- *  Tailwind's theme/base/components/utilities in index.css — so host rules
- *  win every specificity tie against bundle CSS. Without it, a bundle that
+ *  `layered` wraps the css in `@layer ccgui-plugins` — declared between
+ *  Tailwind's base and components layers in index.css (after base, so
+ *  preflight resets can't erase plugin borders/paddings/backgrounds) — so
+ *  host component and utility rules still win every specificity tie
+ *  against bundle CSS. Without it, a bundle that
  *  accidentally ships its own Tailwind build lands after the host
  *  stylesheet, and its later, equal-specificity `.w-full`/`.hidden` defeat
  *  host responsive variants like `md:w-[254px]` (the settings modal once
