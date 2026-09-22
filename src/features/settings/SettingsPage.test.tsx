@@ -52,6 +52,20 @@ function navLabels(): string[] {
     .filter(Boolean);
 }
 
+/** Item labels under one static section heading. The rail renders every
+ *  group as a heading span directly above its item buttons, so the heading's
+ *  parent scopes the lookup to that section. */
+function itemsUnder(labelKey: string): string[] {
+  const label = i18n.t(labelKey);
+  const heading = [...document.querySelectorAll("nav span")].find(
+    (el) => el.textContent?.trim() === label,
+  );
+  if (!heading) throw new Error(`section heading not rendered: ${labelKey}`);
+  return [...(heading.parentElement?.querySelectorAll("button") ?? [])].map(
+    (button) => button.textContent?.trim() ?? "",
+  );
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -78,19 +92,7 @@ async function render(engines: EngineInfo[]) {
   });
 }
 
-/** Click one collapsed bucket's toggle by its label. The heading button also
- *  carries the count pill, so match its first span instead of the whole
- *  textContent. */
-async function expandBucket(labelKey: string) {
-  const label = i18n.t(labelKey);
-  const toggle = [
-    ...document.querySelectorAll<HTMLButtonElement>("nav button"),
-  ].find((b) => b.querySelector("span")?.textContent?.trim() === label);
-  if (!toggle) throw new Error(`bucket toggle not rendered: ${labelKey}`);
-  await act(async () => {
-    toggle.click();
-  });
-}
+
 
 describe("SettingsPage misc rail", () => {
   it("lists 检查更新 above 社区与反馈 as its own module", async () => {
@@ -104,6 +106,27 @@ describe("SettingsPage misc rail", () => {
   });
 });
 
+describe("SettingsPage system rail", () => {
+  it("keeps 智能体与提示词 and 网络代理 under 系统, after 快捷键", async () => {
+    await render([]);
+
+    expect(itemsUnder("settings.groupSystem")).toEqual([
+      i18n.t("settings.general"),
+      i18n.t("settings.webAccess"),
+      i18n.t("shortcuts.sectionTitle"),
+      i18n.t("settings.agentsPrompts"),
+      i18n.t("settings.proxy"),
+    ]);
+
+    // 其他 keeps only the release/feedback pages — the two sections used to
+    // lead that group.
+    expect(itemsUnder("settings.groupMisc")).toEqual([
+      i18n.t("settings.checkUpdates"),
+      i18n.t("settings.about"),
+    ]);
+  });
+});
+
 describe("SettingsPage CLI rail", () => {
   it("buckets uninstalled CLIs under 未安装, disabled ones under 未启用", async () => {
     await render([
@@ -113,40 +136,32 @@ describe("SettingsPage CLI rail", () => {
       engine("agy", false, false),
     ]);
 
-    // Main rail: only the installed+enabled CLI; 未安装 and 未启用 both
-    // start collapsed to keep the rail quiet.
-    let labels = navLabels();
+    // Codex-style static sections: every group is visible on first render.
+    const labels = navLabels();
     expect(labels).toContain("Claude Code");
-    expect(labels).not.toContain("Codex CLI");
-    expect(labels).not.toContain("Qoder CLI");
-    expect(labels).not.toContain("Antigravity CLI");
+    expect(labels).toContain("Codex CLI");
+    expect(labels).toContain("Qoder CLI");
+    expect(labels).toContain("Antigravity CLI");
+
+    // Main rail holds only the installed+enabled CLI.
+    expect(itemsUnder("settings.cliManage")).toEqual(["Claude Code"]);
+
+    // 未安装 holds every uninstalled CLI (the probe lists 4 engines, the rail
+    // registers all of them); 未启用 only the installed disabled one — an
+    // uninstalled CLI never lands in the disabled bucket.
+    const missingItems = itemsUnder("settings.cliNotInstalledGroup");
+    expect(missingItems).toEqual(
+      expect.arrayContaining(["Qoder CLI", "Antigravity CLI"]),
+    );
+    expect(missingItems).not.toContain("Claude Code");
+    expect(missingItems).not.toContain("Codex CLI");
+    expect(itemsUnder("settings.cliDisabledGroup")).toEqual(["Codex CLI"]);
 
     // 未安装 sorts before 未启用 in the rail.
     const missingAt = labels.indexOf(i18n.t("settings.cliNotInstalledGroup"));
     const disabledAt = labels.indexOf(i18n.t("settings.cliDisabledGroup"));
     expect(missingAt).toBeGreaterThan(-1);
     expect(disabledAt).toBeGreaterThan(missingAt);
-
-    // Expanding 未安装 reveals the uninstalled CLIs.
-    await expandBucket("settings.cliNotInstalledGroup");
-    labels = navLabels();
-    expect(labels).toContain("Qoder CLI");
-    expect(labels).toContain("Antigravity CLI");
-    expect(labels).not.toContain("Codex CLI");
-
-    // 未启用 holds the installed disabled CLI — and nothing uninstalled.
-    await expandBucket("settings.cliDisabledGroup");
-    labels = navLabels();
-    expect(labels).toContain("Codex CLI");
-    expect(labels).toContain("Qoder CLI");
-    expect(labels).toContain("Antigravity CLI");
-
-    // Collapsing 未安装 hides the uninstalled CLIs again.
-    await expandBucket("settings.cliNotInstalledGroup");
-    labels = navLabels();
-    expect(labels).not.toContain("Qoder CLI");
-    expect(labels).not.toContain("Antigravity CLI");
-    expect(labels).toContain("Codex CLI");
   });
 
   it("keeps every CLI while the engine probe is out (empty list = unknown)", async () => {

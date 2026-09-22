@@ -155,15 +155,13 @@ export default function SettingsPage() {
         const meta = GROUP_META[group];
         const order = meta?.order ?? KNOWN_GROUP_COUNT + index;
         if (group !== "cli") {
-          // Every rail group collapses (chevron heading); the choice
-          // persists via the group id. All start expanded.
+          // Every rail group is a static Codex-style section (muted heading,
+          // always-visible items) — no collapse state to carry.
           return [
             {
               id: group,
               label: meta ? t(meta.labelKey) : group,
               order,
-              collapsible: true,
-              defaultExpanded: true,
               items,
             },
           ];
@@ -210,9 +208,6 @@ export default function SettingsPage() {
             id: "cli",
             label: meta ? t(meta.labelKey) : group,
             order,
-            collapsible: true,
-            defaultExpanded: true,
-            showCount: true,
             items: enabledItems,
             // The CLI 管理 rail is drag-sortable; the order persists across
             // sessions (localStorage) and new engines append at the end. A
@@ -230,15 +225,13 @@ export default function SettingsPage() {
             dragHandleLabel: t("settings.cliDrag"),
           },
         ];
-        // Bucket order: 未安装 sorts before 未启用; both start collapsed to
-        // keep the rail quiet.
+        // Bucket order: 未安装 sorts before 未启用; both render as static
+        // sections like the main groups.
         if (uninstalledItems.length > 0) {
           rail.push({
             id: "cli-missing",
             label: t("settings.cliNotInstalledGroup"),
             order: order + 0.5,
-            collapsible: true,
-            showCount: true,
             items: uninstalledItems,
           });
         }
@@ -247,8 +240,6 @@ export default function SettingsPage() {
             id: "cli-disabled",
             label: t("settings.cliDisabledGroup"),
             order: order + 0.6,
-            collapsible: true,
-            showCount: true,
             items: disabledItems,
           });
         }

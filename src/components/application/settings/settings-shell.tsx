@@ -11,7 +11,6 @@ import { useTranslation } from "react-i18next";
 import X from "lucide-react/dist/esm/icons/x";
 import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left";
 import Search from "lucide-react/dist/esm/icons/search";
-import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
 import {
   WorkspaceSortableList,
   type RepoDragChrome,
@@ -22,19 +21,6 @@ import { needsWindowControls, useTitlebarStyle } from "@/features/settings/title
 import { IS_MAC } from "@/lib/platform";
 import { cx } from "@/utils/cx";
 import { useBrowserOcclusion } from "@/features/browser/occlusion";
-import { readStoredJson, writeStored } from "@/lib/storage";
-
-/** localStorage key for the user's rail collapse choices (group id →
- *  expanded). Only groups with a stable `id` persist; others are
- *  session-local. */
-const RAIL_EXPANDED_KEY = "ccgui-next.settingsRailExpanded:v1";
-
-const readRailExpanded = (): Record<string, boolean> =>
-  readStoredJson(RAIL_EXPANDED_KEY, (value) =>
-    value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, boolean>)
-      : null,
-  ) ?? {};
 
 /**
  * The app-wide fullscreen settings page, opened on the /settings route from
@@ -45,14 +31,20 @@ const readRailExpanded = (): Record<string, boolean> =>
  * Shell layout:
  *   root      fixed inset-0, z-100 (dialogs from inside settings portal at
  *             z-110 and still outrank it), fades in on mount.
- *   rail      220px, bg background/secondary, 1px right border, p 10 —
+ *   rail      300px, bg background/secondary, 1px right border, p 10 —
  *             back-to-app row + search box fixed on top (md+ vertical rail
  *             only; mobile closes via the content header's X), then the
  *             group list as the rail's only scroll region — rows never
- *             slide under the overlay traffic lights — in the same
- *             group/item recipe as the board-team dropdown menus (16px
- *             icons, rows p-1.5 radius/lg, body-2-medium labels), selected
- *             row bg background/secondary/hover.
+ *             slide under the overlay traffic lights. Rows follow the Codex
+ *             hierarchy: 14px regular-weight labels in text/primary over
+ *             near-black icons (foreground/icon-primary), a muted tertiary
+ *             section heading and a muted back row — selection is carried by
+ *             the row fill alone (background/secondary/hover). The reference
+ *             rail renders every row at font-normal (its nav button is passed
+ *             `font-normal`); Body/Medium made our labels read visibly
+ *             heavier and darker than Codex at the same size. Item rows stack
+ *             without a gap: p-1.5 + the 20px line box = the 32px row,
+ *             matching the reference rail's pitch.
  *   content   px 32, title row fixed, 720px reading column centered in the
  *             pane — the title row and the page body share it (the close
  *             button stays on the pane's right edge), so wide windows keep
@@ -60,10 +52,11 @@ const readRailExpanded = (): Record<string, boolean> =>
  *             stretching it edge to edge. The page itself scrolls when
  *             taller than the shell.
  *
- * Search filters rail items by label (case-insensitive substring); while a
- * query is active every group force-expands and drag-sort is suspended — a
- * filtered list has no stable reorder axis. Escape closes the page (the
- * search box consumes it first to clear the query).
+ * Rail groups are static sections in the Codex style: a muted heading over an
+ * always-visible item list — no chevrons, no collapse state to persist.
+ * Search filters rail items by label (case-insensitive substring) and
+ * suspends drag-sort — a filtered list has no stable reorder axis. Escape
+ * closes the page (the search box consumes it first to clear the query).
  */
 
 type IconComponent = ComponentType<{
@@ -89,20 +82,11 @@ export interface SettingsNavItem {
 }
 
 export interface SettingsNavGroup {
-  /** Stable id used as the rail key and for persisted collapse state;
-   *  falls back to the label (localized — unstable across languages). */
+  /** Stable id used as the rail key; falls back to the label (localized —
+   *  unstable across languages). */
   id?: string;
-  /** Muted group heading; omit for an unlabeled group. */
+  /** Muted section heading; omit for an unlabeled group. */
   label?: string;
-  /** Collapsible rail section: the heading becomes a chevron toggle and a
-   *  selected page inside force-expands the group. */
-  collapsible?: boolean;
-  /** Initial expanded state for a collapsible group the user has never
-   *  toggled (default: collapsed). Once toggled, the user's choice wins and
-   *  persists across sessions when the group has an `id`. */
-  defaultExpanded?: boolean;
-  /** Show an item-count pill next to the heading (the CLI rails). */
-  showCount?: boolean;
   /** When set, the group's items render as a drag-sortable list (the item
    *  icon becomes the grip, md+ vertical rail only) and a drop reports the
    *  new key order. */
@@ -155,18 +139,14 @@ function NavButton({
         className={cx("flex shrink-0", item.disabled && "opacity-50 grayscale")}
       >
         <item.icon
-          className="size-4 text-foreground-icon-secondary"
+          className="size-4 text-foreground-icon-primary"
           aria-hidden
         />
       </span>
       <span
         className={cx(
-          "truncate text-body-2-medium",
-          item.disabled
-            ? "text-text-tertiary"
-            : selected
-              ? "text-text-primary"
-              : "text-text-secondary",
+          "truncate text-body-regular",
+          item.disabled ? "text-text-tertiary" : "text-text-primary",
         )}
       >
         {item.label}
@@ -199,7 +179,7 @@ function SortableNavItems({
     <WorkspaceSortableList
       items={sortableItems}
       onReorder={(orderedKeys) => group.onReorderItems?.(orderedKeys)}
-      className="flex w-auto flex-row gap-1 md:w-full md:flex-col"
+      className="flex w-auto flex-row gap-1 md:w-full md:flex-col md:gap-0"
       renderItem={({ item }, drag: RepoDragChrome | null) => {
         const selected = item.key === page;
         if (!drag?.dragHandleProps) {
@@ -229,7 +209,7 @@ function SortableNavItems({
               )}
             >
               <item.icon
-                className="size-4 shrink-0 text-foreground-icon-secondary"
+                className="size-4 shrink-0 text-foreground-icon-primary"
                 aria-hidden
               />
             </button>
@@ -243,15 +223,10 @@ function SortableNavItems({
               )}
             >
               <item.icon
-                className="size-4 shrink-0 text-foreground-icon-secondary md:hidden"
+                className="size-4 shrink-0 text-foreground-icon-primary md:hidden"
                 aria-hidden
               />
-              <span
-                className={cx(
-                  "truncate text-body-2-medium",
-                  selected ? "text-text-primary" : "text-text-secondary",
-                )}
-              >
+              <span className="truncate text-body-regular text-text-primary">
                 {item.label}
               </span>
             </button>
@@ -328,12 +303,6 @@ export function SettingsShell({
   /** Rail counterpart of contentScrolled: drives the group list's top fade
    *  now that the list scrolls on its own under the fixed header. */
   const [railScrolled, setRailScrolled] = useState(false);
-  /** Expanded state per collapsible group (keyed by group id); seeded from
-   *  localStorage so the user's collapse choices survive reopening. */
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
-    readRailExpanded,
-  );
-
   return (
     <div
       role="dialog"
@@ -347,7 +316,7 @@ export function SettingsShell({
       {/* Nav rail — the board-team dropdown group/item recipe */}
       <nav
         aria-label={ariaLabel}
-        className="flex w-full shrink-0 flex-row gap-5 overflow-x-auto border-b border-separator-border bg-background-secondary-default p-2.5 md:w-[220px] md:flex-col md:gap-5 md:overflow-x-visible md:border-r md:border-b-0"
+        className="flex w-full shrink-0 flex-row gap-5 overflow-x-auto border-b border-separator-border bg-background-secondary-default p-2.5 md:w-[300px] md:flex-col md:gap-5 md:overflow-x-visible md:border-r md:border-b-0"
       >
         {/* Window drag strip reaching the overlay titlebar (same recipe as
             SidebarDragStrip): clears the floating macOS traffic lights so
@@ -377,7 +346,7 @@ export function SettingsShell({
               className="size-4 shrink-0 text-foreground-icon-secondary"
               aria-hidden
             />
-            <span className="truncate text-body-2-medium text-text-primary">
+            <span className="truncate text-body-regular text-text-secondary">
               {t("settings.backToApp")}
             </span>
           </button>
@@ -398,6 +367,12 @@ export function SettingsShell({
             }}
             leadingIcon={Search}
             size="small"
+            /* Codex-style field: white fill with a 1px hairline (the shell's
+               idle ring is transparent; the inset shadow supplies the
+               border without fighting hover/focus ring colors). The fill
+               needs `!` — the shell's own bg utility is emitted later in
+               the stylesheet and would win otherwise. */
+            fieldClassName="bg-background-primary-default! shadow-[inset_0_0_0_1px_var(--color-separator-border)]"
           />
         </div>
 
@@ -420,96 +395,37 @@ export function SettingsShell({
                   key={group.id ?? group.label ?? groupIndex}
                   className="flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col md:gap-1"
                 >
-                  {(() => {
-                    const groupKey = group.id ?? group.label ?? String(groupIndex);
-                    // A selected page inside a collapsed group force-expands it
-                    // so the current row never hides under the chevron; an
-                    // active search force-expands everything so matches show.
-                    const expanded =
-                      searching ||
-                      !group.collapsible ||
-                      (expandedGroups[groupKey] ?? group.defaultExpanded ?? false) ||
-                      group.items.some((item) => item.key === page);
-                    const toggleGroup = () =>
-                      setExpandedGroups((prev) => {
-                        const next = {
-                          ...prev,
-                          [groupKey]: !(
-                            prev[groupKey] ?? group.defaultExpanded ?? false
-                          ),
-                        };
-                        if (group.id)
-                          writeStored(RAIL_EXPANDED_KEY, JSON.stringify(next));
-                        return next;
-                      });
-                    return (
-                      <>
-                        {group.label &&
-                          (group.collapsible ? (
-                            <button
-                              type="button"
-                              aria-expanded={expanded}
-                              onClick={toggleGroup}
-                              className={cx(
-                                RAIL_ROW,
-                                "w-auto shrink-0 cursor-pointer md:w-full",
-                                "outline-none transition-colors duration-150 ease hover:bg-background-secondary-hover/60 focus-visible:ring-2 focus-visible:ring-border-focus-ring",
-                              )}
-                            >
-                              <ChevronRight
-                                className={cx(
-                                  "size-4 shrink-0 text-foreground-icon-secondary transition-transform duration-150 ease",
-                                  expanded && "rotate-90",
-                                )}
-                                aria-hidden
-                              />
-                              <span className="truncate text-body-2-medium text-text-secondary">
-                                {group.label}
-                              </span>
-                              {group.showCount && (
-                                <span className="ml-auto hidden rounded-full bg-background-secondary-hover px-1.5 text-[11px] leading-4 text-text-tertiary md:block">
-                                  {group.items.length}
-                                </span>
-                              )}
-                            </button>
-                          ) : (
-                            <span className="hidden pl-7 text-body-2-medium text-text-secondary md:block">
-                              {group.label}
-                              {group.showCount && (
-                                <span className="ml-1.5 rounded-full bg-background-secondary-hover px-1.5 text-[11px] leading-4 text-text-tertiary">
-                                  {group.items.length}
-                                </span>
-                              )}
-                            </span>
-                          ))}
-                        {expanded &&
-                          (group.onReorderItems && !searching ? (
-                            <SortableNavItems
-                              group={group}
-                              page={page}
-                              onSelect={(key) => {
-                                setPage(key);
-                                setContentScrolled(false);
-                              }}
-                            />
-                          ) : (
-                            <div className="flex w-auto flex-row gap-1 md:w-full md:flex-col">
-                              {group.items.map((item) => (
-                                <NavButton
-                                  key={item.key}
-                                  item={item}
-                                  selected={item.key === page}
-                                  onSelect={(key) => {
-                                    setPage(key);
-                                    setContentScrolled(false);
-                                  }}
-                                />
-                              ))}
-                            </div>
-                          ))}
-                      </>
-                    );
-                  })()}
+                  {/* Static section heading (Codex style): muted label aligned
+                      with the item icons, never a toggle. */}
+                  {group.label && (
+                    <span className="hidden truncate pl-1.5 text-body-regular text-text-tertiary md:block">
+                      {group.label}
+                    </span>
+                  )}
+                  {group.onReorderItems && !searching ? (
+                    <SortableNavItems
+                      group={group}
+                      page={page}
+                      onSelect={(key) => {
+                        setPage(key);
+                        setContentScrolled(false);
+                      }}
+                    />
+                  ) : (
+                    <div className="flex w-auto flex-row gap-1 md:w-full md:flex-col md:gap-0">
+                      {group.items.map((item) => (
+                        <NavButton
+                          key={item.key}
+                          item={item}
+                          selected={item.key === page}
+                          onSelect={(key) => {
+                            setPage(key);
+                            setContentScrolled(false);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -536,7 +452,7 @@ export function SettingsShell({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div
           data-tauri-drag-region="deep"
-          className="grid shrink-0 items-center px-4 pt-4 pb-3 md:px-8 md:pt-8 select-none"
+          className="grid shrink-0 items-center px-4 pt-4 pb-3 md:px-8 md:pt-16 select-none"
         >
           <div
             className={cx(
@@ -544,7 +460,7 @@ export function SettingsShell({
               "col-start-1 row-start-1 flex min-w-0 items-center gap-3 pr-8",
             )}
           >
-            <h2 className="shrink-0 text-title-3-medium text-text-primary">
+            <h2 className="shrink-0 text-title-2-medium text-text-primary">
               {titles[page] ?? page}
             </h2>
             {renderHeaderActions?.(page)}
