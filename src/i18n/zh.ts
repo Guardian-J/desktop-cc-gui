@@ -937,7 +937,7 @@ export const zh = {
       compatibility: "兼容",
       sdkVersion: "SDK",
       updatedAt: "最近更新时间",
-      permissionsTitle: "权限",
+      permissionsTitle: "权限（CCGUI权限）",
       permissionsEmpty: "无需额外权限",
       permissionsCount: "{{n}} 项",
       permissionsExpand: "展开全部 {{n}} 项",

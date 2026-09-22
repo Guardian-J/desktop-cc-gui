@@ -971,7 +971,7 @@ export const en: Messages = {
       compatibility: "Compatibility",
       sdkVersion: "SDK",
       updatedAt: "Last updated",
-      permissionsTitle: "Permissions",
+      permissionsTitle: "Permissions (CCGUI)",
       permissionsEmpty: "No extra permissions needed",
       permissionsCount: "{{n}}",
       permissionsExpand: "Show all {{n}}",
