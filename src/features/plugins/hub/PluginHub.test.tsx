@@ -227,6 +227,18 @@ describe("PluginHub", () => {
     expect(plainRow.querySelector<HTMLElement>("div[aria-hidden]")?.textContent).toBe("P");
   });
 
+  it("loads market metadata in the installed tab so its rows show the indexed icon", async () => {
+    usePluginHubStore.setState({ view: "installed" });
+    pluginList.mockImplementation(async () => [installedPlugin({ id: "react-doctor" })]);
+    await render();
+    await act(async () => {});
+
+    // Artwork lives in the index, not in the install record: the installed
+    // tab must fetch it too, or a locally installed plugin keeps the letter.
+    expect(pluginFetchIndex).toHaveBeenCalled();
+    expect(document.body.querySelector(`img[src="${MARKET_ENTRY.icon}"]`)).not.toBeNull();
+  });
+
   it("filters by category, by query, and clears an empty result", async () => {
     pluginFetchIndex.mockImplementation(async () => [
       MARKET_ENTRY,

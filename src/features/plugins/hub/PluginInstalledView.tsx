@@ -6,17 +6,27 @@ import { Input } from "@/components/base/input/input";
 import { CenteredSpinner } from "@/components/base/empty-state";
 import { PluginInstalledRow } from "./PluginInstalledRow";
 import { usePluginsStore } from "../manager/usePlugins";
+import { useMarketplaceStore } from "../marketplace/store";
 
 /** 已安装 tab: the manager half of the hub — search + per-plugin controls. */
 export function PluginInstalledView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) {
   const { t } = useTranslation();
   const { installed, loaded, error, installing, refresh, installFromDirectory } =
     usePluginsStore();
+  const fetchIndex = useMarketplaceStore((s) => s.fetchIndex);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 图标与效果图只存在市场索引里（安装记录不带 repo 与素材路径），所以
+  // 直接打开「已安装」也要拉一次索引，否则本地装的插件永远只有首字母瓷砖、
+  // 详情页也拿不到图集。非强制：backend 侧有 1h 缓存，市场页的刷新按钮
+  // 负责强制更新。
+  useEffect(() => {
+    void fetchIndex();
+  }, [fetchIndex]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
