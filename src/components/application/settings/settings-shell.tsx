@@ -45,16 +45,20 @@ const readRailExpanded = (): Record<string, boolean> =>
  * Shell layout:
  *   root      fixed inset-0, z-100 (dialogs from inside settings portal at
  *             z-110 and still outrank it), fades in on mount.
- *   rail      254px, bg background/secondary, 1px right border, p 10 —
+ *   rail      220px, bg background/secondary, 1px right border, p 10 —
  *             back-to-app row + search box fixed on top (md+ vertical rail
  *             only; mobile closes via the content header's X), then the
  *             group list as the rail's only scroll region — rows never
  *             slide under the overlay traffic lights — in the same
- *             group/item recipe as the board-team dropdown menus (label
- *             pl-8, items p-8 radius/2lg icon-20 + body-medium), selected
+ *             group/item recipe as the board-team dropdown menus (16px
+ *             icons, rows p-1.5 radius/lg, body-2-medium labels), selected
  *             row bg background/secondary/hover.
- *   content   px 32, title row fixed, the page itself scrolls when taller
- *             than the shell.
+ *   content   px 32, title row fixed, 720px reading column centered in the
+ *             pane — the title row and the page body share it (the close
+ *             button stays on the pane's right edge), so wide windows keep
+ *             every row's label→control distance short instead of
+ *             stretching it edge to edge. The page itself scrolls when
+ *             taller than the shell.
  *
  * Search filters rail items by label (case-insensitive substring); while a
  * query is active every group force-expands and drag-sort is suspended — a
@@ -66,6 +70,15 @@ type IconComponent = ComponentType<{
   className?: string;
   "aria-hidden"?: boolean | "true" | "false";
 }>;
+
+/** One rail row recipe: back row, group heading, nav item and sortable row
+ *  all render from it, so icon and label columns stay aligned. */
+const RAIL_ROW = "flex items-center gap-1.5 rounded-lg p-1.5 text-left";
+
+/** Reading column shared by the content title row and every page body:
+ *  centered in the pane so wide windows keep rows compact (label left,
+ *  control right) instead of stretching them edge to edge. */
+const CONTENT_COLUMN = "mx-auto w-full max-w-[720px]";
 
 export interface SettingsNavItem {
   key: string;
@@ -130,7 +143,8 @@ function NavButton({
       aria-current={selected ? "page" : undefined}
       onClick={() => onSelect(item.key)}
       className={cx(
-        "flex w-auto shrink-0 cursor-pointer items-center gap-1.5 rounded-2lg p-1.5 text-left md:w-full md:gap-2 md:p-2",
+        RAIL_ROW,
+        "w-auto shrink-0 cursor-pointer md:w-full",
         "outline-none transition-colors duration-150 ease focus-visible:ring-2 focus-visible:ring-border-focus-ring",
         selected
           ? "bg-background-secondary-hover"
@@ -141,13 +155,13 @@ function NavButton({
         className={cx("flex shrink-0", item.disabled && "opacity-50 grayscale")}
       >
         <item.icon
-          className="size-4 text-foreground-icon-secondary md:size-5"
+          className="size-4 text-foreground-icon-secondary"
           aria-hidden
         />
       </span>
       <span
         className={cx(
-          "truncate text-body-medium",
+          "truncate text-body-2-medium",
           item.disabled
             ? "text-text-tertiary"
             : selected
@@ -196,7 +210,8 @@ function SortableNavItems({
         return (
           <div
             className={cx(
-              "flex w-full items-center gap-1.5 rounded-2lg p-1.5 transition-colors duration-150 ease md:gap-2 md:p-2",
+              RAIL_ROW,
+              "w-full transition-colors duration-150 ease",
               selected
                 ? "bg-background-secondary-hover"
                 : "hover:bg-background-secondary-hover/60",
@@ -214,7 +229,7 @@ function SortableNavItems({
               )}
             >
               <item.icon
-                className="size-5 shrink-0 text-foreground-icon-secondary"
+                className="size-4 shrink-0 text-foreground-icon-secondary"
                 aria-hidden
               />
             </button>
@@ -233,7 +248,7 @@ function SortableNavItems({
               />
               <span
                 className={cx(
-                  "truncate text-body-medium",
+                  "truncate text-body-2-medium",
                   selected ? "text-text-primary" : "text-text-secondary",
                 )}
               >
@@ -332,7 +347,7 @@ export function SettingsShell({
       {/* Nav rail — the board-team dropdown group/item recipe */}
       <nav
         aria-label={ariaLabel}
-        className="flex w-full shrink-0 flex-row gap-5 overflow-x-auto border-b border-separator-border bg-background-secondary-default p-2.5 md:w-[254px] md:flex-col md:gap-5 md:overflow-x-visible md:border-r md:border-b-0"
+        className="flex w-full shrink-0 flex-row gap-5 overflow-x-auto border-b border-separator-border bg-background-secondary-default p-2.5 md:w-[220px] md:flex-col md:gap-5 md:overflow-x-visible md:border-r md:border-b-0"
       >
         {/* Window drag strip reaching the overlay titlebar (same recipe as
             SidebarDragStrip): clears the floating macOS traffic lights so
@@ -353,15 +368,16 @@ export function SettingsShell({
             type="button"
             onClick={onClose}
             className={cx(
-              "flex cursor-pointer items-center gap-1.5 rounded-2lg p-1.5 text-left md:gap-2 md:p-2",
+              RAIL_ROW,
+              "w-full cursor-pointer",
               "outline-none transition-colors duration-150 ease hover:bg-background-secondary-hover/60 focus-visible:ring-2 focus-visible:ring-border-focus-ring",
             )}
           >
             <ArrowLeft
-              className="size-4 shrink-0 text-foreground-icon-secondary md:size-5"
+              className="size-4 shrink-0 text-foreground-icon-secondary"
               aria-hidden
             />
-            <span className="truncate text-body-medium text-text-primary">
+            <span className="truncate text-body-2-medium text-text-primary">
               {t("settings.backToApp")}
             </span>
           </button>
@@ -395,14 +411,14 @@ export function SettingsShell({
             onScroll={(e) => setRailScrolled(e.currentTarget.scrollTop > 0)}
           >
             {searching && visibleGroups.length === 0 ? (
-              <span className="hidden px-2 text-body-medium text-text-tertiary md:block">
+              <span className="hidden px-1.5 text-body-2-medium text-text-tertiary md:block">
                 {t("settings.searchEmpty")}
               </span>
             ) : (
               visibleGroups.map((group, groupIndex) => (
                 <div
                   key={group.id ?? group.label ?? groupIndex}
-                  className="flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col"
+                  className="flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col md:gap-1"
                 >
                   {(() => {
                     const groupKey = group.id ?? group.label ?? String(groupIndex);
@@ -435,7 +451,8 @@ export function SettingsShell({
                               aria-expanded={expanded}
                               onClick={toggleGroup}
                               className={cx(
-                                "flex w-auto shrink-0 cursor-pointer items-center gap-1.5 rounded-2lg p-1.5 text-left md:w-full md:gap-1 md:px-2 md:py-1.5",
+                                RAIL_ROW,
+                                "w-auto shrink-0 cursor-pointer md:w-full",
                                 "outline-none transition-colors duration-150 ease hover:bg-background-secondary-hover/60 focus-visible:ring-2 focus-visible:ring-border-focus-ring",
                               )}
                             >
@@ -446,7 +463,7 @@ export function SettingsShell({
                                 )}
                                 aria-hidden
                               />
-                              <span className="truncate text-body-medium text-text-secondary">
+                              <span className="truncate text-body-2-medium text-text-secondary">
                                 {group.label}
                               </span>
                               {group.showCount && (
@@ -456,7 +473,7 @@ export function SettingsShell({
                               )}
                             </button>
                           ) : (
-                            <span className="hidden pl-2 text-body-medium text-text-secondary md:block">
+                            <span className="hidden pl-7 text-body-2-medium text-text-secondary md:block">
                               {group.label}
                               {group.showCount && (
                                 <span className="ml-1.5 rounded-full bg-background-secondary-hover px-1.5 text-[11px] leading-4 text-text-tertiary">
@@ -512,13 +529,21 @@ export function SettingsShell({
 
       {/* Content pane — fixed title row, scrollable page below; the title
           row doubles as a window drag region ("deep": blank spots drag,
-          Tauri toggles maximize on double-click, buttons stay clickable). */}
+          Tauri toggles maximize on double-click, buttons stay clickable).
+          Title and page body share CONTENT_COLUMN (same px, same padding),
+          so wide windows center both on one axis; the close button sits in
+          the title's grid cell (justify-self) and never shifts that axis. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div
           data-tauri-drag-region="deep"
-          className="flex shrink-0 items-center justify-between px-4 pt-4 pb-3 md:px-8 md:pt-8 select-none"
+          className="grid shrink-0 items-center px-4 pt-4 pb-3 md:px-8 md:pt-8 select-none"
         >
-          <div className="flex min-w-0 items-center gap-3">
+          <div
+            className={cx(
+              CONTENT_COLUMN,
+              "col-start-1 row-start-1 flex min-w-0 items-center gap-3 pr-8",
+            )}
+          >
             <h2 className="shrink-0 text-title-3-medium text-text-primary">
               {titles[page] ?? page}
             </h2>
@@ -529,7 +554,7 @@ export function SettingsShell({
             aria-label={ariaLabel}
             onClick={onClose}
             className={cx(
-              "flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full",
+              "col-start-1 row-start-1 justify-self-end flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full",
               "bg-background-tertiary-default text-foreground-icon-secondary",
               "transition-colors duration-150 ease hover:bg-background-tertiary-hover",
               "outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring",
@@ -543,7 +568,7 @@ export function SettingsShell({
             className="h-full overflow-y-auto px-4 pb-4 md:px-8 md:pb-8"
             onScroll={(e) => setContentScrolled(e.currentTarget.scrollTop > 0)}
           >
-            {renderPage(page)}
+            <div className={CONTENT_COLUMN}>{renderPage(page)}</div>
           </div>
           {/* Progressive top fade — eases in once the page is scrolled so
               content dissolves under the title row instead of hard-cutting. */}
