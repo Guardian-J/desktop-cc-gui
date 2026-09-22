@@ -10,6 +10,7 @@ import {
   loadPlugin,
   pluginsBootstrapped,
   prunePluginRuntimeState,
+  reloadPlugin,
   subscribePluginStates,
   unloadPlugin,
 } from "../runtime/loader";
@@ -91,7 +92,11 @@ export const usePluginsStore = create<PluginsStore>((set, get) => ({
     });
     try {
       const info = await ipc.pluginInstallFromPath(path);
-      if (info.enabled) await loadPlugin({ info });
+      // reloadPlugin, not loadPlugin: installing from a directory over an
+      // existing id is an update of a possibly-running plugin, and loadPlugin
+      // early-returns for an already-active id (the user then kept the old
+      // code until an app restart).
+      if (info.enabled) await reloadPlugin({ info });
       await get().refresh();
     } catch (error) {
       set({ error: String(error) });

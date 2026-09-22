@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getPluginState,
   loadPlugin,
+  reloadPlugin,
   reportPluginCrash,
   unloadPlugin,
   type LoaderBackend,
@@ -200,6 +201,76 @@ describe("loader", () => {
 
     unloadPlugin("lp-css");
     expect(document.head.querySelector('style[data-plugin="lp-css"]')).toBeNull();
+  });
+
+  it("reloadPlugin swaps the running instance onto the freshly read bundle", async () => {
+    // Update hot-swap contract: reload must read the files again and leave
+    // exactly one live registration (old disposers run, new CSS applied),
+    // instead of stacking a second <style> or keeping the old bytes.
+    const files: Record<string, string> = {
+      "lp-swap/manifest.json": JSON.stringify({
+        id: "lp-swap",
+        name: "Swap",
+        version: "1.0.0",
+        tier: "declarative",
+        permissions: [],
+      }),
+      "lp-swap/styles.css": ".v1 { color: red; }",
+    };
+    const backend = fakeBackend(files);
+    await loadPlugin({ info: info("lp-swap", { tier: "declarative" }) }, backend);
+    expect(
+      document.head.querySelector('style[data-plugin="lp-swap"]')?.textContent,
+    ).toContain(".v1");
+
+    // The update transaction landed new bytes on disk under the same id.
+    files["lp-swap/styles.css"] = ".v2 { color: blue; }";
+    files["lp-swap/manifest.json"] = JSON.stringify({
+      id: "lp-swap",
+      name: "Swap",
+      version: "2.0.0",
+      tier: "declarative",
+      permissions: [],
+    });
+    await reloadPlugin(
+      { info: info("lp-swap", { tier: "declarative", version: "2.0.0" }) },
+      backend,
+    );
+
+    expect(getPluginState("lp-swap")).toBe("active");
+    const tags = document.head.querySelectorAll('style[data-plugin="lp-swap"]');
+    expect(tags).toHaveLength(1);
+    expect(tags[0].textContent).toContain(".v2");
+    unloadPlugin("lp-swap");
+  });
+
+  it("reloadPlugin re-activates an already-active plugin, where loadPlugin alone no-ops", async () => {
+    // The reported bug's mechanism, pinned down: an update targets an id
+    // that is already active, and a second loadPlugin is a silent no-op —
+    // so the old bytes kept running until disable/enable or app restart.
+    const backend = fakeBackend();
+    let activations = 0;
+    let cleanups = 0;
+    const plugin = () => ({
+      info: info("lp-swap-active"),
+      manifest: builtinManifest("lp-swap-active"),
+      builtinActivate: () => {
+        activations += 1;
+        return () => {
+          cleanups += 1;
+        };
+      },
+    });
+
+    await loadPlugin(plugin(), backend);
+    await loadPlugin(plugin(), backend); // no-op: still the first instance
+    expect(activations).toBe(1);
+
+    await reloadPlugin(plugin(), backend);
+    expect(activations).toBe(2);
+    expect(cleanups).toBe(1); // the old instance unwound before the swap
+    unloadPlugin("lp-swap-active");
+    expect(cleanups).toBe(2);
   });
 
   it("rejects an invalid manifest and quarantines the plugin", async () => {

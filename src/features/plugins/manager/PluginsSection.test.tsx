@@ -22,6 +22,7 @@ vi.mock("../runtime/loader", () => ({
   getPluginStatesSnapshot: () => STATES_SNAPSHOT,
   ipcBackend: {},
   loadPlugin: vi.fn(async () => {}),
+  reloadPlugin: vi.fn(async () => {}),
   pluginsBootstrapped: () => true,
   prunePluginRuntimeState: vi.fn(),
   subscribePluginStates: () => () => {},

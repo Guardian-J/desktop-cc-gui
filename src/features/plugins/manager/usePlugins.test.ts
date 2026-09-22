@@ -26,11 +26,13 @@ vi.mock("@/lib/events", () => ({
 }));
 
 const loadPlugin = vi.fn(async (_args: unknown) => {});
+const reloadPlugin = vi.fn(async (_args: unknown) => {});
 vi.mock("../runtime/loader", () => ({
   bootstrapPlugins: vi.fn(async () => []),
   getPluginStatesSnapshot: () => [],
   ipcBackend: {},
   loadPlugin: (args: unknown) => loadPlugin(args),
+  reloadPlugin: (args: unknown) => reloadPlugin(args),
   // Already bootstrapped: refresh() under test never re-kicks bootstrap.
   pluginsBootstrapped: () => true,
   prunePluginRuntimeState: vi.fn(),
@@ -85,7 +87,10 @@ describe("installFromDirectory", () => {
     await pending;
     expect(usePluginsStore.getState().installing).toBeNull();
     expect(unlisten).toHaveBeenCalledOnce();
-    expect(loadPlugin).toHaveBeenCalledOnce();
+    // Local install over an existing id must hot-reload too (same
+    // already-active no-op bug as the marketplace update path).
+    expect(reloadPlugin).toHaveBeenCalledOnce();
+    expect(loadPlugin).not.toHaveBeenCalled();
     expect(pluginList).toHaveBeenCalled();
   });
 
