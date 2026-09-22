@@ -88,6 +88,22 @@ function pill(label: string): Element {
 }
 
 describe("RunStatusStrip", () => {
+  it("does not reread a completed edit payload when assistant text grows", async () => {
+    const readContent = vi.fn(() => "one\ntwo");
+    const tool: Message = {
+      ...msg(1, "tool", "edit_file", "/ws/src/a.ts"),
+      args: { get content() { return readContent(); } },
+    };
+    seed([tool], true);
+    await renderStrip();
+    const reads = readContent.mock.calls.length;
+    expect(reads).toBeGreaterThan(0);
+    await act(async () => seed([tool, msg(2, "assistant", "more text")], true));
+    expect(readContent).toHaveBeenCalledTimes(reads);
+    await act(async () => seed([tool, msg(2, "assistant", "more text still arriving")], true));
+    expect(readContent).toHaveBeenCalledTimes(reads);
+  });
+
   it("restores older subagents with their session after switching and reopening", async () => {
     const brief = "# Target\nReview relay recovery.\n# Acceptance\nReconnect without toggling.";
     const history: Message[] = [
@@ -203,9 +219,15 @@ describe("RunStatusStrip", () => {
     seed(TURN, true);
     await renderStrip();
     expect(pill("子代理").textContent).toContain("0/1");
+    // The +/− numbers render as odometer digit columns, so the pill's text
+    // content is the 0-9 strip: read the semantic value instead.
     const edited = pill("已编辑");
-    expect(edited.textContent).toContain("+10");
-    expect(edited.textContent).toContain("−2");
+    const additions = edited.querySelector("[data-testid='run-status-edit-additions']");
+    const deletions = edited.querySelector("[data-testid='run-status-edit-deletions']");
+    expect(additions?.getAttribute("aria-label")).toBe("+10");
+    expect(additions?.getAttribute("data-value")).toBe("10");
+    expect(deletions?.getAttribute("aria-label")).toBe("−2");
+    expect(deletions?.getAttribute("data-value")).toBe("2");
   });
 
   it("opens panels single-open above the strip and closes on Esc", async () => {
