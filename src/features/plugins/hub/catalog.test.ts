@@ -6,6 +6,7 @@ import {
   pluginAvatarGradient,
   pluginInitial,
   pluginMatchesQuery,
+  resolveReadmeUrl,
   selectFeatured,
   sortByDownloads,
 } from "./catalog";
@@ -22,6 +23,7 @@ const entry = (id: string, overrides: Partial<MarketPlugin> = {}): MarketPlugin 
   sdkVersion: null,
   permissions: [],
   downloads: null,
+  screenshots: [],
   ...overrides,
 });
 
@@ -140,5 +142,43 @@ describe("pluginMatchesQuery", () => {
     expect(pluginMatchesQuery(item, "zhukunpeng")).toBe(true);
     expect(pluginMatchesQuery(item, "missing")).toBe(false);
     expect(pluginMatchesQuery(item, "  ")).toBe(true);
+  });
+});
+
+describe("resolveReadmeUrl", () => {
+  const repo = "owner/ccgui-plugin-demo";
+
+  it("loads relative images from raw and relative links from the blob page", () => {
+    expect(resolveReadmeUrl("docs/shot.png", "image", repo)).toBe(
+      "https://raw.githubusercontent.com/owner/ccgui-plugin-demo/HEAD/docs/shot.png",
+    );
+    expect(resolveReadmeUrl("./docs/a b.png", "image", repo)).toBe(
+      "https://raw.githubusercontent.com/owner/ccgui-plugin-demo/HEAD/docs/a%20b.png",
+    );
+    expect(resolveReadmeUrl("docs/guide.zh-CN.md", "link", repo)).toBe(
+      "https://github.com/owner/ccgui-plugin-demo/blob/HEAD/docs/guide.zh-CN.md",
+    );
+  });
+
+  it("passes absolute https and mailto through", () => {
+    expect(resolveReadmeUrl("https://example.com/a.png", "image", repo)).toBe(
+      "https://example.com/a.png",
+    );
+    expect(resolveReadmeUrl(" mailto:dev@example.com ", "link", repo)).toBe(
+      "mailto:dev@example.com",
+    );
+  });
+
+  it("drops other schemes and anything that escapes the repo", () => {
+    expect(resolveReadmeUrl("http://example.com/a.png", "image", repo)).toBe("");
+    expect(resolveReadmeUrl("javascript:alert(1)", "link", repo)).toBe("");
+    expect(resolveReadmeUrl("//evil.test/a.png", "image", repo)).toBe("");
+    expect(resolveReadmeUrl("../../outside.png", "image", repo)).toBe("");
+    expect(resolveReadmeUrl("", "image", repo)).toBe("");
+  });
+
+  it("keeps same-document anchors as links and drops them as images", () => {
+    expect(resolveReadmeUrl("#install", "link", repo)).toBe("#install");
+    expect(resolveReadmeUrl("#install", "image", repo)).toBe("");
   });
 });

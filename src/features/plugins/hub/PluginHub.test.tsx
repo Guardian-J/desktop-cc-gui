@@ -5,6 +5,9 @@ import type { MarketPlugin, PluginInfo } from "@/lib/ipc";
 
 const pluginFetchIndex = vi.fn(async (_force?: boolean): Promise<MarketPlugin[]> => []);
 const pluginCheckUpdates = vi.fn(async () => []);
+const pluginFetchMarketReadme = vi.fn(
+  async (_id: string): Promise<string> => "# React Doctor\n\n一键运行代码体检。",
+);
 const pluginList = vi.fn(async (): Promise<PluginInfo[]> => []);
 const pluginInstallFromMarketplace = vi.fn(async (id: string) =>
   installedPlugin({ id, enabled: true }),
@@ -16,6 +19,7 @@ const pluginSetEnabled = vi.fn(async (id: string, enabled: boolean) =>
 vi.mock("@/lib/ipc", () => ({
   ipc: {
     pluginFetchIndex: (force?: boolean) => pluginFetchIndex(force),
+    pluginFetchMarketReadme: (id: string) => pluginFetchMarketReadme(id),
     pluginCheckUpdates: () => pluginCheckUpdates(),
     pluginList: () => pluginList(),
     pluginInstallFromMarketplace: (id: string) => pluginInstallFromMarketplace(id),
@@ -82,6 +86,10 @@ const MARKET_ENTRY: MarketPlugin = {
   sdkVersion: "^0.3",
   permissions: ["storage", "exec:claude", "ui:status-bar"],
   downloads: DOWNLOADS,
+  screenshots: [
+    "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/shot-1.png",
+    "https://raw.githubusercontent.com/zhukupenglinyutong/ccgui-plugin-react-doctor/HEAD/docs/shot-2.png",
+  ],
 };
 
 function installedPlugin(overrides: Partial<PluginInfo> & { id: string }): PluginInfo {
@@ -193,11 +201,29 @@ describe("PluginHub", () => {
     expect(document.body.textContent).not.toContain(DOWNLOADS.toLocaleString());
   });
 
-  it("opens the detail dialog from a row: permissions, repo link, install action", async () => {
+  it("opens the full-page detail: carousel, README, permissions and repo link", async () => {
     await render();
     await act(async () => {
       buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    // The README arrives through a mocked IPC round-trip in an effect.
+    await act(async () => {});
+
+    expect(pluginFetchMarketReadme).toHaveBeenCalledWith("react-doctor");
+    // The detail owns the whole surface — the browse chrome is gone.
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.backToList"));
+    expect(
+      document.body.querySelector(
+        `button[aria-label="${i18n.t("plugins.hub.refresh")}"]`,
+      ),
+    ).toBeNull();
+    // README markdown rendered below the hero.
+    expect(document.body.textContent).toContain("一键运行代码体检。");
+    // Carousel: two screenshots, counter + navigation affordances.
+    expect(
+      document.body.textContent,
+    ).toContain(i18n.t("plugins.hub.screenshotCounter", { current: 1, total: 2 }));
+    expect(buttonByLabel(i18n.t("plugins.hub.screenshotNext"))).toBeDefined();
 
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.permissionsTitle"));
     // Grant-shaped permissions read as sentences, not raw ids.
@@ -205,13 +231,21 @@ describe("PluginHub", () => {
     expect(document.body.textContent).toContain("claude");
 
     const repoLink = [...document.body.querySelectorAll("button")].find((candidate) =>
-      candidate.textContent?.includes(MARKET_ENTRY.repo),
+      candidate.textContent?.includes(i18n.t("plugins.hub.repo")),
     );
     expect(repoLink).toBeDefined();
     await act(async () => {
       repoLink!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(openExternal).toHaveBeenCalledWith(`https://github.com/${MARKET_ENTRY.repo}`);
+
+    // Back returns to the browse surface.
+    await act(async () => {
+      buttonByLabel(i18n.t("plugins.hub.backToList")).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.sectionFeatured"));
   });
 
   it("manages installed plugins: uninstall confirmation and quarantine retry", async () => {

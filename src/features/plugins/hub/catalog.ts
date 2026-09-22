@@ -129,3 +129,39 @@ export function pluginMatchesQuery(entry: MarketPlugin, query: string): boolean 
     .toLowerCase()
     .includes(needle);
 }
+
+const README_RAW_BASE = "https://raw.githubusercontent.com";
+const README_SITE_BASE = "https://github.com";
+
+/** Resolve one URL inside a plugin README (fetched verbatim from the repo's
+ *  default branch): relative image paths must load from raw.githubusercontent
+ *  (GitHub's blob pages are HTML), while relative links should open the
+ *  rendered GitHub page. Absolute https URLs and mailto pass through;
+ *  anchors stay local; every other scheme — and anything that resolves
+ *  outside the repo — is blanked so react-markdown renders no target. */
+export function resolveReadmeUrl(
+  url: string,
+  kind: "image" | "link",
+  repo: string,
+): string {
+  const trimmed = url.trim().replace(/^<|>$/g, "");
+  if (!trimmed) return "";
+  if (/^https:/i.test(trimmed)) return trimmed;
+  if (/^mailto:/i.test(trimmed) && kind === "link") return trimmed;
+  if (trimmed.startsWith("#")) return kind === "link" ? trimmed : "";
+  // Other schemes (http, javascript:, data:, …) and protocol-relative URLs
+  // are dropped outright rather than resolved.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return "";
+  const base =
+    kind === "image"
+      ? `${README_RAW_BASE}/${repo}/HEAD/`
+      : `${README_SITE_BASE}/${repo}/blob/HEAD/`;
+  try {
+    const resolved = new URL(trimmed, base).toString();
+    // `..` normalizes away in URL(); a path that escaped the repo root no
+    // longer shares the base prefix and is refused.
+    return resolved.startsWith(base) ? resolved : "";
+  } catch {
+    return "";
+  }
+}

@@ -733,6 +733,10 @@ export interface MarketPlugin {
   /** Lifetime download count from the index stats bot; null when the
    *  stats file is unavailable — decorative, never gates anything. */
   downloads: number | null;
+  /** Detail-page carousel: absolute https URLs, already resolved by the
+   *  backend from the index's repo-relative paths. Empty when the plugin
+   *  ships no screenshots. */
+  screenshots: string[];
 }
 
 /** One installed marketplace plugin with a newer indexed version. */
@@ -1118,6 +1122,10 @@ export const ipc = {
   // web bridge; fetch/checkUpdates ride the read-only whitelist.
   pluginFetchIndex: (force = false) =>
     invoke<MarketPlugin[]>("plugin_fetch_index", { force }),
+  /** Long-form intro (README.md from the plugin repo's default branch) for
+   *  the market detail page. Fetched on open, cached backend-side for 1h. */
+  pluginFetchMarketReadme: (id: string) =>
+    invoke<string>("plugin_fetch_market_readme", { id }),
   pluginInstallFromMarketplace: (id: string) =>
     invoke<PluginInfo>("plugin_install_from_marketplace", { id }),
   pluginCheckUpdates: () => invoke<PluginUpdate[]>("plugin_check_updates"),

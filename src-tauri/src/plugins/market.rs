@@ -33,6 +33,9 @@ const INDEX_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3600
 /// dump — a runaway response means something is wrong upstream.
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 const MAX_DETAIL_BYTES: u64 = 256 * 1024;
+/// READMEs are docs, not bundles: 512KB is a generous ceiling that still
+/// bounds a hostile index row.
+const MAX_README_BYTES: u64 = 512 * 1024;
 
 const INDEX_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Assets run to the 16MB bundle cap; slow links need real headroom.
@@ -60,7 +63,8 @@ struct IndexEntry {
     author: String,
 }
 
-/// plugins/<id>.json: the pinned release, its hashes, and the compat gates.
+/// plugins/<id>.json: the pinned release, its hashes, the compat gates, and
+/// the optional presentation fields the detail page renders.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IndexDetail {
@@ -76,6 +80,10 @@ struct IndexDetail {
     permissions: Vec<String>,
     #[serde(default)]
     sha256: HashMap<String, String>,
+    /// Absolute https URLs or repo-relative paths (≤ 5, spec §5). Entries
+    /// that fail `resolve_asset_url` are dropped instead of rendered.
+    #[serde(default)]
+    screenshots: Vec<String>,
 }
 
 /// Marketplace listing as the frontend sees it (index entry + detail merge).
@@ -96,6 +104,9 @@ pub struct MarketPlugin {
     /// None when the stats file is absent or unparsable — counts are
     /// decorative, never a gate.
     pub downloads: Option<u64>,
+    /// Detail-page carousel: absolute https URLs, repo-relative paths
+    /// resolved against the plugin's default branch. Empty = no gallery.
+    pub screenshots: Vec<String>,
 }
 
 /// Cache row: the public listing plus the install-only fields (hashes).
@@ -111,6 +122,14 @@ struct IndexCache {
 
 static INDEX_CACHE: LazyLock<Mutex<Option<IndexCache>>> = LazyLock::new(|| Mutex::new(None));
 
+/// READMEs fetched on demand (detail page open), keyed by plugin id. Same
+/// 1h TTL as the index; the map is wiped wholesale past `README_CACHE_MAX`
+/// rows — readmes are lazily refetched, so a cheap hard bound beats LRU
+/// bookkeeping for a two-digit plugin registry.
+const README_CACHE_MAX: usize = 64;
+static README_CACHE: LazyLock<Mutex<HashMap<String, (std::time::Instant, String)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// repo slugs become URL path segments — keep them strictly `owner/name`.
 fn is_valid_repo_slug(repo: &str) -> bool {
     fn part(s: &str) -> bool {
@@ -123,6 +142,45 @@ fn is_valid_repo_slug(repo: &str) -> bool {
         (Some(owner), Some(name), None) => part(owner) && part(name),
         _ => false,
     }
+}
+
+/// raw.githubusercontent.com base for a repo's default branch. Docs and
+/// screenshots resolve against HEAD (not the release tag) so authors can
+/// improve them without cutting a version — presentation only, nothing
+/// executable is ever fetched from here.
+fn repo_raw_base(repo: &str) -> String {
+    format!("https://raw.githubusercontent.com/{repo}/HEAD/")
+}
+
+/// One screenshot entry: an absolute https URL or a repo-relative path.
+/// Everything else — other schemes, protocol-relative URLs, absolute paths,
+/// traversal, backslashes — is dropped. The value comes from the index, so
+/// treat it as untrusted: the market page will render whatever survives.
+fn resolve_asset_url(repo: &str, raw: &str) -> Option<String> {
+    if !is_valid_repo_slug(repo) {
+        return None;
+    }
+    let trimmed = raw.trim();
+    // Control characters are dropped; a path that merely contains a space is
+    // accepted and percent-encoded by Url, matching the client-side rule in
+    // src/features/plugins/hub/catalog.ts.
+    if trimmed.is_empty() || trimmed.len() > 1024 || trimmed.chars().any(char::is_control) {
+        return None;
+    }
+    if trimmed.starts_with("https://") {
+        return reqwest::Url::parse(trimmed).ok().map(|url| url.to_string());
+    }
+    if trimmed.contains("://")
+        || trimmed.starts_with("//")
+        || trimmed.starts_with('/')
+        || trimmed.contains('\\')
+    {
+        return None;
+    }
+    let base = reqwest::Url::parse(&repo_raw_base(repo)).ok()?;
+    let url = base.join(trimmed).ok()?;
+    // join() resolves `..`; refuse a path that climbed out of the repo root.
+    url.as_str().starts_with(base.as_str()).then(|| url.to_string())
 }
 
 /// Asset file names land flat in the staging tree — no subdirectories, no
@@ -238,6 +296,11 @@ async fn fetch_index_entries() -> Result<Vec<CachedEntry>, String> {
                 sdk_version: detail.sdk_version,
                 permissions: detail.permissions,
                 downloads: downloads.get(&entry.id).copied(),
+                screenshots: detail
+                    .screenshots
+                    .iter()
+                    .filter_map(|raw| resolve_asset_url(&entry.repo, raw))
+                    .collect(),
             },
             sha256: detail.sha256,
         });
@@ -269,6 +332,60 @@ pub async fn plugin_fetch_index(force: bool) -> Result<Vec<MarketPlugin>, String
         .iter()
         .map(|entry| entry.info.clone())
         .collect())
+}
+
+fn readme_cache_get(id: &str) -> Option<String> {
+    let cache = README_CACHE.lock();
+    let (fetched_at, text) = cache.get(id)?;
+    (fetched_at.elapsed() < INDEX_CACHE_TTL).then(|| text.clone())
+}
+
+fn readme_cache_put(id: &str, text: String) {
+    let mut cache = README_CACHE.lock();
+    cache.retain(|_, (fetched_at, _)| fetched_at.elapsed() < INDEX_CACHE_TTL);
+    if cache.len() >= README_CACHE_MAX && !cache.contains_key(id) {
+        cache.clear();
+    }
+    cache.insert(id.to_string(), (std::time::Instant::now(), text));
+}
+
+/// Long-form intro for the detail page: the plugin repo's README.md from the
+/// default branch. Fetched lazily (only when a detail page opens) and cached
+/// for an hour; a repo without a README just yields Err and the page shows
+/// its fallback copy. Markdown is returned verbatim — the client resolves
+/// relative links/images against the repo.
+#[tauri::command]
+pub async fn plugin_fetch_market_readme(id: String) -> Result<String, String> {
+    super::manifest::require_valid_id(&id)?;
+    if let Some(hit) = readme_cache_get(&id) {
+        return Ok(hit);
+    }
+    let entries = index_entries(false).await?;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.info.id == id)
+        .ok_or_else(|| format!("{id}: not in the marketplace index"))?;
+    if !is_valid_repo_slug(&entry.info.repo) {
+        return Err(format!("{id}: invalid repo slug {:?}", entry.info.repo));
+    }
+
+    // README.md is the documented convention; the lowercase spelling is
+    // common enough to warrant the second try before giving up.
+    let mut last_error = format!("{id}: no README.md in the plugin repo");
+    for name in ["README.md", "readme.md"] {
+        let url = format!("{}{name}", repo_raw_base(&entry.info.repo));
+        match get_capped(&url, MAX_README_BYTES, INDEX_REQUEST_TIMEOUT).await {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    readme_cache_put(&id, text.clone());
+                    return Ok(text);
+                }
+                Err(error) => last_error = format!("{url}: not UTF-8: {error}"),
+            },
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 /// Update row for one installed marketplace plugin (semver compare only —
@@ -499,6 +616,33 @@ mod tests {
         assert!(!is_valid_asset_name("assets/logo.png"));
         assert!(!is_valid_asset_name(".."));
         assert!(!is_valid_asset_name(""));
+    }
+
+    #[test]
+    fn screenshot_urls_resolve_against_the_repo_or_pass_through_https() {
+        let repo = "owner/ccgui-plugin-demo";
+        assert_eq!(
+            resolve_asset_url(repo, "docs/screenshot-1.png").as_deref(),
+            Some("https://raw.githubusercontent.com/owner/ccgui-plugin-demo/HEAD/docs/screenshot-1.png")
+        );
+        assert_eq!(
+            resolve_asset_url(repo, "./docs/a b.png").as_deref(),
+            Some("https://raw.githubusercontent.com/owner/ccgui-plugin-demo/HEAD/docs/a%20b.png")
+        );
+        assert_eq!(
+            resolve_asset_url(repo, "https://example.com/shot.png?v=2").as_deref(),
+            Some("https://example.com/shot.png?v=2")
+        );
+        // Schemes other than https, protocol-relative URLs, absolute paths,
+        // traversal, backslashes and whitespace are all dropped.
+        assert_eq!(resolve_asset_url(repo, "http://example.com/shot.png"), None);
+        assert_eq!(resolve_asset_url(repo, "javascript:alert(1)"), None);
+        assert_eq!(resolve_asset_url(repo, "//evil.test/shot.png"), None);
+        assert_eq!(resolve_asset_url(repo, "/etc/passwd"), None);
+        assert_eq!(resolve_asset_url(repo, "../../outside.png"), None);
+        assert_eq!(resolve_asset_url(repo, "docs\\shot.png"), None);
+        assert_eq!(resolve_asset_url(repo, ""), None);
+        assert_eq!(resolve_asset_url("not-a-slug", "docs/shot.png"), None);
     }
 
     #[test]

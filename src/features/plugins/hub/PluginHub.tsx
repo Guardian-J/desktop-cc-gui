@@ -6,7 +6,7 @@ import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
 import { isWeb } from "@/lib/platform";
 import { usePluginHubStore } from "./store";
-import { PluginDetailDialog } from "./PluginDetailDialog";
+import { PluginDetailPage } from "./PluginDetailPage";
 import { PluginInstalledView } from "./PluginInstalledView";
 import { PluginMarketView } from "./PluginMarketView";
 import { DevelopGuideDialog } from "./DevelopGuideDialog";
@@ -33,12 +33,25 @@ export function PluginHub() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
 
-  // Live lookups: an install that finishes while the dialog is open flips it
-  // to the installed state without reopening.
+  // Live lookups: an install that finishes while the detail page is open
+  // flips it to the installed state without reopening.
   const detailEntry = detailId ? entries.find((entry) => entry.id === detailId) : undefined;
   const detailInstalled = detailId
     ? installed.find((plugin) => plugin.id === detailId)
     : undefined;
+
+  // Detail is a full-page surface: it owns the whole hub area (including the
+  // header row) so the back affordance matches the browse chrome height.
+  if (detailId) {
+    return (
+      <PluginDetailPage
+        id={detailId}
+        entry={detailEntry}
+        installed={detailInstalled}
+        onClose={() => setDetailId(null)}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background-primary-default">
@@ -106,14 +119,6 @@ export function PluginHub() {
         </div>
       </div>
 
-      {detailId && (
-        <PluginDetailDialog
-          id={detailId}
-          entry={detailEntry}
-          installed={detailInstalled}
-          onClose={() => setDetailId(null)}
-        />
-      )}
       {guideOpen && <DevelopGuideDialog onClose={() => setGuideOpen(false)} />}
     </div>
   );

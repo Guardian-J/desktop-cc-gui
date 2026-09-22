@@ -50,6 +50,7 @@ function entry(over: Partial<MarketPlugin> = {}): MarketPlugin {
     sdkVersion: "^0.3",
     permissions: ["storage"],
     downloads: null,
+    screenshots: [],
     ...over,
   };
 }

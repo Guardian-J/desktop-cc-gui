@@ -57,6 +57,12 @@ struct PluginReadFileArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PluginIdArgs {
+    id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginStorageGetArgs {
     id: String,
     key: String,
@@ -1020,6 +1026,10 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         // Marketplace browsing is read-only too, so the web client renders
         // the market page; plugin_install_from_marketplace stays desktop-only.
         "plugin_fetch_index" => ser(crate::plugins::market::plugin_fetch_index(false).await),
+        "plugin_fetch_market_readme" => {
+            let a: PluginIdArgs = parse_args(&raw)?;
+            ser(crate::plugins::market::plugin_fetch_market_readme(a.id).await)
+        }
         "plugin_check_updates" => ser(crate::plugins::market::plugin_check_updates().await),
         _ => Err(format!("unknown command: {cmd}")),
     }
