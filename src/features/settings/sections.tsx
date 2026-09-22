@@ -4,6 +4,7 @@ import Globe from "lucide-react/dist/esm/icons/globe";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
 import Archive from "lucide-react/dist/esm/icons/archive";
 import Info from "lucide-react/dist/esm/icons/info";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Bot from "lucide-react/dist/esm/icons/bot";
 import Smartphone from "lucide-react/dist/esm/icons/smartphone";
 import ChartColumn from "lucide-react/dist/esm/icons/chart-column";
@@ -20,6 +21,7 @@ import { ArchivedSessionsSection } from "./ArchivedSessionsSection";
 import { AgentsPromptsSection } from "./agents-prompts/AgentsPromptsSection";
 import { CliConfigSection } from "./CliConfigSection";
 import { AboutSection } from "./AboutSection";
+import { UpdateSection } from "./UpdateSection";
 import { WebAccessSection } from "./WebAccessSection";
 import { UsageSection } from "./UsageSection";
 import { ShortcutsSection } from "@/features/shortcuts/ShortcutsSection";
@@ -117,6 +119,15 @@ settingsRegistry.register({
   group: "workspace",
   order: 2,
   component: UsageSection,
+});
+settingsRegistry.register({
+  id: "update",
+  key: "update",
+  label: () => i18n.t("settings.checkUpdates"),
+  icon: RefreshCw,
+  group: "misc",
+  order: 2,
+  component: UpdateSection,
 });
 settingsRegistry.register({
   id: "about",

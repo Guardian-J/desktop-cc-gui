@@ -92,6 +92,18 @@ async function expandBucket(labelKey: string) {
   });
 }
 
+describe("SettingsPage misc rail", () => {
+  it("lists 检查更新 above 社区与反馈 as its own module", async () => {
+    await render([]);
+
+    const labels = navLabels();
+    const updateAt = labels.indexOf(i18n.t("settings.checkUpdates"));
+    const aboutAt = labels.indexOf(i18n.t("settings.about"));
+    expect(updateAt).toBeGreaterThan(-1);
+    expect(aboutAt).toBeGreaterThan(updateAt);
+  });
+});
+
 describe("SettingsPage CLI rail", () => {
   it("buckets uninstalled CLIs under 未安装, disabled ones under 未启用", async () => {
     await render([

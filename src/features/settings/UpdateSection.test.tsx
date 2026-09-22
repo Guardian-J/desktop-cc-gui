@@ -13,7 +13,7 @@ vi.mock("@/lib/platform", () => ({
 
 import "@/lib/i18n";
 import { useUpdateStore } from "@/features/update/store";
-import { AboutSection } from "./AboutSection";
+import { UpdateSection } from "./UpdateSection";
 
 // React 18's act() requires this flag to be set by the test environment.
 declare global {
@@ -25,7 +25,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const startUpdateSpy = vi.fn();
 const checkForUpdatesSpy = vi.fn();
 
-describe("AboutSection update row", () => {
+describe("UpdateSection update row", () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
@@ -62,7 +62,7 @@ describe("AboutSection update row", () => {
     const nextRoot = createRoot(container);
     root = nextRoot;
     await act(async () => {
-      nextRoot.render(<AboutSection />);
+      nextRoot.render(<UpdateSection />);
     });
   }
 
