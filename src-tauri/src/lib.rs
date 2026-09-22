@@ -25,6 +25,7 @@ pub mod prompts;
 pub mod proxy;
 pub mod provider_files;
 pub mod provider_models;
+pub mod quit_guard;
 pub mod settings;
 pub mod usage;
 pub mod slash_commands;
@@ -268,6 +269,11 @@ pub fn run() {
             window_builder
                 .build()
                 .expect("failed to create main window");
+            // Cmd+Q / AppleScript `quit` bypass both the window X's
+            // CloseRequested and Tauri's ExitRequested on macOS; without
+            // this hook one stray quit kills every live engine run with no
+            // dialog (see quit_guard.rs).
+            quit_guard::install(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

@@ -302,10 +302,25 @@ fn hide() {
     }
 }
 
-/// Window teardown: the overlay goes down with the app, but drop the armed
-/// state explicitly so a future main window starts clean.
+/// Window teardown: the overlay dies with the main window. Hiding was not
+/// enough — Tauri exits when the last window is *destroyed*, so a hidden
+/// overlay kept the process (and its already-swept engine children) alive
+/// windowless after a confirmed quit. Drop the armed state too so a future
+/// main window starts clean.
 pub fn shutdown() {
-    hide();
+    let Some(manager) = MANAGER.get() else { return };
+    {
+        let mut inner = manager.inner.lock();
+        inner.visible = false;
+        inner.generation += 1;
+    }
+    if let Some(app) = APP.get() {
+        if let Some(win) = app.get_webview_window(OVERLAY_LABEL) {
+            on_main(move || {
+                let _ = win.destroy();
+            });
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

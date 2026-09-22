@@ -129,6 +129,7 @@ const feedback = useRunningFeedback(store.loading);
 - 不可逆操作（删除、卸载、丢弃改动、断开授权）先确认：`ConfirmDialog`（`src/components/dialogs.tsx`），危险确认按钮用 `variant="danger"`。
 - 由指针发起的行内破坏性操作可以用 `ConfirmPopover`，让确认贴近光标。
 - 文案写清**后果对象**（删的是哪个文件/会话/插件），不写"确定吗？"。
+- **退出应用**：窗口关闭按钮一律先确认（`src/lib/close-confirm.ts` 拦截 `CloseRequested`）；macOS 的 ⌘Q / 系统退出请求在存在进行中的会话时会被 `src-tauri/src/quit_guard.rs` 取消并复用同一弹窗，只有显式确认才销毁窗口退出，空闲时正常退出、不拦截。
 
 ## 7. 刷新入口清单
 

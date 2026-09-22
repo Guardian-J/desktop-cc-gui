@@ -68,6 +68,16 @@ impl ProcessRegistry {
         self.0.lock().ok().and_then(|map| map.get(key).cloned())
     }
 
+    /// Number of in-flight runs, ignoring the run-id/session-id alias
+    /// duplication. The macOS quit guard asks this before letting Cmd+Q /
+    /// AppleScript `quit` take the app down mid-turn.
+    pub fn active_run_count(&self) -> usize {
+        match self.0.lock() {
+            Ok(map) => active_run_count(&map),
+            Err(poisoned) => active_run_count(&poisoned.into_inner()),
+        }
+    }
+
     /// Write one NDJSON control line to a live run's interactive stdin.
     /// Err when the run is unknown, its stdin is already closed, or the
     /// pipe refuses the write — a swallowed failure would leave the CLI
