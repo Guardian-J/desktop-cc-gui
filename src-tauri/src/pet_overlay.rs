@@ -22,6 +22,8 @@ const BASE_SCALE: f64 = 0.6;
 const PROXIMITY_PADDING: f64 = 220.0;
 const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 1.5;
+const HIT_TEST_INTERVAL_MS: u64 = 16;
+const LOOK_DIRECTION_INTERVAL_MS: u64 = 180;
 
 const PET_OFFSET_X: f64 = (BUBBLE_WIDTH - WIDTH) / 2.0;
 
@@ -97,6 +99,13 @@ fn app() -> Result<&'static AppHandle, String> {
 fn create_window() -> Result<tauri::WebviewWindow, String> {
     let app = app()?;
     if let Some(window) = app.get_webview_window(LABEL) {
+        let cursor_over = state()
+            .lock()
+            .map(|current| current.cursor_over)
+            .unwrap_or(false);
+        window
+            .set_ignore_cursor_events(!cursor_over)
+            .map_err(|e| format!("enable pet overlay click-through: {e}"))?;
         return Ok(window);
     }
     let settings = crate::settings::read_settings().unwrap_or_default();
@@ -121,6 +130,12 @@ fn create_window() -> Result<tauri::WebviewWindow, String> {
     .visible(false)
     .build()
     .map_err(|e| format!("create pet overlay: {e}"))?;
+    // The webview is wider than the visible pet to make room for its status
+    // bubble.  Keep that transparent area click-through; the tracker enables
+    // interaction only while the cursor is over the pet sprite bounds.
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|e| format!("enable pet overlay click-through: {e}"))?;
     if let Some(position) = settings.pet_position {
         let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
             position.x - PET_OFFSET_X * scale,
@@ -185,7 +200,9 @@ fn start_look_tracking() {
         let mut input: Option<Enigo> = None;
         #[cfg(not(windows))]
         let mut input = Enigo::new(&Settings::default()).ok();
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(180));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(HIT_TEST_INTERVAL_MS));
+        let mut next_look_update = tokio::time::Instant::now();
         loop {
             interval.tick().await;
             let Some(window) = app.get_webview_window(LABEL) else { continue };
@@ -215,17 +232,41 @@ fn start_look_tracking() {
                 && (mouse_x as f64) < pet_left + pet_width
                 && (mouse_y as f64) >= pet_top
                 && (mouse_y as f64) < pet_top + pet_height;
+            let now = tokio::time::Instant::now();
+            let update_look_direction = now >= next_look_update;
+            if update_look_direction {
+                next_look_update =
+                    now + std::time::Duration::from_millis(LOOK_DIRECTION_INTERVAL_MS);
+            }
+            let cursor_capture_changed = state()
+                .lock()
+                .map(|current| current.cursor_over != cursor_over)
+                .unwrap_or(false);
+            let cursor_capture_applied = if cursor_capture_changed {
+                match window.set_ignore_cursor_events(!cursor_over) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("[pet-overlay] update click-through failed: {error}");
+                        false
+                    }
+                }
+            } else {
+                true
+            };
             let changed = if let Ok(mut current) = state().lock() {
                 let mut changed = false;
                 if current.cursor_nearby != cursor_nearby {
                     current.cursor_nearby = cursor_nearby;
                     changed = true;
                 }
-                if current.cursor_over != cursor_over {
+                if cursor_capture_applied && current.cursor_over != cursor_over {
                     current.cursor_over = cursor_over;
                     changed = true;
                 }
-                if cursor_nearby && current.look_direction != direction {
+                if update_look_direction
+                    && cursor_nearby
+                    && current.look_direction != direction
+                {
                     current.look_direction = direction;
                     changed = true;
                 }

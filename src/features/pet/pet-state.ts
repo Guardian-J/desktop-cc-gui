@@ -97,14 +97,14 @@ function stateForSession(
     sessionName,
     lookDirection: 0,
   } as const;
+  if (session.streaming || session.backgroundActive) {
+    return { ...base, status: "running", activity: runningActivity([session]) };
+  }
   if (session.error || session.tasks.some((task) => taskIsFailed(task.status))) {
     return { ...base, status: "failed", activity: "failed" };
   }
   if (session.awaitingTasks) {
     return { ...base, status: "waiting", activity: "waiting" };
-  }
-  if (session.streaming || session.backgroundActive) {
-    return { ...base, status: "running", activity: runningActivity([session]) };
   }
   return null;
 }

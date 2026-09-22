@@ -5,19 +5,35 @@ const chat = (session: Record<string, unknown>) => ({ bySession: { current: sess
 const mission = (runs: Record<string, unknown>) => ({ runs }) as never;
 
 describe("pet state aggregation", () => {
-  it("prioritizes failures over waiting and running", () => {
+  it("prioritizes terminal failures over waiting", () => {
     expect(
       derivePetState(
         chat({
-          error: "failed",
-          streaming: true,
-          backgroundActive: true,
+          error: null,
+          streaming: false,
+          backgroundActive: false,
           awaitingTasks: true,
-          tasks: [],
+          tasks: [{ status: "failed" }],
         }),
         mission({}),
       ).status,
     ).toBe("failed");
+  });
+
+  it("shows resumed session activity after a child task failed", () => {
+    expect(
+      derivePetState(
+        chat({
+          error: null,
+          streaming: true,
+          backgroundActive: false,
+          awaitingTasks: false,
+          tasks: [{ status: "failed" }],
+          messages: [],
+        }),
+        mission({}),
+      ).status,
+    ).toBe("running");
   });
 
   it("includes mission runs when chat is idle", () => {
