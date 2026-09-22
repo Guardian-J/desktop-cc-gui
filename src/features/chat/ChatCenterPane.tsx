@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, type ReactNode } from "react";
 import { centerTabRegistry, pluginIdFromRegistryKey, useRegistry } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-chat-composer";
@@ -9,6 +9,8 @@ import { DiffView } from "@/features/git/DiffView";
 import type { DiffTarget } from "@/features/git/store";
 import type { EngineInfo, GitStatus, Workspace } from "@/lib/ipc";
 import { cx } from "@/utils/cx";
+import { creatorChatWorkspace, startCreatorChat } from "@/features/plugins/hub/creator-chat";
+import { focusComposerWhenVisible } from "@/features/chat/focus-composer";
 import { ChatConversation } from "./components/ChatConversation";
 import type { ActiveSession } from "./store";
 
@@ -88,8 +90,7 @@ export function ChatCenterPane({
   diffView,
   diffStatus,
   closeDiff,
-}: {
-  active: ActiveSession | null;
+}: {  active: ActiveSession | null;
   engines: EngineInfo[];
   workspaces: Workspace[];
   startNewChat: (workspacePath: string) => void;
@@ -114,8 +115,19 @@ export function ChatCenterPane({
   diffStatus: GitStatus | undefined;
   closeDiff: () => void;
 }) {
-  // Native nav/title events → store, mounted once while this pane lives.
+  // 原生 nav/title events → store, mounted once while this pane lives.
   useBrowserNavSync();
+  // 插件中心「创建插件」：开一个新会话并把内置 skill 的调用预填进输入框
+  // （skill 由 Rust 侧装进各引擎的 skills 根，见 creator-chat.ts）。聚焦只能在
+  // 这里做——composerInputRef 归本层所有。
+  const handleCreatePluginChat = useCallback(() => {
+    const workspace = creatorChatWorkspace(active, workspaces);
+    if (!workspace) return;
+    startCreatorChat(workspace.path);
+    // 本层刚从插件中心切回聊天：输入框那一帧还在隐藏面里，直接 focus() 会被
+    // 浏览器忽略，交给等待可见的助手（详见 focus-composer.ts）。
+    focusComposerWhenVisible(composerInputRef);
+  }, [active, workspaces, composerInputRef]);
   const browserInView = activeBrowserId !== null && !diffView;
   const pluginInView = activePluginTabId !== null && !diffView;
   // Single-instance native tabs: if both flags were ever set at once, the
@@ -186,7 +198,9 @@ export function ChatCenterPane({
       {pluginHubOpen && (
         <Surface visible={hubInView}>
           <Suspense fallback={<CenteredSpinner />}>
-            <PluginHub />
+            <PluginHub
+              onCreatePluginChat={workspaces.length > 0 ? handleCreatePluginChat : null}
+            />
           </Suspense>
         </Surface>
       )}

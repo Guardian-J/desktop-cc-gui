@@ -99,16 +99,19 @@ describe("useChatTabs beta entry gate", () => {
     expect(text("active")).toBe("");
   });
 
-  it("shows them once both switches are on", () => {
+  it("shows the browser tab once its switch is on and keeps the hidden mission entry off", () => {
     useBetaFeaturesStore.setState({
       features: { newBrowser: true, missionWorkbench: true },
     });
     render();
-    expect(text("keys")).toBe(`${BROWSER_TAB_PREFIX}b1,${MISSION_WORKBENCH_TAB_KEY}`);
+    // 任务工作台入口内测暂不放开（beta-features.ts 里已注释）：即使设置里
+    // 存了 true，页签与中心面也不出现。恢复时把这里改回两个页签都出现。
+    expect(text("keys")).toBe(`${BROWSER_TAB_PREFIX}b1`);
+    expect(text("keys")).not.toContain(MISSION_WORKBENCH_TAB_KEY);
     expect(text("browser-count")).toBe("1");
     expect(text("browser-active")).toBe("b1");
-    expect(text("mission-open")).toBe("true");
-    expect(text("mission-active")).toBe("true");
+    expect(text("mission-open")).toBe("false");
+    expect(text("mission-active")).toBe("false");
     expect(text("active")).toBe(`${BROWSER_TAB_PREFIX}b1`);
   });
 

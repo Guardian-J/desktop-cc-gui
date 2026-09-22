@@ -723,6 +723,26 @@ export interface PluginInfo {
   icon: string | null;
   screenshots: string[];
 }
+
+/** 内置「插件开发」skill 的落盘结果（`creator_skill_install`）：每个引擎
+ *  skills 根一条，action 说明本次到底做了什么（written = 新装/刷新，
+ *  current = 已最新，conflict = 同名目录非本应用所写、刻意未动，failed = 读写失败）。 */
+export type CreatorSkillAction = "written" | "current" | "conflict" | "failed";
+
+export interface CreatorSkillTarget {
+  /** 目标 skills 根（`<engine home>/skills`）。 */
+  root: string;
+  /** 该 skill 目录的绝对路径。 */
+  path: string;
+  action: CreatorSkillAction;
+  error: string | null;
+}
+
+export interface CreatorSkillReport {
+  /** 随包资源里 skill 的目录；null = 打包缺资源（打包 bug）。 */
+  source: string | null;
+  targets: CreatorSkillTarget[];
+}
 /** Marketplace listing row (plan §6.1): community-plugins.json merged with
  *  plugins/<id>.json — the fields the market UI renders. */
 export interface MarketPlugin {
@@ -903,11 +923,10 @@ export const ipc = {
    *  every token is ≥3 chars, exact AND-substring LIKE otherwise. */
   searchMessages: (
     query: string,
-    sort?: "relevance" | "recency",
     limit?: number,
     offset?: number,
   ) =>
-    invoke<MessageSearchPage>("search_messages", { query, sort, limit, offset }),
+    invoke<MessageSearchPage>("search_messages", { query, limit, offset }),
   /** Remote (WSL distro) transcript: host fetches the jsonl over the ssh
    *  channel, caches it locally, and parses with the same engine reader. */
   loadRemoteSessionPage: (
@@ -1147,6 +1166,10 @@ export const ipc = {
   pluginInstallFromMarketplace: (id: string) =>
     invoke<PluginInfo>("plugin_install_from_marketplace", { id }),
   pluginCheckUpdates: () => invoke<PluginUpdate[]>("plugin_check_updates"),
+  /** 内置「插件开发」skill 的落盘：幂等地同步进各引擎的 skills 根（Claude /
+   *  Codex / ~/.agents）。插件中心的「创建插件」在开新会话前调一次，这样
+   *  `/ccgui-plugin-creator` 在引擎侧确实存在、可被解析。 */
+  creatorSkillInstall: () => invoke<CreatorSkillReport>("creator_skill_install"),
   // web access (start/stop are desktop-only; the bridge answers status too)
   webDevices: () => invoke<WebDevice[]>("web_devices"),
   webDeviceApprove: (id: string) => invoke<boolean>("web_device_approve", { id }),

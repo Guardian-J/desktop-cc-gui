@@ -437,6 +437,47 @@ describe("PluginHub", () => {
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.tableName"));
   });
 
+  it("opens the developer's GitHub profile from the detail rail", async () => {
+    await render();
+    await act(async () => {
+      buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {});
+
+    const authorChip = [...document.body.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.trim() === MARKET_ENTRY.author,
+    );
+    expect(authorChip).toBeDefined();
+    expect(authorChip!.getAttribute("title")).toBe(
+      i18n.t("plugins.hub.authorGithub", { login: MARKET_ENTRY.author }),
+    );
+    await act(async () => {
+      authorChip!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(openExternal).toHaveBeenCalledWith(`https://github.com/${MARKET_ENTRY.author}`);
+  });
+
+  it("keeps the developer rail inert when no GitHub account is resolvable", async () => {
+    pluginFetchIndex.mockImplementation(async () => [
+      { ...MARKET_ENTRY, author: "Libo Zhou", repo: "" },
+    ]);
+    await render();
+    await act(async () => {
+      buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {});
+
+    // A display name with no repo owner to fall back to is not a link: no
+    // guessed GitHub URL, and the name still reads as plain rail text.
+    expect(document.body.textContent).toContain("Libo Zhou");
+    expect(
+      [...document.body.querySelectorAll("button")].some(
+        (candidate) => candidate.textContent?.trim() === "Libo Zhou",
+      ),
+    ).toBe(false);
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
   it("hides the update time for index entries without a stamp", async () => {
     pluginFetchIndex.mockImplementation(async () => [{ ...MARKET_ENTRY, updatedAt: null }]);
     await render();
@@ -493,7 +534,29 @@ describe("PluginHub", () => {
       );
     });
     expect(document.body.textContent).toContain(i18n.t("plugins.market.developTitle"));
+    expect(document.body.textContent).toContain(i18n.t("plugins.market.aiTitle"));
     expect(document.body.textContent).toContain(i18n.t("plugins.market.localTitle"));
     expect(document.body.textContent).toContain(i18n.t("plugins.market.submitTitle"));
+  });
+
+  it("hands 「创建插件」 to the chat layer and blocks it without a workspace", async () => {
+    const onCreatePluginChat = vi.fn();
+    await act(async () => {
+      root!.render(<PluginHub onCreatePluginChat={onCreatePluginChat} />);
+    });
+    await act(async () => {
+      buttonByText(i18n.t("plugins.hub.create")).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(onCreatePluginChat).toHaveBeenCalledTimes(1);
+
+    // 没有工作区时（ChatCenterPane 传 null）：按钮置灰且有指针提示，不是静默无反应。
+    await act(async () => {
+      root!.render(<PluginHub onCreatePluginChat={null} />);
+    });
+    const blocked = buttonByText(i18n.t("plugins.hub.create"));
+    expect(blocked.disabled).toBe(true);
+    expect(blocked.title).toBe(i18n.t("plugins.hub.createNoWorkspace"));
   });
 });

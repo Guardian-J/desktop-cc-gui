@@ -6,6 +6,7 @@ import { ActionFeedbackIcon, useRunningFeedback } from "@/components/base/action
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
 import { HeaderOpenActions } from "@/features/open-app/HeaderOpenActions";
 import { LaunchScriptActions } from "@/features/launch-script/LaunchScriptActions";
+import { pluginPanelTabIcon } from "@/features/plugins/hub/PluginPanelTabIcon";
 import { useFilesStore } from "@/features/files/store";
 import { cx } from "@/utils/cx";
 import { PANEL_TOGGLE_CLASSES } from "./panel-toggle-classes";
@@ -94,16 +95,23 @@ export function ChatPanelHeader({
             style={{ width: panelWidth }}
           >
             <PillTabList>
-              {panelTabs.map((tab) => (
-                <PillTab
-                  key={tab.id}
-                  icon={tab.icon}
-                  isSelected={activeTab === tab.id}
-                  onSelect={() => onPanelTabChange(tab.id)}
-                >
-                  {tab.label()}
-                </PillTab>
-              ))}
+              {panelTabs.map((tab) => {
+                // Plugin pills are icon-only: their labels are plugin-supplied
+                // and the strip is tight. `title` carries the label for hover
+                // and assistive tech; builtin files/changes keep icon+label.
+                const isPluginTab = tab.id.startsWith("plugin:");
+                return (
+                  <PillTab
+                    key={tab.id}
+                    icon={isPluginTab ? pluginPanelTabIcon(tab) : tab.icon}
+                    isSelected={activeTab === tab.id}
+                    onSelect={() => onPanelTabChange(tab.id)}
+                    title={isPluginTab ? tab.label() : undefined}
+                  >
+                    {isPluginTab ? undefined : tab.label()}
+                  </PillTab>
+                );
+              })}
             </PillTabList>
             {activeTab === "files" && (
               <button

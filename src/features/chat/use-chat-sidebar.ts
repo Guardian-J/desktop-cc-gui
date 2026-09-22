@@ -14,6 +14,7 @@ import type { SessionMeta } from "@/lib/ipc";
 import { isWeb, pickDirectory } from "@/lib/platform";
 import { recentPointerAnchor } from "@/lib/pointer-anchor";
 import { parseDraftSessionKey, sessionKey, useChatStore, sortedWorkspaceGroups } from "./store";
+import { focusComposerWhenVisible } from "./focus-composer";
 import { relativeTime } from "./time";
 import { useWorkspaceUIHooks, workspaceLabelSuffix } from "./workspace-ui-bridge";
 import type { ChatPageDialog } from "./ChatPageDialogs";
@@ -270,7 +271,9 @@ export function useChatSidebar({
     }
     useBrowserStore.getState().deactivate();
     startNewChat(workspace.path);
-    composerInputRef.current?.focus();
+    // 中心面可能刚从别处（插件中心/浏览器）切回来，那时直接 focus() 会被
+    // 浏览器忽略（隐藏元素），交给等可见的助手。
+    focusComposerWhenVisible(composerInputRef);
     collapseSidebarOnMobile();
   }, [workspaces, visibleWorkspaces, archivedIds, active?.workspacePath, startNewChat, handleAddWorkspace, collapseSidebarOnMobile, composerInputRef]);
 
@@ -282,7 +285,7 @@ export function useChatSidebar({
       if (!workspace) return;
       useBrowserStore.getState().deactivate();
       startNewChat(workspace.path);
-      composerInputRef.current?.focus();
+      focusComposerWhenVisible(composerInputRef);
       collapseSidebarOnMobile();
     },
     [workspaces, startNewChat, collapseSidebarOnMobile, composerInputRef],

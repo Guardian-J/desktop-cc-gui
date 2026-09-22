@@ -78,6 +78,8 @@ git tag 1.0.0 && git push origin 1.0.0
 # 6. 上架：向索引仓库提 PR（见 §10）
 ```
 
+> **只想自己用、不想先建仓库？** 插件中心页头「创建插件」会用内置 skill 在一次会话里生成可直接安装的插件目录（`manifest.json` + `main.js`；Tier-0 只需 `manifest.json` + `styles.css`），不依赖模板仓库和构建工具；回到插件中心「从本地目录安装」选该目录即可，改完重新安装会热重载。要上架时再按下文流程把目录整理成仓库。
+
 ## 4. 插件仓库结构规范
 
 ### 4.1 必须满足的仓库布局
@@ -226,7 +228,7 @@ interface PluginContext {
 
   ui: {
     registerSettingsSection(d: SettingsSectionDef): Disposer;   // 设置页新 section
-    registerPanelTab(d: PanelTabDef): Disposer;                 // 右侧面板新 tab
+    registerPanelTab(d: PanelTabDef): Disposer;                 // 右侧面板新 tab（页签条只渲染 icon，label 作 title / 可访问名）
     registerComposerSlot(slot: 'addMenu' | 'cliMenu' | 'permissionMenu', d: SlotDef): Disposer;
     registerStatusBarItem(d: StatusBarItemDef): Disposer;
     registerCommand(d: CommandDef): Disposer;                   // 命令面板（⌘K）

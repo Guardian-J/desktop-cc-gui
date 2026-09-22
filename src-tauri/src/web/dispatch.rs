@@ -140,6 +140,15 @@ struct SessionIdArgs {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AnswerQuestionArgs {
+    session_id: String,
+    request_id: String,
+    /// Question text → chosen label(s); `None` is the user's skip/dismiss.
+    #[serde(default)]
+    answers: Option<Value>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EngineArgs {
     engine: String,
     workspace: Option<String>,
@@ -380,7 +389,6 @@ struct SearchTextArgs {
 #[serde(rename_all = "camelCase")]
 struct SearchMessagesArgs {
     query: String,
-    sort: Option<String>,
     limit: Option<u32>,
     offset: Option<u32>,
 }
@@ -577,6 +585,19 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         "interrupt_session" => {
             let a: SessionIdArgs = parse_args(&raw)?;
             ser(crate::engine::interrupt_session(app.state(), a.session_id).await)
+        }
+        // The remote UI renders the same AskUserQuestion card as the desktop
+        // (events already reach it); without this case its 提交/忽略 buttons
+        // failed with `unknown command: answer_question`.
+        "answer_question" => {
+            let a: AnswerQuestionArgs = parse_args(&raw)?;
+            ser(crate::engine::answer_question(
+                app.state(),
+                a.session_id,
+                a.request_id,
+                a.answers,
+            )
+            .await)
         }
         "list_engines" => ser(crate::engine::list_engines().await),
         "list_engine_models" => {
@@ -803,7 +824,6 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
                 crate::history::search::search_messages(
                     app.state(),
                     a.query,
-                    a.sort,
                     a.limit,
                     a.offset,
                 )
@@ -927,6 +947,12 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         "git_unstage" => {
             let a: GitFilesArgs = parse_args(&raw)?;
             ser(crate::git::git_unstage(a.path, a.files))
+        }
+        // Same shared changes panel as the desktop, so the remote client's
+        // 「撤销更改」 must route too (it falls through to unknown otherwise).
+        "git_discard" => {
+            let a: GitFilesArgs = parse_args(&raw)?;
+            ser(crate::git::git_discard(a.path, a.files))
         }
         "git_commit" => {
             let a: GitCommitArgs = parse_args(&raw)?;

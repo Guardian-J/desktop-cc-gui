@@ -66,18 +66,30 @@ describe("BetaFeaturesSection", () => {
     const labels = [...container.querySelectorAll('[role="switch"]')].map((el) =>
       el.getAttribute("aria-label"),
     );
-    expect(labels).toEqual(["新建浏览器入口", "任务工作台入口"]);
+    // 任务工作台入口内测暂不放开（beta-features.ts 里已注释），恢复时同步改回
+    // ["新建浏览器入口", "任务工作台入口"]。
+    expect(labels).toEqual(["新建浏览器入口"]);
     for (const label of labels) {
       expect(switchFor(label!).checked).toBe(false);
     }
   });
 
-  it("hydrates a persisted flag into its switch", async () => {
+  it("hides a temporarily disabled entry even when settings say it is on", async () => {
     getAppSettings.mockResolvedValue({ betaFeatures: { missionWorkbench: true } });
     await render();
 
-    expect(switchFor("任务工作台入口").checked).toBe(true);
-    expect(switchFor("新建浏览器入口").checked).toBe(false);
+    expect(
+      container.querySelector('[role="switch"][aria-label="任务工作台入口"]'),
+    ).toBeNull();
+    // 旧值仍在 store 里，没有被清除，恢复入口后即可直接生效。
+    expect(useBetaFeaturesStore.getState().features.missionWorkbench).toBe(true);
+  });
+
+  it("hydrates a persisted flag into its switch", async () => {
+    getAppSettings.mockResolvedValue({ betaFeatures: { newBrowser: true } });
+    await render();
+
+    expect(switchFor("新建浏览器入口").checked).toBe(true);
   });
 
   it("persists a toggle and applies it in memory right away", async () => {
@@ -88,6 +100,7 @@ describe("BetaFeaturesSection", () => {
     act(() => click(switchFor("新建浏览器入口")));
     await act(async () => {});
 
+    // 隐藏入口的旧值不会被这次写入抹掉。
     expect(updateAppSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         betaFeatures: { missionWorkbench: true, newBrowser: true },
@@ -101,11 +114,11 @@ describe("BetaFeaturesSection", () => {
     updateAppSettings.mockRejectedValue(new Error("disk full"));
     await render();
 
-    act(() => click(switchFor("任务工作台入口")));
+    act(() => click(switchFor("新建浏览器入口")));
     await act(async () => {});
 
-    expect(useBetaFeaturesStore.getState().features.missionWorkbench).toBeUndefined();
-    expect(switchFor("任务工作台入口").checked).toBe(false);
+    expect(useBetaFeaturesStore.getState().features.newBrowser).toBeUndefined();
+    expect(switchFor("新建浏览器入口").checked).toBe(false);
     expect(container.textContent).toContain("disk full");
   });
 });

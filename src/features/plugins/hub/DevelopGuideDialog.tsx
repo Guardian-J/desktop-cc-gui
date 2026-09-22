@@ -24,11 +24,13 @@ function LinkButton({ url, label }: { url: string; label: string }) {
   );
 }
 
-/** Authoring + submission tutorial (用户教育): how to build a plugin locally
- *  and how to get it into the market. Plain ordered steps — the full guide
- *  lives in the template repo README, linked through the example repo. */
+/** Authoring + submission tutorial (用户教育): how to get a plugin built
+ *  (AI chat or by hand) and how to get it into the market. Plain ordered
+ *  steps — the full guide lives in the template repo README, linked through
+ *  the example repo. */
 export function DevelopGuideDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
+  const aiSteps = t("plugins.market.aiSteps", { returnObjects: true }) as string[];
   const localSteps = t("plugins.market.localSteps", { returnObjects: true }) as string[];
   const submitSteps = t("plugins.market.submitSteps", { returnObjects: true }) as string[];
   return (
@@ -50,6 +52,16 @@ export function DevelopGuideDialog({ onClose }: { onClose: () => void }) {
         >
           <X className="size-4" aria-hidden />
         </button>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-body-medium text-text-primary">
+          {t("plugins.market.aiTitle")}
+        </span>
+        <ol className="flex list-decimal flex-col gap-1 pl-5 text-body-medium text-text-secondary">
+          {aiSteps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
       </div>
       <div className="flex flex-col gap-1.5">
         <span className="text-body-medium text-text-primary">

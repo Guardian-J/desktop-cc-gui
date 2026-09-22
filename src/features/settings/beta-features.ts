@@ -20,14 +20,23 @@ export const BETA_FEATURES = [
     labelKey: "settings.betaNewBrowser",
     descriptionKey: "settings.betaNewBrowserDesc",
   },
-  {
-    id: "missionWorkbench",
-    labelKey: "settings.betaMissionWorkbench",
-    descriptionKey: "settings.betaMissionWorkbenchDesc",
-  },
+  // 任务工作台入口：内测暂不放开，设置页开关先隐藏。恢复时取消注释，
+  // 并删掉 TEMPORARILY_HIDDEN_BETA_FEATURES 里对应的 id。
+  // {
+  //   id: "missionWorkbench",
+  //   labelKey: "settings.betaMissionWorkbench",
+  //   descriptionKey: "settings.betaMissionWorkbenchDesc",
+  // },
 ] as const;
 
-export type BetaFeatureId = (typeof BETA_FEATURES)[number]["id"];
+/** 暂时下线的内测入口：设置页不渲染开关，`useBetaFeature` 也恒为 false，
+ *  所以侧栏 / 页签入口对所有人隐藏（含设置里已存 true 的老用户）。
+ *  store 与设置文件里的值原样保留，从上面的目录里取消注释即可恢复。 */
+const TEMPORARILY_HIDDEN_BETA_FEATURES = ["missionWorkbench"] as const;
+
+export type BetaFeatureId =
+  | (typeof BETA_FEATURES)[number]["id"]
+  | (typeof TEMPORARILY_HIDDEN_BETA_FEATURES)[number];
 
 interface BetaFeaturesState {
   features: Record<string, boolean>;
@@ -56,9 +65,14 @@ export const useBetaFeaturesStore = create<BetaFeaturesState>((set, get) => ({
   },
 }));
 
-/** One beta flag; absent/false = the entry is hidden. */
+function isBetaFeatureHidden(id: BetaFeatureId): boolean {
+  return (TEMPORARILY_HIDDEN_BETA_FEATURES as readonly string[]).includes(id);
+}
+
+/** One beta flag; absent/false = the entry is hidden. 暂时下线的入口恒为 false。 */
 export function useBetaFeature(id: BetaFeatureId): boolean {
-  return useBetaFeaturesStore((state) => state.features[id] === true);
+  const enabled = useBetaFeaturesStore((state) => state.features[id] === true);
+  return enabled && !isBetaFeatureHidden(id);
 }
 
 /** Load the persisted flags from settings. At startup this shares the

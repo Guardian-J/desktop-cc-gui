@@ -4,6 +4,7 @@ import Check from "lucide-react/dist/esm/icons/check";
 import X from "lucide-react/dist/esm/icons/x";
 import RotateCcw from "lucide-react/dist/esm/icons/rotate-ccw";
 import type { Message } from "@/lib/ipc";
+import { isWeb } from "@/lib/platform";
 import { sessionKey, useChatStore } from "../store";
 
 /**
@@ -61,20 +62,31 @@ export function GrantCard({ message }: { message: Message }) {
       {grant.status === "pending" &&
         (path ? (
           <>
-            {grant.dir && (
+            {grant.dir && !isWeb && (
               <div className="text-caption-1-regular text-text-tertiary">
                 {t("chat.grantScopeNote", { dir: grant.dir })}
               </div>
             )}
+            {isWeb && (
+              // The web bridge deliberately has no grant_root route (see
+              // web/dispatch.rs): remote clients must not widen the
+              // filesystem boundary, so explain instead of offering a
+              // button that can only fail.
+              <div className="text-caption-1-regular text-text-tertiary">
+                {t("chat.grantWebUnavailable")}
+              </div>
+            )}
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => answer(true)}
-                className={`${btn} bg-button-primary text-text-white`}
-              >
-                <Check className="size-3.5" aria-hidden />
-                {t("chat.grantAllow")}
-              </button>
+              {!isWeb && (
+                <button
+                  type="button"
+                  onClick={() => answer(true)}
+                  className={`${btn} bg-button-primary text-text-white`}
+                >
+                  <Check className="size-3.5" aria-hidden />
+                  {t("chat.grantAllow")}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => answer(false)}

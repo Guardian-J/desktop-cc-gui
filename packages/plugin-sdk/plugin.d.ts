@@ -121,7 +121,9 @@ export interface PluginContext {
       component: ComponentLike;
       order?: number;
     }): Disposer;
-    /** 聊天右侧面板 tab（权限 ui:panel-tab）。 */
+    /** 聊天右侧面板 tab（权限 ui:panel-tab）。插件 tab 在页签条里只渲染
+     *  图标，`icon` 即用户看到的主体；缺省时回落插件素材 / 首字母瓷砖，
+     *  `label` 作为 title 与可访问名。 */
     registerPanelTab(def: {
       key?: string;
       label: () => string;

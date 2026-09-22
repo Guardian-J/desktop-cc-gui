@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
+    "plugin-skill:docs": "node --experimental-strip-types scripts/build-plugin-skill-docs.ts",
     "build:mac": "./scripts/build-signed-macos.sh",
     "build:mac:skip-notarize": "SKIP_NOTARIZE=1 ./scripts/build-signed-macos.sh",
     "preview": "vite preview",

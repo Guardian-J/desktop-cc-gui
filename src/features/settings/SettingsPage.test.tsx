@@ -94,6 +94,21 @@ function itemsContainerOf(labelKey: string): HTMLElement {
   return container;
 }
 
+/** Rail block that owns a section heading (the block carries the group's
+ *  spacing classes). */
+function groupBlock(labelKey: string): HTMLElement {
+  const label = i18n.t(labelKey);
+  const heading = [...document.querySelectorAll("nav button, nav span")].find(
+    (el) => el.textContent?.trim() === label,
+  );
+  const block =
+    heading?.closest("button")?.parentElement ?? heading?.parentElement;
+  if (!(block instanceof HTMLElement)) {
+    throw new Error(`group block not rendered: ${labelKey}`);
+  }
+  return block;
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -193,6 +208,30 @@ describe("SettingsPage CLI rail", () => {
     const disabledAt = labels.indexOf(i18n.t("settings.cliDisabledGroup"));
     expect(missingAt).toBeGreaterThan(-1);
     expect(disabledAt).toBeGreaterThan(missingAt);
+  });
+
+  it("tucks the two buckets under the CLI 管理 rail (tighter gap than a section)", async () => {
+    await render([
+      engine("claude", true, true),
+      engine("codex", true, false),
+      engine("qoder", false, true),
+    ]);
+
+    // Both buckets carry the negative top margin that shrinks the 24px
+    // section gap to 12px; full rail sections never do — PI CLI
+    // (≡ the last main-rail row) must stay 24px above 未安装.
+    for (const key of [
+      "settings.cliNotInstalledGroup",
+      "settings.cliDisabledGroup",
+    ]) {
+      expect(groupBlock(key).className).toContain("md:-mt-3");
+    }
+    expect(groupBlock("settings.cliManage").className).not.toContain(
+      "md:-mt-3",
+    );
+    expect(groupBlock("settings.groupSystem").className).not.toContain(
+      "md:-mt-3",
+    );
   });
 
   it("keeps every CLI while the engine probe is out (empty list = unknown)", async () => {

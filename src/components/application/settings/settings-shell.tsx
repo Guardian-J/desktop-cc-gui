@@ -54,9 +54,12 @@ import { useBrowserOcclusion } from "@/features/browser/occlusion";
  *             stretching it edge to edge. The page itself scrolls when
  *             taller than the shell.
  *
- * Rail groups are Codex-style sections: a muted heading over an item list.
- * A group opts into folding with `collapsible` (the CLI 管理 rail and its two
- * buckets) — its heading becomes a chevron toggle. Every other group stays
+ * Rail groups are Codex-style sections: a muted heading over an item list,
+ * spaced 24px apart on the md+ rail (list gap 20px + the group's 4px top
+ * padding). A group opts into folding with `collapsible` (the CLI 管理 rail
+ * and its two buckets) — its heading becomes a chevron toggle. The buckets
+ * also set `nested`: their gap to the group above drops to 12px so they read
+ * as part of CLI 管理 instead of as a new section. Every other group stays
  * static, matching the reference rail. The fold is session-local (no
  * localStorage) and only applies to the md+ vertical rail, which owns the
  * headings; the mobile rail keeps every item. Search filters rail items by
@@ -97,6 +100,11 @@ export interface SettingsNavGroup {
   /** Foldable rail section: the heading becomes a chevron toggle and the
    *  item list folds away on the md+ vertical rail. */
   collapsible?: boolean;
+  /** Sub-section of the group above (the CLI 管理 buckets): the md+ rail
+   *  tightens the gap above it (12px instead of the 24px section gap) so it
+   *  reads as part of that group. A nested group can never be the rail's
+   *  first row. */
+  nested?: boolean;
   /** Initial state of a collapsible group the user hasn't toggled yet
    *  (default: folded). */
   defaultExpanded?: boolean;
@@ -454,7 +462,13 @@ export function SettingsShell({
                 return (
                   <div
                     key={group.id ?? group.label ?? groupIndex}
-                    className="flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col md:gap-1"
+                    className={cx(
+                      "flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col md:gap-1",
+                      // Pull a nested bucket 12px up into the gap above it;
+                      // index 0 keeps the container's own edge (a search can
+                      // promote a bucket to the first visible row).
+                      group.nested && groupIndex > 0 && "md:-mt-3",
+                    )}
                   >
                     {/* Section heading (Codex style): muted label aligned
                         with the item icons. A collapsible group turns the

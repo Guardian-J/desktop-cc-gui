@@ -232,7 +232,8 @@ export default function SettingsPage() {
         ];
         // Bucket order: 未安装 sorts before 未启用; both are folded buckets
         // that unfold on click (and stay visible on the mobile rail, which
-        // has no headings to toggle).
+        // has no headings to toggle). `nested` tucks each bucket under the
+        // CLI 管理 rail with a tighter gap than a full section gets.
         if (uninstalledItems.length > 0) {
           rail.push({
             id: "cli-missing",
@@ -240,6 +241,7 @@ export default function SettingsPage() {
             order: order + 0.5,
             items: uninstalledItems,
             collapsible: true,
+            nested: true,
           });
         }
         if (disabledItems.length > 0) {
@@ -249,6 +251,7 @@ export default function SettingsPage() {
             order: order + 0.6,
             items: disabledItems,
             collapsible: true,
+            nested: true,
           });
         }
         return rail;

@@ -3,7 +3,9 @@ import { useTranslation } from "react-i18next";
 import BookOpen from "lucide-react/dist/esm/icons/book-open";
 import FolderInput from "lucide-react/dist/esm/icons/folder-input";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2";
+import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
+import { cx } from "@/utils/cx";
 import { isWeb } from "@/lib/platform";
 import { usePluginHubStore } from "./store";
 import { PluginDetailPage } from "./PluginDetailPage";
@@ -14,15 +16,28 @@ import { usePluginsStore } from "../manager/usePlugins";
 import { useMarketplaceStore } from "../marketplace/store";
 
 const HEADER_BUTTON =
-  "flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-body-2-medium text-text-secondary transition-colors hover:bg-background-primary-hover hover:text-text-primary disabled:cursor-wait disabled:opacity-70";
+  "flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-body-2-medium text-text-secondary transition-colors hover:bg-background-primary-hover hover:text-text-primary";
+/** 安装中：进度语言（转圈）由按钮内容表达，禁用光标是「等待」。 */
+const HEADER_BUTTON_BUSY = "disabled:cursor-wait disabled:opacity-70";
+/** 前提不满足（无工作区）：不是等待，是点不了。 */
+const HEADER_BUTTON_BLOCKED = "disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
  * 插件 hub (native center tab): 市场 storefront + 已安装 manager, opened from
  * the sidebar entry and the palette commands. Replaces the two settings
  * sections — the settings rail now only carries plugin-registered settings
  * pages.
+ *
+ * 头部三个动作：从本地目录安装、创建插件（开新会话并预填内置 skill 调用，
+ * 见 creator-chat.ts）、插件开发指南。
  */
-export function PluginHub() {
+export function PluginHub({
+  onCreatePluginChat,
+}: {
+  /** 由 ChatCenterPane 提供（它持有 composer ref）；null = 还没有工作区，
+   *  开不了会话，按钮置灰。 */
+  onCreatePluginChat?: (() => void) | null;
+} = {}) {
   const { t } = useTranslation();
   const view = usePluginHubStore((s) => s.view);
   const setView = usePluginHubStore((s) => s.setView);
@@ -80,10 +95,24 @@ export function PluginHub() {
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
+            disabled={!onCreatePluginChat}
+            title={
+              onCreatePluginChat
+                ? t("plugins.hub.createHint")
+                : t("plugins.hub.createNoWorkspace")
+            }
+            onClick={() => onCreatePluginChat?.()}
+            className={cx(HEADER_BUTTON, HEADER_BUTTON_BLOCKED)}
+          >
+            <Sparkles className="size-4" aria-hidden />
+            {t("plugins.hub.create")}
+          </button>
+          <button
+            type="button"
             disabled={!!installing || isWeb}
             title={isWeb ? t("plugins.market.desktopOnly") : undefined}
             onClick={() => void installFromDirectory()}
-            className={HEADER_BUTTON}
+            className={cx(HEADER_BUTTON, HEADER_BUTTON_BUSY)}
           >
             {installing ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
