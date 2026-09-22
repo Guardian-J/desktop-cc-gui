@@ -1307,60 +1307,68 @@ mod tests {
 
     #[test]
     fn discard_restores_worktree_from_index_preserving_staged_hunks() {
-        let scratch = Scratch::new();
-        let repo = Repository::init(&scratch.0).unwrap();
-        // Windows CI runs with global core.autocrlf=true; checkout_index would
-        // smudge the LF index blobs to CRLF and fail the LF assertions below.
-        repo.config().unwrap().set_bool("core.autocrlf", false).unwrap();
-        commit_file(&repo, "a.txt", "base\n");
-        // Stage one revision, then dirty the worktree again: discard must drop
-        // only the unstaged layer, leaving the staged content in the index.
-        std::fs::write(scratch.0.join("a.txt"), "staged\n").unwrap();
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(Path::new("a.txt")).unwrap();
-            index.write().unwrap();
+        for (autocrlf, expected) in [(false, "staged\n"), (true, "staged\r\n")] {
+            let scratch = Scratch::new();
+            let repo = Repository::init(&scratch.0).unwrap();
+            repo.config().unwrap().set_bool("core.autocrlf", autocrlf).unwrap();
+            repo.config().unwrap().set_str("core.eol", "lf").unwrap();
+            commit_file(&repo, "a.txt", "base\n");
+            std::fs::write(scratch.0.join("a.txt"), "staged\n").unwrap();
+            {
+                let mut index = repo.index().unwrap();
+                index.add_path(Path::new("a.txt")).unwrap();
+                index.write().unwrap();
+            }
+            let staged_blob = repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id;
+            std::fs::write(scratch.0.join("a.txt"), "unstaged\n").unwrap();
+
+            git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
+
+            assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), expected);
+            assert_eq!(repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id, staged_blob);
+            assert_eq!(repo.find_blob(staged_blob).unwrap().content(), b"staged\n");
         }
-        let staged_blob = repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id;
-        std::fs::write(scratch.0.join("a.txt"), "unstaged\n").unwrap();
-
-        git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
-
-        assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), "staged\n");
-        assert_eq!(repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id, staged_blob);
     }
 
     #[test]
     fn discard_restores_unstaged_deletion() {
-        let scratch = Scratch::new();
-        let repo = Repository::init(&scratch.0).unwrap();
-        repo.config().unwrap().set_bool("core.autocrlf", false).unwrap();
-        commit_file(&repo, "a.txt", "keep\n");
-        std::fs::remove_file(scratch.0.join("a.txt")).unwrap();
+        for (autocrlf, expected) in [(false, "keep\n"), (true, "keep\r\n")] {
+            let scratch = Scratch::new();
+            let repo = Repository::init(&scratch.0).unwrap();
+            repo.config().unwrap().set_bool("core.autocrlf", autocrlf).unwrap();
+            repo.config().unwrap().set_str("core.eol", "lf").unwrap();
+            commit_file(&repo, "a.txt", "keep\n");
+            let staged_tree = repo.index().unwrap().write_tree().unwrap();
+            std::fs::remove_file(scratch.0.join("a.txt")).unwrap();
 
-        git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
+            git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
 
-        assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), "keep\n");
+            assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), expected);
+            assert_eq!(repo.index().unwrap().write_tree().unwrap(), staged_tree);
+        }
     }
 
     #[test]
     fn discard_keeps_staged_new_file_content() {
-        // Staged-new (INDEX_NEW): the index is the only source, so discard
-        // must leave the worktree content untouched.
-        let scratch = Scratch::new();
-        let repo = Repository::init(&scratch.0).unwrap();
-        repo.config().unwrap().set_bool("core.autocrlf", false).unwrap();
-        commit_file(&repo, "base.txt", "base\n");
-        std::fs::write(scratch.0.join("new.txt"), "fresh\n").unwrap();
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(Path::new("new.txt")).unwrap();
-            index.write().unwrap();
+        for (autocrlf, expected) in [(false, "fresh\n"), (true, "fresh\r\n")] {
+            let scratch = Scratch::new();
+            let repo = Repository::init(&scratch.0).unwrap();
+            repo.config().unwrap().set_bool("core.autocrlf", autocrlf).unwrap();
+            repo.config().unwrap().set_str("core.eol", "lf").unwrap();
+            commit_file(&repo, "base.txt", "base\n");
+            std::fs::write(scratch.0.join("new.txt"), "fresh\n").unwrap();
+            {
+                let mut index = repo.index().unwrap();
+                index.add_path(Path::new("new.txt")).unwrap();
+                index.write().unwrap();
+            }
+            let staged_tree = repo.index().unwrap().write_tree().unwrap();
+
+            git_discard(scratch.0.to_string_lossy().into_owned(), vec!["new.txt".to_string()]).unwrap();
+
+            assert_eq!(std::fs::read_to_string(scratch.0.join("new.txt")).unwrap(), expected);
+            assert_eq!(repo.index().unwrap().write_tree().unwrap(), staged_tree);
         }
-
-        git_discard(scratch.0.to_string_lossy().into_owned(), vec!["new.txt".to_string()]).unwrap();
-
-        assert_eq!(std::fs::read_to_string(scratch.0.join("new.txt")).unwrap(), "fresh\n");
     }
 
     #[test]

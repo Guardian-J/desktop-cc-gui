@@ -110,7 +110,7 @@ pub(crate) fn spawn_stderr_capture(stderr: ChildStderr) -> Arc<Mutex<String>> {
 
 /// Engine stderr can echo the channel credentials from the CLI's own config files; redact credential
 /// shapes before the tail is shown to the user in an error banner.
-fn redact_secrets(text: &str) -> String {
+pub(super) fn redact_secrets(text: &str) -> String {
     use std::sync::LazyLock;
     static PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         [

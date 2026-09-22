@@ -134,6 +134,7 @@ export const zh = {
     questionKeyboardHint: "使用 Tab / 上下键选择，回车或空格选中",
     questionPrev: "上一题",
     questionNext: "下一题",
+    questionRemaining: "还有 {{count}} 题未作答",
     questionWaiting: "等待你的回答…",
     questionSkipped: "已跳过（未作答）",
     questionCancelled: "问题已失效",

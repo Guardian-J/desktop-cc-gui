@@ -145,19 +145,11 @@ impl Engine for ClaudeEngine {
             cmd.arg(model);
         }
         if let Some(effort) = req.effort.as_deref() {
-            let level = match effort {
-                "low" => "low",
-                "medium" => "medium",
-                "high" => "high",
-                "xhigh" => "xhigh",
-                "max" | "ultra" => "max",
-                _ => effort,
-            };
             cmd.arg("--effort");
-            cmd.arg(level);
-            cmd.env("CLAUDE_CODE_EFFORT_LEVEL", level);
-            // Keep MAX_THINKING_TOKENS for older CLI versions or custom token budgets.
-            match level {
+            cmd.arg(effort);
+            cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort);
+            // Token budget is a side channel for older CLIs; it must not rewrite the effort string.
+            match effort {
                 "medium" => {
                     cmd.env("MAX_THINKING_TOKENS", "16384");
                 }
@@ -167,7 +159,7 @@ impl Engine for ClaudeEngine {
                 "xhigh" => {
                     cmd.env("MAX_THINKING_TOKENS", "131072");
                 }
-                "max" => {
+                "max" | "ultra" => {
                     cmd.env("MAX_THINKING_TOKENS", "262144");
                 }
                 _ => {}
@@ -1463,7 +1455,6 @@ mod tests {
             .collect();
         assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
 
-        // ultra is clamped to max
         request.effort = Some("ultra".into());
         let built = engine.build_command(&request, "claude").unwrap();
         let args: Vec<String> = built
@@ -1472,10 +1463,10 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert!(args.windows(2).any(|w| w == ["--effort", "max"]));
+        assert!(args.windows(2).any(|w| w == ["--effort", "ultra"]));
         assert_eq!(
             built.command.as_std().get_envs().find(|(k, _)| *k == "CLAUDE_CODE_EFFORT_LEVEL").and_then(|(_, v)| v),
-            Some(std::ffi::OsStr::new("max"))
+            Some(std::ffi::OsStr::new("ultra"))
         );
     }
 }
