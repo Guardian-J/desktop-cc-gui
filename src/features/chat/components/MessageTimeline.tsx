@@ -11,7 +11,7 @@ import { parseUsage } from "../usage";
 import { formatTokens } from "@/utils/format-tokens";
 import { cx } from "@/utils/cx";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
-import { streamParseInterval, useThrottled } from "@/hooks/use-throttled";
+import { useLiveParseInterval, useThrottled } from "@/hooks/use-throttled";
 import { useCopied } from "@/hooks/use-copied";
 import { MessageImages } from "./MessageImages";
 import { GrantCard } from "./GrantCard";
@@ -273,9 +273,11 @@ export const MessageRow = memo(function MessageRow({
 }) {
   // A live row's text grows per store flush; a full markdown reparse per
   // flush scales linearly with reply length (~30ms at 32KB) and starves the
-  // main thread, so the parse is throttled. Settled rows never change and
-  // render as-is.
-  const text = useThrottled(message.text, message.live ? streamParseInterval(message.text.length) : 0);
+  // main thread, so the parse is throttled — and backed off further when the
+  // previous commit overran the frame budget (fast streams need the frames
+  // for the reveal more than they need an extra parse).
+  const parseMs = useLiveParseInterval(message.live === true, message.text.length);
+  const text = useThrottled(message.text, parseMs);
   if (message.role === "grant") {
     // Permission-denial card: actionable directory grant, not a chat bubble.
     return <GrantCard message={message} />;

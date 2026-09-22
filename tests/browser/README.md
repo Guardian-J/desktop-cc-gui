@@ -18,7 +18,17 @@ The presentation cursor still reveals text per frame. Markdown parses are
 budgeted separately: 32ms up to 4,000 UTF-16 units, 64ms up to 16,000, and 128ms
 above that. Completion bypasses the budget. These limits trade parser work
 against arrival latency; they do not guarantee a frame-time bound for very
-large Markdown documents.
+large Markdown documents. A live row that overran the budget extends its own
+interval (up to 160ms) so a 200 tok/s stream cannot starve the reveal frames.
+
+Open `/tests/browser/thinking-reveal.html` to check the live thinking panel at
+provider speed: the real `ThinkingSurface` replays a 200 tok/s stream (100
+characters every 144ms) and samples the rendered body once per animation
+frame. The burst must be spread across frames — `largestSingleFrameStep` stays
+small and `framesJumpingAtLeast 30 chars` must be 0 after the first paint —
+and the page reports `PASS`. Before this fixture's behavior was fixed the
+panel rendered each burst in one commit, which read as flashing text. No
+model, no IPC, no saved conversation.
 
 Open `/tests/browser/effort-layout.html` to verify the actual model menu keeps
 its trigger width and popover position while cycling all five reasoning levels.

@@ -1,10 +1,20 @@
-import { useLayoutEffect, useState, useSyncExternalStore } from "react";
-import { ThrottledText } from "./throttled-text";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ThrottledText, nextParseInterval, streamParseInterval } from "./throttled-text";
 
-/** Short replies can be parsed more often; large documents need breathing
- * room for input, layout and reveal frames between full Markdown parses. */
-export function streamParseInterval(length: number): number {
-  return length <= 4000 ? 32 : length <= 16000 ? 64 : 128;
+export { nextParseInterval, streamParseInterval };
+
+/** Parse interval for one live row: cadence from the reply length, backed off
+ * by the measured cost of the previous commit. Settled rows pass 0 (no
+ * throttle). The measurement spans render + commit, so it includes the
+ * markdown parse, highlighting and React's reconciliation. */
+export function useLiveParseInterval(live: boolean, length: number): number {
+  const commitMs = useRef(0);
+  const started = useRef(0);
+  started.current = performance.now();
+  useLayoutEffect(() => {
+    commitMs.current = performance.now() - started.current;
+  });
+  return live ? nextParseInterval(streamParseInterval(length), commitMs.current) : 0;
 }
 
 /** Coalesce streaming appends before expensive Markdown parsing. Completion,

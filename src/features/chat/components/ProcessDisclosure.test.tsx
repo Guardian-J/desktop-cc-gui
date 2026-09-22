@@ -1,9 +1,16 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/lib/i18n";
 import { ProcessDisclosure } from "./ProcessDisclosure";
 import type { ProcessItem } from "./timeline-rows";
+
+// jsdom reports a reduced-motion preference, which would make every reveal
+// publish its text immediately and hide the pacing under test.
+vi.mock("motion/react", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useReducedMotion: () => false,
+}));
 
 const actEnvironment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
 actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
@@ -168,6 +175,38 @@ describe("ProcessDisclosure thinking expansion", () => {
     });
     expect(headerExpanded()).toBe(true);
     expect(container.textContent).toContain("先分析需求");
+  });
+
+  it("paces a live thinking burst instead of landing it whole", async () => {
+    const opening = "先读文件";
+    await render([{ type: "thinking", text: opening, live: true }], { autoExpand: true, turnLive: true });
+    const body = () => container.querySelector(".whitespace-pre-wrap")?.textContent ?? "";
+    // Mount shows what had already arrived — history must never animate in.
+    expect(body()).toBe(opening);
+
+    // One provider burst (OMP writes ~100 characters every ~144ms at
+    // 200 tok/s) must not appear in a single commit. The reveal is a layout
+    // effect, so this is deterministic: no frame has run yet.
+    const burst = "汉".repeat(100);
+    await render([{ type: "thinking", text: opening + burst, live: true }], { autoExpand: true, turnLive: true });
+    expect(body()).toBe(opening);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    expect(body()).toBe(opening + burst);
+  });
+
+  it("windows the live thinking body to the revealed tail and settles whole", async () => {
+    const long = "句子。".repeat(1000); // 4000 characters
+    await render([{ type: "thinking", text: long, live: true }], { autoExpand: true, turnLive: true });
+    const panel = () => container.querySelector<HTMLElement>(".whitespace-pre-wrap")!;
+    expect(panel().textContent!.length).toBeLessThan(long.length);
+    expect(panel().textContent!.length).toBeLessThanOrEqual(2000);
+    expect(long.endsWith(panel().textContent!)).toBe(true);
+    expect(panel().className).toContain("mask-image");
+
+    await render([{ type: "thinking", text: long }], { autoExpand: true, turnLive: true });
+    expect(panel().textContent).toBe(long);
+    expect(panel().className).not.toContain("mask-image");
   });
 
   it("clips height when folding instead of fading a scaled ghost", async () => {

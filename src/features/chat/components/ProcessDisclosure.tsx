@@ -9,6 +9,9 @@ import { StepRow, type TaskListChip } from "@/components/application/task-list/t
 import { getFileTreeIconSvg } from "@/features/files/fileIcons";
 import { markToolKeys, toolEntranceKey, type ProcessItem } from "./timeline-rows";
 import { ToolPayloadViewer } from "./ToolPayloadViewer";
+import { useLiveReveal } from "./use-live-reveal";
+import { useRevealed } from "./reveal-text";
+import { visibleLineWindow } from "./stream-reveal";
 
 /** Classify a tool-call label (tool name or shell command) into a type chip. */
 function toolTypeKey(text: string): string {
@@ -165,27 +168,20 @@ const FrozenStepRow = memo(function FrozenStepRow({
   );
 });
 
-/** Live thinking window: the last ~2000 chars, cut at a LINE boundary so a
- *  row slides out as a whole instead of dissolving character by character.
- *  `truncated` tells the surface to fade its top edge, hinting at the
- *  content above the window. */
-function liveThinkingWindow(text: string): { body: string; truncated: boolean } {
-  const WINDOW_CHARS = 2000;
-  if (text.length <= WINDOW_CHARS) return { body: text, truncated: false };
-  const cut = text.length - WINDOW_CHARS;
-  const newline = text.indexOf("\n", cut);
-  // No newline inside the window (one enormous line): keep the char cut —
-  // there is no line boundary to honor.
-  const start = newline === -1 ? cut : newline + 1;
-  return { body: text.slice(start), truncated: true };
-}
+/** Live thinking window size: the last ~2000 revealed characters. The cut is
+ *  measured from the reveal CURSOR (not the received tail), so a burst still
+ *  being drained cannot push text out of view before it was ever shown. */
+const LIVE_THINKING_WINDOW = 2000;
 
 /** Thinking body: brain header + left-railed gray content, mirroring the
  * reference chat UI. Plain pre-wrapped text — never markdown-reparsed per
- * delta. The live view is windowed to the last 2000 chars; the cut lands on
- * a line boundary and the top edge fades out, so overflow leaves as whole
- * dissolving rows rather than a hard char-by-char wipe. */
-function ThinkingSurface({
+ * delta — but paced by the same reveal as assistant markdown: a provider
+ * burst (at 200 tok/s OMP writes ~100 characters every ~144ms) is spread
+ * across the frames of its own arrival cadence instead of landing whole.
+ * The live view is windowed from the reveal cursor, cut at a line boundary so
+ * overflow leaves as whole rows; once the thinking settles the full text
+ * renders and the top fade goes away. */
+export function ThinkingSurface({
   text,
   title,
   live,
@@ -194,7 +190,11 @@ function ThinkingSurface({
   title?: string;
   live?: boolean;
 }) {
-  const { body, truncated } = live ? liveThinkingWindow(text) : { body: text, truncated: false };
+  const controller = useLiveReveal(text, Boolean(live));
+  const revealed = useRevealed(controller, 0, text.length);
+  const windowed = live ? visibleLineWindow(text, revealed, LIVE_THINKING_WINDOW) : null;
+  const body = windowed ? windowed.text : text;
+  const truncated = windowed?.truncated ?? false;
   return (
     <div className="flex flex-col gap-1">
       {title && (
