@@ -216,6 +216,26 @@ describe("PluginHub", () => {
     expect(avatar).not.toBeNull();
   });
 
+  it("tags first-party developers as 官方 in the market row and the detail rail", async () => {
+    pluginFetchIndex.mockImplementation(async () => [
+      { ...MARKET_ENTRY, author: "zhukunpenglinyutong" },
+      { ...MARKET_ENTRY, id: "rainbow", name: "彩虹边界线", author: "libo-zhou" },
+    ]);
+    await render();
+
+    const rows = [...document.body.querySelectorAll<HTMLTableRowElement>("tbody tr")];
+    const officialRow = rows.find((row) => row.textContent?.includes("React Doctor"))!;
+    const thirdPartyRow = rows.find((row) => row.textContent?.includes("彩虹边界线"))!;
+    expect(officialRow.textContent).toContain(i18n.t("plugins.hub.official"));
+    expect(thirdPartyRow.textContent).not.toContain(i18n.t("plugins.hub.official"));
+
+    await act(async () => {
+      buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {});
+    expect(document.body.textContent).toContain(i18n.t("plugins.hub.official"));
+  });
+
   it("shows the indexed plugin icon and keeps the letter tile without one", async () => {
     pluginFetchIndex.mockImplementation(async () => [
       MARKET_ENTRY,

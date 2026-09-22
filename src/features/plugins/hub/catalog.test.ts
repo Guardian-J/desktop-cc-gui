@@ -6,6 +6,7 @@ import {
   githubAvatarUrl,
   githubLoginFor,
   indexUpdatedAt,
+  isOfficialPlugin,
   pluginAvatarGradient,
   pluginInitial,
   pluginMatchesQuery,
@@ -132,6 +133,28 @@ describe("indexUpdatedAt", () => {
   });
 });
 
+describe("isOfficialPlugin", () => {
+  it("matches the publisher account behind author or repo owner", () => {
+    expect(isOfficialPlugin({ author: "zhukunpenglinyutong" })).toBe(true);
+    expect(isOfficialPlugin({ author: "ZhukunPengLinYuTong" })).toBe(true);
+    // A display name still resolves through the repo owner (githubLoginFor).
+    expect(
+      isOfficialPlugin({
+        author: "诸昆鹏",
+        repo: "zhukunpenglinyutong/ccgui-plugin-react-doctor",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects third-party publishers and unresolvable identities", () => {
+    expect(
+      isOfficialPlugin({ author: "libo-zhou", repo: "libo-zhou/ccgui-plugin-x" }),
+    ).toBe(false);
+    expect(isOfficialPlugin({ author: "tester", repo: "owner/plugin" })).toBe(false);
+    expect(isOfficialPlugin({ author: "插件作者" })).toBe(false);
+  });
+});
+
 describe("sortByDownloads", () => {
   it("ranks counted entries first, then name, and does not mutate the input", () => {
     const input = [
@@ -147,18 +170,20 @@ describe("sortByDownloads", () => {
 
 describe("sortPlugins", () => {
   const input = [
-    entry("b", { downloads: 1, name: "Bravo" }),
-    entry("a", { downloads: 9, name: "Alpha" }),
-    entry("c", { downloads: null, name: "Charlie" }),
+    entry("b", { downloads: 1, name: "Bravo", author: "libo-zhou" }),
+    entry("a", { downloads: 9, name: "Alpha", author: "zhukunpenglinyutong" }),
+    entry("c", { downloads: null, name: "Charlie", author: "libo-zhou" }),
   ];
 
-  it("defaults to the downloads-ranked order and leaves the input alone", () => {
+  it("ranks downloads for the two ranking orders and leaves the input alone", () => {
     expect(sortPlugins(input, "smart").map((item) => item.id)).toEqual(["a", "b", "c"]);
+    expect(sortPlugins(input, "downloads").map((item) => item.id)).toEqual(["a", "b", "c"]);
     expect(input.map((item) => item.id)).toEqual(["b", "a", "c"]);
   });
 
-  it("sorts by name regardless of downloads", () => {
-    expect(sortPlugins(input, "name").map((item) => item.id)).toEqual(["a", "b", "c"]);
+  it("keeps only the chosen audience for 官方 / 第三方, still downloads-ranked", () => {
+    expect(sortPlugins(input, "official").map((item) => item.id)).toEqual(["a"]);
+    expect(sortPlugins(input, "thirdParty").map((item) => item.id)).toEqual(["b", "c"]);
   });
 });
 

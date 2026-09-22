@@ -11,7 +11,13 @@ import { CenteredSpinner } from "@/components/base/empty-state";
 import { ConfirmDialog } from "@/components/dialogs";
 import { isWeb, openExternal } from "@/lib/platform";
 import { ipc, type MarketPlugin, type PluginInfo } from "@/lib/ipc";
-import { categorizePlugin, githubAvatarUrl, githubLoginFor, indexUpdatedAt } from "./catalog";
+import {
+  categorizePlugin,
+  githubAvatarUrl,
+  githubLoginFor,
+  indexUpdatedAt,
+  isOfficialPlugin,
+} from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
 import { usePluginArtwork } from "./artwork";
 import { PluginReadme } from "./PluginReadme";
@@ -24,6 +30,8 @@ import { useMarketplaceStore } from "../marketplace/store";
 const BADGE =
   "rounded-md bg-background-secondary-default px-1.5 py-0.5 text-xs text-text-secondary";
 const BADGE_OK = "rounded-md bg-status-lime-background px-1.5 py-0.5 text-xs text-status-lime-text";
+const OFFICIAL_BADGE =
+  "shrink-0 rounded-md bg-status-purple-background px-1.5 py-0.5 text-xs text-status-purple-text";
 const RAIL_LABEL = "text-caption-1-regular text-text-tertiary";
 const RAIL_VALUE = "text-body-2-regular text-text-primary";
 const LINK_BUTTON =
@@ -70,7 +78,15 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
  * only a display name) the whole avatar + name chip links to that profile; a
  * display name alone stays inert text rather than pointing at a guessed URL.
  */
-function AuthorChip({ author, login }: { author: string; login: string | null }) {
+function AuthorChip({
+  author,
+  login,
+  official,
+}: {
+  author: string;
+  login: string | null;
+  official: boolean;
+}) {
   const { t } = useTranslation();
   const label = author || login || "";
   const chip = (
@@ -85,6 +101,7 @@ function AuthorChip({ author, login }: { author: string; login: string | null })
         />
       )}
       <span className="truncate">{label || "—"}</span>
+      {official && <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>}
     </>
   );
 
@@ -360,7 +377,11 @@ export function PluginDetailPage({
 
             <aside className={RAIL}>
               <RailRow label={t("plugins.hub.author")}>
-                <AuthorChip author={author} login={authorLogin} />
+                <AuthorChip
+                  author={author}
+                  login={authorLogin}
+                  official={isOfficialPlugin({ author, repo })}
+                />
               </RailRow>
 
               {category && (

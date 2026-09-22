@@ -98,6 +98,16 @@ export function githubLoginFor(entry: { author: string; repo?: string }): string
   return GITHUB_LOGIN.test(owner) ? owner : null;
 }
 
+/** GitHub account that publishes the first-party plugins. */
+export const OFFICIAL_PLUGIN_LOGIN = "zhukunpenglinyutong";
+
+/** First-party plugin: the indexed `author`, or the repo owner when a manifest
+ *  carries only a display name (`githubLoginFor`). GitHub logins are
+ *  case-insensitive, so the comparison is too. */
+export function isOfficialPlugin(entry: { author: string; repo?: string }): boolean {
+  return githubLoginFor(entry)?.toLowerCase() === OFFICIAL_PLUGIN_LOGIN;
+}
+
 /** Real avatar from GitHub's username endpoint. 2× the CSS size keeps the
  *  chip crisp on retina; 460 is the largest size the endpoint accepts. */
 export function githubAvatarUrl(login: string, cssSize: number): string {
@@ -127,15 +137,25 @@ export function sortByDownloads(entries: MarketPlugin[]): MarketPlugin[] {
   });
 }
 
-/** Sort orders offered by the market table toolbar. `smart` is the default:
- *  downloads first (uncounted entries keep the index order at the tail), name
- *  as the tiebreak — see `sortByDownloads`. */
-export type PluginSort = "smart" | "name";
+/** Toolbar orders. `smart` and `downloads` rank the whole index (uncounted
+ *  entries keep the index order at the tail); `official` and `thirdParty` are
+ *  audience views and keep only that kind — see `pluginMatchesAudience`. */
+export type PluginSort = "smart" | "official" | "thirdParty" | "downloads";
 
-/** Rows in table order. Sorting copies; callers keep their filtered array. */
+/** Audience gate for the 官方 / 第三方 selections: those two show one kind
+ *  only, the ranking orders keep everything. */
+export function pluginMatchesAudience(entry: MarketPlugin, sort: PluginSort): boolean {
+  if (sort === "official") return isOfficialPlugin(entry);
+  if (sort === "thirdParty") return !isOfficialPlugin(entry);
+  return true;
+}
+
+/** Rows in table order. The toolbar select mixes ranking with the audience
+ *  split, so this narrows and then ranks by downloads — see `sortByDownloads`
+ *  for the uncounted tail and the name tiebreak. Copies; callers keep their
+ *  filtered array. */
 export function sortPlugins(entries: MarketPlugin[], sort: PluginSort): MarketPlugin[] {
-  if (sort === "name") return [...entries].sort((a, b) => a.name.localeCompare(b.name));
-  return sortByDownloads(entries);
+  return sortByDownloads(entries.filter((entry) => pluginMatchesAudience(entry, sort)));
 }
 
 /**

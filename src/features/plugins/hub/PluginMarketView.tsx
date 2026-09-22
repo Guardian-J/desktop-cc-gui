@@ -95,7 +95,13 @@ export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) 
     () => entries.some((entry) => entry.downloads != null),
     [entries],
   );
-  const filtering = query.trim().length > 0 || category !== "all";
+  // 官方 / 第三方 narrow the list, so they count as an active filter for the
+  // empty-state reset button too.
+  const filtering =
+    query.trim().length > 0 ||
+    category !== "all" ||
+    sort === "official" ||
+    sort === "thirdParty";
   const filtered = useMemo(
     () =>
       sortPlugins(
@@ -142,7 +148,9 @@ export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) 
             triggerClassName={SELECT_TRIGGER}
           >
             <SelectItem id="smart">{t("plugins.hub.sortSmart")}</SelectItem>
-            <SelectItem id="name">{t("plugins.hub.sortName")}</SelectItem>
+            <SelectItem id="official">{t("plugins.hub.sortOfficial")}</SelectItem>
+            <SelectItem id="thirdParty">{t("plugins.hub.sortThirdParty")}</SelectItem>
+            <SelectItem id="downloads">{t("plugins.hub.sortDownloads")}</SelectItem>
           </Select>
           <Input
             value={query}
@@ -191,6 +199,7 @@ export function PluginMarketView({ onOpenDetail }: { onOpenDetail: (id: string) 
               onClick={() => {
                 setQuery("");
                 setCategory("all");
+                setSort("smart");
               }}
               className="cursor-pointer rounded-lg bg-background-secondary-default px-3 py-1.5 text-body-2-medium text-text-primary transition-colors hover:bg-background-secondary-hover"
             >

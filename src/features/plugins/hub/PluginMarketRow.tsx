@@ -4,13 +4,17 @@ import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import { Button } from "@/components/base/buttons/button";
 import { isWeb } from "@/lib/platform";
 import type { MarketPlugin } from "@/lib/ipc";
-import { githubAvatarUrl, githubLoginFor } from "./catalog";
+import { githubAvatarUrl, githubLoginFor, isOfficialPlugin } from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
 import { usePluginsStore } from "../manager/usePlugins";
 import { useMarketplaceStore } from "../marketplace/store";
 
 const BADGE =
   "rounded-md bg-background-secondary-default px-1.5 py-0.5 text-xs text-text-secondary";
+/** First-party marker: purple is reserved for "this is ours", so it never
+ *  competes with the neutral tier badge or the lime installed badge. */
+const OFFICIAL_BADGE =
+  "shrink-0 rounded-md bg-status-purple-background px-1.5 py-0.5 text-xs text-status-purple-text";
 
 /** Progress placeholder keeps the secondary shape of the button it replaces,
  *  so the row's action column does not resize mid-install. */
@@ -110,6 +114,7 @@ export function PluginMarketRow({
 }) {
   const { t } = useTranslation();
   const authorLogin = githubLoginFor(entry);
+  const official = isOfficialPlugin(entry);
 
   return (
     <tr
@@ -159,6 +164,7 @@ export function PluginMarketRow({
           <span title={entry.author} className="truncate text-body-2-regular text-text-secondary">
             {entry.author || "—"}
           </span>
+          {official && <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>}
         </div>
       </td>
 
