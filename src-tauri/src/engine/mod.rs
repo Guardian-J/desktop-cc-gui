@@ -71,7 +71,7 @@ pub struct SendRequest {
     pub images: Vec<String>,
     pub model: Option<String>,
     /// Reasoning effort ("low" | "medium" | "high" | "xhigh" | "max" | "ultra"); engines without an
-    /// effort knob ignore it, engines with a narrower knob clamp.
+    /// effort knob ignore it. Engines that accept a level pass the requested string through.
     pub effort: Option<String>,
     /// OpenAI service tier override (OMP `--service-tier` / Codex `-c service_tier`),
     /// independent of reasoning effort.

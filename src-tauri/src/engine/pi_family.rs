@@ -176,16 +176,7 @@ export default function ccguiAskBridge(pi: ExtensionAPI) {
 		if (!payload || typeof payload !== "object") return;
 		const rawLevel = (typeof process !== "undefined" && process.env?.CCGUI_REQUESTED_EFFORT) || ctx?.thinkingLevel || pi.getThinkingLevel?.();
 		if (!rawLevel || rawLevel === "off") return;
-		const effortMap: Record<string, string> = {
-			minimal: "low",
-			low: "low",
-			medium: "medium",
-			high: "high",
-			xhigh: "max",
-			max: "max",
-			ultra: "max",
-		};
-		const effort = effortMap[rawLevel] || rawLevel;
+		const effort = rawLevel;
 		const p = payload as Record<string, any>;
 		// 1. Anthropic messages format: output_config.effort for adaptive thinking (recognized by NewAPI/OneAPI)
 		if (!p.output_config || typeof p.output_config !== "object") {
@@ -315,15 +306,11 @@ impl Engine for PiFamilyEngine {
                 cmd.args(["--service-tier", tier]);
             }
         }
-        // Both accept the full level vocabulary: low…max; clamp ultra to max.
+        // Pass the requested level through unchanged.
         if let Some(effort) = req.effort.as_deref() {
-            let level = match effort {
-                "ultra" => "max",
-                other => other,
-            };
             cmd.arg("--thinking");
-            cmd.arg(level);
-            cmd.env("CCGUI_REQUESTED_EFFORT", level);
+            cmd.arg(effort);
+            cmd.env("CCGUI_REQUESTED_EFFORT", effort);
         }
         match self.resolve_permission(req.permission.as_deref()) {
             // Skips every approval tier for this run, and also sets the
@@ -404,11 +391,7 @@ impl Engine for PiFamilyEngine {
                 lines.push(serde_json::json!({"id": "ccgui-negotiate", "type": "negotiate_protocol", "protocolVersion": 2}).to_string());
             }
             if let Some(effort) = req.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-                let level = match effort {
-                    "ultra" => "max",
-                    other => other,
-                };
-                lines.push(serde_json::json!({"id": "ccgui-effort", "type": "set_thinking_level", "level": level}).to_string());
+                lines.push(serde_json::json!({"id": "ccgui-effort", "type": "set_thinking_level", "level": effort}).to_string());
             }
             lines.push(serde_json::json!({"id": "ccgui-state", "type": "get_state"}).to_string());
             lines.push(prompt.to_string());
@@ -1525,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn build_command_clamps_ultra_effort_to_max() {
+    fn build_command_passes_effort_through() {
         let engine = omp();
         let req = SendRequest {
             session_id: None,
@@ -1547,11 +1530,10 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert!(args.windows(2).any(|w| w == ["--thinking", "max"]));
-        assert!(!args.contains(&"ultra".to_string()));
+        assert!(args.windows(2).any(|w| w == ["--thinking", "ultra"]));
         assert_eq!(
             built.command.as_std().get_envs().find(|(k, _)| *k == "CCGUI_REQUESTED_EFFORT").and_then(|(_, v)| v),
-            Some(std::ffi::OsStr::new("max"))
+            Some(std::ffi::OsStr::new("ultra"))
         );
     }
 
