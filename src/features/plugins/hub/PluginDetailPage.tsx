@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { LucideIcon } from "lucide-react";
 import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left";
+import CircleDot from "lucide-react/dist/esm/icons/circle-dot";
 import Download from "lucide-react/dist/esm/icons/download";
+import Github from "lucide-react/dist/esm/icons/github";
+import Tag from "lucide-react/dist/esm/icons/tag";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import Settings2 from "lucide-react/dist/esm/icons/settings-2";
 import SquareArrowOutUpRight from "lucide-react/dist/esm/icons/square-arrow-out-up-right";
@@ -38,7 +42,7 @@ const OFFICIAL_BADGE =
 const RAIL_LABEL = "text-caption-1-regular text-text-tertiary";
 const RAIL_VALUE = "text-body-2-regular text-text-primary";
 const LINK_BUTTON =
-  "flex w-fit cursor-pointer items-center gap-1 text-body-2-regular text-text-brand-secondary hover:underline";
+  "flex w-fit cursor-pointer items-center gap-1.5 text-body-2-regular text-text-brand-secondary hover:underline";
 
 /** Progress placeholder that keeps the medium Button's height while it runs. */
 const INSTALLING_BUTTON =
@@ -66,11 +70,18 @@ function RailRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function ExternalLink({ label, url }: { label: string; url: string }) {
+/**
+ * One destination in the rail's 链接 row. The leading icon names the target
+ * surface (the GitHub mark, a release tag, an issue dot) so the three links
+ * stay tellable apart at a glance; the trailing arrow keeps the "leaves the
+ * app" meaning that predates the icons.
+ */
+function ExternalLink({ icon: Icon, label, url }: { icon: LucideIcon; label: string; url: string }) {
   return (
     <button type="button" onClick={() => openExternal(url)} className={LINK_BUTTON}>
+      <Icon className="size-3.5 shrink-0" aria-hidden />
       {label}
-      <SquareArrowOutUpRight className="size-3.5" aria-hidden />
+      <SquareArrowOutUpRight className="size-3.5 shrink-0" aria-hidden />
     </button>
   );
 }
@@ -465,12 +476,18 @@ export function PluginDetailPage({
               {repo && (
                 <RailRow label={t("plugins.hub.infoLinks")}>
                   <div className="flex flex-col items-start gap-1.5">
-                    <ExternalLink label={t("plugins.hub.repo")} url={`https://github.com/${repo}`} />
                     <ExternalLink
+                      icon={Github}
+                      label={t("plugins.hub.repo")}
+                      url={`https://github.com/${repo}`}
+                    />
+                    <ExternalLink
+                      icon={Tag}
                       label={t("plugins.hub.releases")}
                       url={`https://github.com/${repo}/releases`}
                     />
                     <ExternalLink
+                      icon={CircleDot}
                       label={t("plugins.hub.issues")}
                       url={`https://github.com/${repo}/issues`}
                     />

@@ -51,13 +51,18 @@ export function ModalShell({
   return (
     <ModalOverlay
       isOpen
+      // `isDismissable` belongs on the overlay: react-aria's `useOverlay`
+      // defaults it to false and `useModalOverlay` only reads it from the
+      // ModalOverlay — on the inner Modal it is silently ignored (the library
+      // warns in dev), which left outside-press dismissal dead for every
+      // dialog built on this shell.
+      isDismissable
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
       className="fixed inset-0 z-110 flex items-center justify-center bg-overlay-backdrop"
     >
       <Modal
-        isDismissable
         className={cx(
           "w-80 rounded-2lg border border-border-button-default bg-background-primary-default p-4 shadow-xl outline-none",
           className,

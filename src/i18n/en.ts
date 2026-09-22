@@ -991,6 +991,7 @@ export const en: Messages = {
       screenshotDot: "Screenshot {{n}}",
       screenshotCounter: "{{current}} / {{total}}",
       screenshotZoom: "View full size",
+      screenshotClose: "Close full size",
       screenshotFailed: "Screenshot failed to load",
       readmeUnavailable: "Could not load the plugin description",
       permissions: {

@@ -3,11 +3,20 @@ import { useTranslation } from "react-i18next";
 import ChevronLeft from "lucide-react/dist/esm/icons/chevron-left";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
 import ImageOff from "lucide-react/dist/esm/icons/image-off";
+import X from "lucide-react/dist/esm/icons/x";
 import { ModalShell } from "@/components/dialogs";
 import { cx } from "@/utils/cx";
 
 const NAV_BUTTON =
   "absolute top-1/2 flex size-9 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full bg-background-primary-default/90 text-foreground-icon-primary shadow-md transition-colors hover:bg-background-primary-hover";
+
+/** Lightbox dismiss. Pinned to the viewport corner instead of the image corner:
+ *  the picture's aspect ratio changes per screenshot, and an image-anchored X
+ *  either covers content (the top-right corner of these shots carries badges)
+ *  or drifts off-screen with a very wide image. Backdrop press and Escape also
+ *  close, so this is the visible affordance, not the only one. */
+const ZOOM_CLOSE =
+  "fixed top-5 right-5 flex size-9 cursor-pointer items-center justify-center rounded-full bg-background-primary-default/90 text-foreground-icon-primary shadow-md transition-colors hover:bg-background-primary-hover focus-visible:ring-2 focus-visible:ring-border-focus-ring focus-visible:outline-none motion-reduce:transition-none";
 
 /**
  * Screenshot gallery for a market detail page: one 16:9-ish stage, arrow /
@@ -134,6 +143,15 @@ export function PluginScreenshotCarousel({
           className="w-auto max-w-[92vw] border-0 bg-transparent p-0 shadow-none"
           dialogClassName="flex items-center justify-center"
         >
+          <button
+            type="button"
+            onClick={() => setZoomed(false)}
+            aria-label={t("plugins.hub.screenshotClose")}
+            title={t("plugins.hub.screenshotClose")}
+            className={ZOOM_CLOSE}
+          >
+            <X className="size-5" aria-hidden />
+          </button>
           <img
             src={images[index]}
             alt={alt}

@@ -957,6 +957,7 @@ export const zh = {
       screenshotDot: "第 {{n}} 张截图",
       screenshotCounter: "{{current}} / {{total}}",
       screenshotZoom: "查看大图",
+      screenshotClose: "关闭大图",
       screenshotFailed: "截图加载失败",
       readmeUnavailable: "未能加载插件介绍",
       permissions: {
