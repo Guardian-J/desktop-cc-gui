@@ -421,6 +421,8 @@ export interface AppSettings {
   petEnabled?: boolean;
   /** Selected pet package id. */
   petId?: string;
+  /** Display scale of the desktop pet. */
+  petScale?: number;
   /** Last desktop-pet position in logical desktop pixels. */
   petPosition?: { x: number; y: number } | null;
   /** Require a pairing key before the bridge serves a browser. */
@@ -936,6 +938,7 @@ export interface PetSummary {
 export interface PetPackage extends PetSummary {
   spritesheetPath: string;
   spritesheetDataUrl: string;
+  frameCounts?: number[];
 }
 
 export const ipc = {
@@ -1006,7 +1009,21 @@ export const ipc = {
   removePet: (id: string) => invoke<void>("pet_remove", { id }),
   getPetPackage: (id: string) => invoke<PetPackage>("pet_get_package", { id }),
   setPetVisible: (visible: boolean) => invoke<void>("pet_set_visible", { visible }),
-  setPetState: (state: { status: string; lookDirection: number; changedAt: number }) =>
+  setPetScale: async (scale: number) => {
+    const applied = await invoke<number>("pet_set_scale", { scale });
+    // pet_set_scale persists the value outside update_app_settings; invalidate
+    // the shared read cache so reopening Settings cannot show the old scale.
+    settingsPromise = null;
+    return applied;
+  },
+  setPetState: (state: {
+    sessionKey: string | null;
+    sessionName: string | null;
+    status: string;
+    lookDirection: number;
+    activity: "idle" | "thinking" | "tool" | "command" | "waiting" | "failed" | "completed";
+    changedAt: number;
+  }) =>
     invoke<void>("pet_set_state", { next: state }),
   savePetPosition: (position: { x: number; y: number }) =>
     invoke<void>("pet_save_position", { position }),

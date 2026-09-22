@@ -297,6 +297,15 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
+                // The pet is a secondary window.  It must not run the main
+                // window's process/terminal teardown, and the main window
+                // must destroy it before the app can exit.
+                if window.label() != "main" {
+                    return;
+                }
+                if let Some(pet) = window.app_handle().get_webview_window("pet-overlay") {
+                    let _ = pet.destroy();
+                }
                 if let Some(state) = window.try_state::<AppState>() {
                     state.processes.kill_all();
                     state.dsh_host.kill_spawned();
@@ -347,6 +356,7 @@ pub fn run() {
             pets::pet_remove,
             pets::pet_get_package,
             pet_overlay::pet_set_visible,
+            pet_overlay::pet_set_scale,
             pet_overlay::pet_set_state,
             pet_overlay::pet_save_position,
             // updater

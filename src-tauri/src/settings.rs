@@ -157,6 +157,9 @@ pub struct AppSettings {
     /// Selected pet package id.
     #[serde(default = "default_pet_id")]
     pub pet_id: String,
+    /// Display scale of the pet overlay; changed by right-clicking the pet.
+    #[serde(default = "default_pet_scale")]
+    pub pet_scale: f64,
     /// Last screen position of the pet overlay, in logical desktop pixels.
     #[serde(default)]
     pub pet_position: Option<PetPosition>,
@@ -230,7 +233,35 @@ fn default_language() -> String {
 }
 
 fn default_pet_id() -> String {
-    "damiao-codex".to_string()
+    String::new()
+}
+
+fn default_pet_scale() -> f64 {
+    1.0
+}
+
+/// Migrate settings written by the earlier built-in-pet implementation.
+/// Only packages under the user pet directory are valid now; a stale bundled
+/// id must not make startup create a transparent overlay that can never load.
+fn normalize_pet_settings(settings: &mut AppSettings) {
+    if !settings.pet_scale.is_finite() {
+        settings.pet_scale = default_pet_scale();
+    } else {
+        settings.pet_scale = settings.pet_scale.clamp(0.5, 1.5);
+    }
+    let id = settings.pet_id.trim().to_string();
+    if id.is_empty() {
+        settings.pet_id.clear();
+        settings.pet_enabled = false;
+        return;
+    }
+    let imported = crate::paths::app_home().join("pets").join(&id);
+    if !imported.is_dir() {
+        settings.pet_id.clear();
+        settings.pet_enabled = false;
+    } else {
+        settings.pet_id = id;
+    }
 }
 
 /// Random 8-character pairing key: no vowels and no look-alikes, so it can
@@ -299,6 +330,7 @@ impl Default for AppSettings {
             system_proxy_url: None,
             pet_enabled: false,
             pet_id: default_pet_id(),
+            pet_scale: default_pet_scale(),
             pet_position: None,
             bin_overrides: HashMap::new(),
         }
@@ -422,7 +454,10 @@ pub fn read_settings() -> Result<AppSettings, String> {
     if content.trim().is_empty() {
         return Ok(AppSettings::default());
     }
-    serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
+    let mut settings: AppSettings =
+        serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))?;
+    normalize_pet_settings(&mut settings);
+    Ok(settings)
 }
 
 /// Write-then-rename so a crash mid-write never leaves a truncated file that
@@ -684,6 +719,7 @@ fn persist_settings_to(
     settings: &mut AppSettings,
     path: &std::path::Path,
 ) -> Result<Option<String>, String> {
+    normalize_pet_settings(settings);
     if settings
         .omp_openai_service_tier
         .as_deref()

@@ -33,8 +33,7 @@
     "active": true,
     "resources": {
       "resources/agent-catalogs": "agent-catalogs",
-      "resources/skills": "skills",
-      "resources/pets": "pets"
+      "resources/skills": "skills"
     },
     "createUpdaterArtifacts": true,
     "targets": "all",

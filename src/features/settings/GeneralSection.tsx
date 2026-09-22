@@ -17,6 +17,7 @@ import { IS_WINDOWS, pickDirectory } from "@/lib/platform";
 import { applyTheme } from "./theme";
 import { PromptHistoryManager, PromptHistoryToggleRow } from "./PromptHistorySettings";
 import { useChatStore } from "@/features/chat/store";
+import { PET_SCALE_OPTIONS, normalizePetScale } from "@/features/pet/pet-scale";
 
 export const LANGUAGE_STORAGE_KEY = "ccgui-next.language";
 
@@ -158,10 +159,29 @@ export function GeneralSection() {
   };
   const onPetEnabledChange = (enabled: boolean) => {
     if (!settings) return;
+    if (enabled && !pets.some((pet) => pet.id === settings.petId)) {
+      setError(t("settings.petImportRequired"));
+      return;
+    }
     setSettings({ ...settings, petEnabled: enabled });
     void save({ petEnabled: enabled }).then((ok) => {
       if (ok) void ipc.setPetVisible(enabled).catch((e) => setError(String(e)));
     });
+  };
+  const onPetScaleChange = async (key: Key | null) => {
+    if (!settings || key == null) return;
+    const next = normalizePetScale(Number(key));
+    const previous = normalizePetScale(settings.petScale);
+    if (next === previous) return;
+    setSettings({ ...settings, petScale: next });
+    try {
+      const applied = await ipc.setPetScale(next);
+      setSettings((current) => (current ? { ...current, petScale: normalizePetScale(applied) } : current));
+      setError(null);
+    } catch (e) {
+      setSettings((current) => (current ? { ...current, petScale: previous } : current));
+      setError(String(e));
+    }
   };
   const onPetChange = async (key: Key | null) => {
     if (!settings || key == null) return;
@@ -197,22 +217,20 @@ export function GeneralSection() {
     }
   };
   const removePet = async (pet: PetSummary) => {
-    if (pet.builtIn || !window.confirm(t("settings.petRemoveConfirm"))) return;
+    if (!window.confirm(t("settings.petRemoveConfirm"))) return;
     try {
       await ipc.removePet(pet.id);
       setPets((current) => current.filter((item) => item.id !== pet.id));
       if (settings?.petId === pet.id) {
-        setSettings({ ...settings, petId: "damiao-codex" });
-        const saved = await save({ petId: "damiao-codex" });
-        if (saved && settings.petEnabled) {
-          await ipc.setPetVisible(false);
-          await ipc.setPetVisible(true);
-        }
+        if (settings.petEnabled) await ipc.setPetVisible(false).catch(() => {});
+        await save({ petId: "", petEnabled: false });
       }
     } catch (e) {
       setError(String(e));
     }
   };
+  const selectedPetId = settings?.petId?.trim() ?? "";
+  const selectedPet = pets.find((pet) => pet.id === selectedPetId);
   return (
     <div className="flex w-full flex-col gap-6">
       {error && (
@@ -309,39 +327,61 @@ export function GeneralSection() {
                 size="sm"
                 aria-label={t("settings.petEnabled")}
                 isSelected={settings.petEnabled ?? false}
+                isDisabled={!selectedPet || petBusy}
                 onChange={onPetEnabledChange}
               />
             </SettingsRow>
+            {!selectedPet && (
+              <p className="px-3 pb-2 text-body-2-regular text-text-tertiary">
+                {t("settings.petImportRequired")}
+              </p>
+            )}
             <SettingsRow label={t("settings.petCharacter")}>
               <div className="flex items-center gap-2">
                 <Select
                   aria-label={t("settings.petCharacter")}
-                  selectedKey={settings.petId ?? "damiao-codex"}
+                  selectedKey={selectedPetId || null}
+                  isDisabled={pets.length === 0 || petBusy}
                   onSelectionChange={onPetChange}
                   triggerClassName={SELECT_TRIGGER}
                 >
                   {pets.map((pet) => (
                     <SelectItem key={pet.id} id={pet.id} textValue={pet.displayName}>
-                      {pet.displayName}{pet.builtIn ? ` (${t("settings.petBuiltIn")})` : ""}
+                      {pet.displayName}
                     </SelectItem>
                   ))}
                 </Select>
                 <Button size="small" variant="secondary" onClick={() => void importPet()} disabled={petBusy}>
                   {t("settings.petImport")}
                 </Button>
-                {pets.find((pet) => pet.id === (settings.petId ?? "damiao-codex"))?.builtIn === false && (
+                {selectedPet && (
                   <Button
                     size="small"
                     variant="ghost"
                     onClick={() => {
-                      const pet = pets.find((item) => item.id === (settings.petId ?? "damiao-codex"));
-                      if (pet) void removePet(pet);
+                      void removePet(selectedPet);
                     }}
                   >
                     {t("settings.petRemove")}
                   </Button>
                 )}
               </div>
+            </SettingsRow>
+            <SettingsRow
+              label={t("settings.petScale")}
+            >
+              <Select
+                aria-label={t("settings.petScale")}
+                selectedKey={String(normalizePetScale(settings.petScale))}
+                onSelectionChange={onPetScaleChange}
+                triggerClassName={SELECT_TRIGGER}
+              >
+                {PET_SCALE_OPTIONS.map((value) => (
+                  <SelectItem key={value} id={String(value)} textValue={`${value * 100}%`}>
+                    {t("settings.petScaleValue", { percent: value * 100 })}
+                  </SelectItem>
+                ))}
+              </Select>
             </SettingsRow>
           </SettingsCard>
         </div>
