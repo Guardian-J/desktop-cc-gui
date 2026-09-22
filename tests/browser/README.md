@@ -132,6 +132,16 @@ snapshot that lagged behind external (CLI) checkouts, silently swallowing
 the click. Real ChangesPanelHeader; only the store's checkout is stubbed.
 No app, no backend.
 
+Open `/tests/browser/thinking-layout.html` to verify full live thinking text.
+Click `Replay thinking` to grow from 2,100 to 8,100 characters, alternating
+long wrapped paragraphs and short code-like lines. The production thinking
+surface must retain `[row-000]`, never shrink from dropping earlier lines,
+and eventually display the exact received text. The result reports PASS,
+`prefixRetained: true`, `maxShrink: 0` and `complete: true`. Ordinary upward
+movement from newly appended lines is reported separately, not treated as
+proof of flicker. The existing manual fold and end-of-thinking fold setting
+are unaffected by removing the live 2,000-character window.
+
 Open `/tests/browser/tail-pin.html` for high-rate streaming scroll regression.
 Click `Replay 100 chars / 144ms`: the production Markdown renderer, virtualizer,
 and follow hooks receive 100-character bursts every 144ms (a synthetic burst

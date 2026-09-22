@@ -195,17 +195,21 @@ describe("ProcessDisclosure thinking expansion", () => {
     expect(body()).toBe(opening + burst);
   });
 
-  it("windows the live thinking body to the revealed tail and settles whole", async () => {
-    const long = "句子。".repeat(1000); // 4000 characters
+  it("retains the complete revealed thinking prefix beyond 2000 characters", async () => {
+    const long = "开头必须保留 🙂\n" + "句子与代码 `value`。\n".repeat(300);
     await render([{ type: "thinking", text: long, live: true }], { autoExpand: true, turnLive: true });
     const panel = () => container.querySelector<HTMLElement>(".whitespace-pre-wrap")!;
-    expect(panel().textContent!.length).toBeLessThan(long.length);
-    expect(panel().textContent!.length).toBeLessThanOrEqual(2000);
-    expect(long.endsWith(panel().textContent!)).toBe(true);
-    expect(panel().className).toContain("mask-image");
-
-    await render([{ type: "thinking", text: long }], { autoExpand: true, turnLive: true });
     expect(panel().textContent).toBe(long);
+    expect(panel().className).not.toContain("mask-image");
+
+    const next = long + "新到达的思考内容 👨‍👩‍👧‍👦\n";
+    await render([{ type: "thinking", text: next, live: true }], { autoExpand: true, turnLive: true });
+    expect(panel().textContent).toBe(long);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+    expect(panel().textContent).toBe(next);
+
+    await render([{ type: "thinking", text: next }], { autoExpand: true, turnLive: true });
+    expect(panel().textContent).toBe(next);
     expect(panel().className).not.toContain("mask-image");
   });
 
