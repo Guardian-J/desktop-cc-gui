@@ -73,7 +73,9 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
 }
 
 /**
- * Developer identity in the rail. When the index resolves a GitHub account
+ * Developer identity in the rail. First-party plugins show the official badge
+ * instead of the account: it is the publisher, not a person to credit. For
+ * third-party plugins, when the index resolves a GitHub account
  * (`githubLoginFor`: the indexed `author`, or the repo owner when `author` is
  * only a display name) the whole avatar + name chip links to that profile; a
  * display name alone stays inert text rather than pointing at a guessed URL.
@@ -88,6 +90,7 @@ function AuthorChip({
   official: boolean;
 }) {
   const { t } = useTranslation();
+  if (official) return <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>;
   const label = author || login || "";
   const chip = (
     <>
@@ -101,7 +104,6 @@ function AuthorChip({
         />
       )}
       <span className="truncate">{label || "—"}</span>
-      {official && <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>}
     </>
   );
 

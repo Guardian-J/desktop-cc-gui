@@ -216,7 +216,7 @@ describe("PluginHub", () => {
     expect(avatar).not.toBeNull();
   });
 
-  it("tags first-party developers as 官方 in the market row and the detail rail", async () => {
+  it("shows the official badge instead of developer info for first-party plugins", async () => {
     pluginFetchIndex.mockImplementation(async () => [
       { ...MARKET_ENTRY, author: "zhukunpenglinyutong" },
       { ...MARKET_ENTRY, id: "rainbow", name: "彩虹边界线", author: "libo-zhou" },
@@ -226,14 +226,19 @@ describe("PluginHub", () => {
     const rows = [...document.body.querySelectorAll<HTMLTableRowElement>("tbody tr")];
     const officialRow = rows.find((row) => row.textContent?.includes("React Doctor"))!;
     const thirdPartyRow = rows.find((row) => row.textContent?.includes("彩虹边界线"))!;
+    // The account is replaced by the badge, not repeated next to it.
     expect(officialRow.textContent).toContain(i18n.t("plugins.hub.official"));
+    expect(officialRow.textContent).not.toContain("zhukunpenglinyutong");
     expect(thirdPartyRow.textContent).not.toContain(i18n.t("plugins.hub.official"));
+    expect(thirdPartyRow.textContent).toContain("libo-zhou");
 
     await act(async () => {
       buttonContaining("React Doctor").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await act(async () => {});
+    // The rail keeps the same rule: brand, no personal account link.
     expect(document.body.textContent).toContain(i18n.t("plugins.hub.official"));
+    expect(document.body.textContent).not.toContain("zhukunpenglinyutong");
   });
 
   it("shows the indexed plugin icon and keeps the letter tile without one", async () => {

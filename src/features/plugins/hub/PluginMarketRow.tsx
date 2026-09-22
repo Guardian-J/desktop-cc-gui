@@ -12,7 +12,9 @@ import { useMarketplaceStore } from "../marketplace/store";
 const BADGE =
   "rounded-md bg-background-secondary-default px-1.5 py-0.5 text-xs text-text-secondary";
 /** First-party marker: purple is reserved for "this is ours", so it never
- *  competes with the neutral tier badge or the lime installed badge. */
+ *  competes with the neutral tier badge or the lime installed badge. An
+ *  official plugin shows only this badge in the developer column — the
+ *  account behind it is implicit, and the truncated login was just noise. */
 const OFFICIAL_BADGE =
   "shrink-0 rounded-md bg-status-purple-background px-1.5 py-0.5 text-xs text-status-purple-text";
 
@@ -151,21 +153,24 @@ export function PluginMarketRow({
       </td>
 
       <td className={CELL}>
-        <div className="flex min-w-0 items-center gap-2">
-          {entry.author && (
-            <PluginAvatar
-              id={entry.author}
-              name={entry.author}
-              src={authorLogin ? githubAvatarUrl(authorLogin, 20) : null}
-              size={20}
-              shape="circle"
-            />
-          )}
-          <span title={entry.author} className="truncate text-body-2-regular text-text-secondary">
-            {entry.author || "—"}
-          </span>
-          {official && <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>}
-        </div>
+        {official ? (
+          <span className={OFFICIAL_BADGE}>{t("plugins.hub.official")}</span>
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
+            {entry.author && (
+              <PluginAvatar
+                id={entry.author}
+                name={entry.author}
+                src={authorLogin ? githubAvatarUrl(authorLogin, 20) : null}
+                size={20}
+                shape="circle"
+              />
+            )}
+            <span title={entry.author} className="truncate text-body-2-regular text-text-secondary">
+              {entry.author || "—"}
+            </span>
+          </div>
+        )}
       </td>
 
       {showDownloads && (
