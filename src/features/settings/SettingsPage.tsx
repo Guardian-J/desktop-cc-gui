@@ -209,6 +209,11 @@ export default function SettingsPage() {
             label: meta ? t(meta.labelKey) : group,
             order,
             items: enabledItems,
+            // The rail, the 未安装 bucket and the 未启用 bucket fold; the two
+            // buckets start folded so the installed-and-enabled CLIs stay in
+            // view, while the main rail starts open.
+            collapsible: true,
+            defaultExpanded: true,
             // The CLI 管理 rail is drag-sortable; the order persists across
             // sessions (localStorage) and new engines append at the end. A
             // reorder only covers the enabled rows — the stored list keeps
@@ -225,14 +230,16 @@ export default function SettingsPage() {
             dragHandleLabel: t("settings.cliDrag"),
           },
         ];
-        // Bucket order: 未安装 sorts before 未启用; both render as static
-        // sections like the main groups.
+        // Bucket order: 未安装 sorts before 未启用; both are folded buckets
+        // that unfold on click (and stay visible on the mobile rail, which
+        // has no headings to toggle).
         if (uninstalledItems.length > 0) {
           rail.push({
             id: "cli-missing",
             label: t("settings.cliNotInstalledGroup"),
             order: order + 0.5,
             items: uninstalledItems,
+            collapsible: true,
           });
         }
         if (disabledItems.length > 0) {
@@ -241,6 +248,7 @@ export default function SettingsPage() {
             label: t("settings.cliDisabledGroup"),
             order: order + 0.6,
             items: disabledItems,
+            collapsible: true,
           });
         }
         return rail;

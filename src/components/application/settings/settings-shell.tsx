@@ -3,6 +3,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -11,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import X from "lucide-react/dist/esm/icons/x";
 import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left";
 import Search from "lucide-react/dist/esm/icons/search";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
 import {
   WorkspaceSortableList,
   type RepoDragChrome,
@@ -52,9 +54,13 @@ import { useBrowserOcclusion } from "@/features/browser/occlusion";
  *             stretching it edge to edge. The page itself scrolls when
  *             taller than the shell.
  *
- * Rail groups are static sections in the Codex style: a muted heading over an
- * always-visible item list — no chevrons, no collapse state to persist.
- * Search filters rail items by label (case-insensitive substring) and
+ * Rail groups are Codex-style sections: a muted heading over an item list.
+ * A group opts into folding with `collapsible` (the CLI 管理 rail and its two
+ * buckets) — its heading becomes a chevron toggle. Every other group stays
+ * static, matching the reference rail. The fold is session-local (no
+ * localStorage) and only applies to the md+ vertical rail, which owns the
+ * headings; the mobile rail keeps every item. Search filters rail items by
+ * label (case-insensitive substring), opens any group holding a match, and
  * suspends drag-sort — a filtered list has no stable reorder axis. Escape
  * closes the page (the search box consumes it first to clear the query).
  */
@@ -64,8 +70,9 @@ type IconComponent = ComponentType<{
   "aria-hidden"?: boolean | "true" | "false";
 }>;
 
-/** One rail row recipe: back row, group heading, nav item and sortable row
- *  all render from it, so icon and label columns stay aligned. */
+/** One rail row recipe: back row, nav item and sortable row render from it,
+ *  so icon and label columns stay aligned (the collapsible heading copies the
+ *  same metrics). */
 const RAIL_ROW = "flex items-center gap-1.5 rounded-lg p-1.5 text-left";
 
 /** Reading column shared by the content title row and every page body:
@@ -87,6 +94,12 @@ export interface SettingsNavGroup {
   id?: string;
   /** Muted section heading; omit for an unlabeled group. */
   label?: string;
+  /** Foldable rail section: the heading becomes a chevron toggle and the
+   *  item list folds away on the md+ vertical rail. */
+  collapsible?: boolean;
+  /** Initial state of a collapsible group the user hasn't toggled yet
+   *  (default: folded). */
+  defaultExpanded?: boolean;
   /** When set, the group's items render as a drag-sortable list (the item
    *  icon becomes the grip, md+ vertical rail only) and a drop reports the
    *  new key order. */
@@ -165,10 +178,13 @@ function NavButton({
 function SortableNavItems({
   group,
   page,
+  collapsed = false,
   onSelect,
 }: {
   group: SettingsNavGroup;
   page: string;
+  /** Folded on the md+ rail; the mobile rail keeps the list either way. */
+  collapsed?: boolean;
   onSelect: (key: string) => void;
 }) {
   const sortableItems = useMemo(
@@ -179,7 +195,10 @@ function SortableNavItems({
     <WorkspaceSortableList
       items={sortableItems}
       onReorder={(orderedKeys) => group.onReorderItems?.(orderedKeys)}
-      className="flex w-auto flex-row gap-1 md:w-full md:flex-col md:gap-0"
+      className={cx(
+        "flex w-auto flex-row gap-1 md:w-full md:flex-col md:gap-0",
+        collapsed && "md:hidden",
+      )}
       renderItem={({ item }, drag: RepoDragChrome | null) => {
         const selected = item.key === page;
         if (!drag?.dragHandleProps) {
@@ -286,6 +305,11 @@ export function SettingsShell({
   // headings (context for the match) and drop empty buckets entirely.
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
+  /** Fold state of collapsible groups, keyed by group id; session-local, so
+   *  reopening settings starts from each group's default again. */
+  const [expandedGroups, setExpandedGroups] = useState<
+    Record<string, boolean>
+  >({});
   const visibleGroups = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return groups;
@@ -296,6 +320,26 @@ export function SettingsShell({
       return items.length > 0 ? [{ ...group, items }] : [];
     });
   }, [groups, query]);
+
+  // A page reached inside a folded group (deep link, page change) unfolds
+  // that group, so the selected row is never hidden. Keyed on the page value
+  // — group identity changes (engine probe, reorder) must not re-open a
+  // group the user has just folded by hand.
+  const unfoldedForPage = useRef<string | null>(null);
+  useEffect(() => {
+    if (unfoldedForPage.current === page) return;
+    unfoldedForPage.current = page;
+    setExpandedGroups((prev) => {
+      const owner = groups.find(
+        (group) =>
+          group.collapsible &&
+          group.items.some((item) => item.key === page),
+      );
+      const key = owner?.id ?? owner?.label;
+      if (!key || (prev[key] ?? owner?.defaultExpanded ?? false)) return prev;
+      return { ...prev, [key]: true };
+    });
+  }, [groups, page]);
 
   // Top fade over the scrolling page so rows dissolve under the title row
   // instead of cutting sharply (same recipe as the medical alerts feed).
@@ -390,44 +434,92 @@ export function SettingsShell({
                 {t("settings.searchEmpty")}
               </span>
             ) : (
-              visibleGroups.map((group, groupIndex) => (
-                <div
-                  key={group.id ?? group.label ?? groupIndex}
-                  className="flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col md:gap-1"
-                >
-                  {/* Static section heading (Codex style): muted label aligned
-                      with the item icons, never a toggle. */}
-                  {group.label && (
-                    <span className="hidden truncate pl-1.5 text-body-regular text-text-tertiary md:block">
-                      {group.label}
-                    </span>
-                  )}
-                  {group.onReorderItems && !searching ? (
-                    <SortableNavItems
-                      group={group}
-                      page={page}
-                      onSelect={(key) => {
-                        setPage(key);
-                        setContentScrolled(false);
-                      }}
-                    />
-                  ) : (
-                    <div className="flex w-auto flex-row gap-1 md:w-full md:flex-col md:gap-0">
-                      {group.items.map((item) => (
-                        <NavButton
-                          key={item.key}
-                          item={item}
-                          selected={item.key === page}
-                          onSelect={(key) => {
-                            setPage(key);
-                            setContentScrolled(false);
-                          }}
-                        />
+              visibleGroups.map((group, groupIndex) => {
+                const groupKey = group.id ?? group.label ?? String(groupIndex);
+                // Folded is the default for a collapsible group; an active
+                // search opens matches so none stay hidden behind a chevron.
+                const expanded =
+                  !group.collapsible ||
+                  searching ||
+                  (expandedGroups[groupKey] ?? group.defaultExpanded ?? false);
+                const toggleGroup = () =>
+                  setExpandedGroups((prev) => ({
+                    ...prev,
+                    [groupKey]: !(
+                      prev[groupKey] ??
+                      group.defaultExpanded ??
+                      false
+                    ),
+                  }));
+                return (
+                  <div
+                    key={group.id ?? group.label ?? groupIndex}
+                    className="flex w-auto shrink-0 flex-row gap-1.5 pt-1 md:w-full md:flex-col md:gap-1"
+                  >
+                    {/* Section heading (Codex style): muted label aligned
+                        with the item icons. A collapsible group turns the
+                        heading row into a chevron toggle; the rest stay
+                        static. */}
+                    {group.label &&
+                      (group.collapsible ? (
+                        <button
+                          type="button"
+                          aria-expanded={expanded}
+                          onClick={toggleGroup}
+                          className={cx(
+                            "hidden w-auto shrink-0 cursor-pointer items-center gap-1.5 rounded-lg p-1.5 text-left md:flex md:w-full",
+                            "outline-none transition-colors duration-150 ease hover:bg-background-secondary-hover/60 focus-visible:ring-2 focus-visible:ring-border-focus-ring",
+                          )}
+                        >
+                          <ChevronRight
+                            className={cx(
+                              "size-4 shrink-0 text-foreground-icon-secondary transition-transform duration-150 ease",
+                              expanded && "rotate-90",
+                            )}
+                            aria-hidden
+                          />
+                          <span className="truncate text-body-regular text-text-tertiary">
+                            {group.label}
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="hidden truncate pl-1.5 text-body-regular text-text-tertiary md:block">
+                          {group.label}
+                        </span>
                       ))}
-                    </div>
-                  )}
-                </div>
-              ))
+                    {group.onReorderItems && !searching ? (
+                      <SortableNavItems
+                        group={group}
+                        page={page}
+                        collapsed={!expanded}
+                        onSelect={(key) => {
+                          setPage(key);
+                          setContentScrolled(false);
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className={cx(
+                          "flex w-auto flex-row gap-1 md:w-full md:flex-col md:gap-0",
+                          !expanded && "md:hidden",
+                        )}
+                      >
+                        {group.items.map((item) => (
+                          <NavButton
+                            key={item.key}
+                            item={item}
+                            selected={item.key === page}
+                            onSelect={(key) => {
+                              setPage(key);
+                              setContentScrolled(false);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
           {/* Progressive top fade (same recipe as the content pane): rows
