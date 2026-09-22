@@ -23,7 +23,7 @@ import { formatDuration } from "./format-duration";
 import { ProcessDisclosure } from "./ProcessDisclosure";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { useScrollFollow, useTailPin } from "./use-scroll-follow";
-import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { ScrollControl } from "./ScrollControl";
 import { pluginIdFromRegistryKey, timelineRowRegistry, useRegistry } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import { useAnchorRailScroll } from "./use-anchor-rail-scroll";
@@ -474,7 +474,7 @@ export const MessageTimeline = memo(function MessageTimeline({
       index < rows.length ? rowKey(rows[index]) : "streaming-tail",
   });
 
-  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, resumeFollow } = useScrollFollow({ scrollRef });
+  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, scrollToEdge } = useScrollFollow({ scrollRef });
   const {
     searchOpen,
     setSearchOpen,
@@ -552,7 +552,7 @@ export const MessageTimeline = memo(function MessageTimeline({
         getFallbackTitle={(index) => t("chat.anchorUserTitle", { index: index + 1 })}
         onScrollToAnchor={handleScrollToAnchor}
       />
-      <ScrollToBottomButton scrollRef={scrollRef} contentSignal={count} onJump={resumeFollow} />
+      <ScrollControl scrollRef={scrollRef} onJump={scrollToEdge} />
       {searchOpen && (
         <TimelineSearchBar
           query={searchQuery}

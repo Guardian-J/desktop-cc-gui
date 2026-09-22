@@ -145,6 +145,7 @@ export const en: Messages = {
     questionCancelled: "Question expired",
     anchorNavigation: "Message anchors",
     anchorUserTitle: "User #{{index}}",
+    backToTop: "Back to top",
     backToBottom: "Back to bottom",
     sessionRunning: "Running",
     sessionUnseen: "Unread update",

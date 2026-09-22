@@ -140,6 +140,7 @@ export const zh = {
     questionCancelled: "问题已失效",
     anchorNavigation: "消息锚点",
     anchorUserTitle: "用户 #{{index}}",
+    backToTop: "回到顶部",
     backToBottom: "回到底部",
     engineNotInstalled: "未安装或未加入 PATH",
     noEngineEnabled: "未启用 CLI，点击前往设置",
