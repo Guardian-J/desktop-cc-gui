@@ -57,6 +57,13 @@ struct PluginReadFileArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PluginReadArtworkArgs {
+    id: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginIdArgs {
     id: String,
 }
@@ -1015,6 +1022,10 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         // bridge so web clients render plugin UI; install/uninstall/enable/
         // storage writes stay desktop-only and fall through to unknown.
         "plugin_list" => ser(crate::plugins::plugin_list(app.state())),
+        "plugin_read_artwork" => {
+            let a: PluginReadArtworkArgs = parse_args(&raw)?;
+            ser(crate::plugins::plugin_read_artwork(a.id, a.path))
+        }
         "plugin_read_file" => {
             let a: PluginReadFileArgs = parse_args(&raw)?;
             ser(crate::plugins::plugin_read_file(a.id, a.name))
