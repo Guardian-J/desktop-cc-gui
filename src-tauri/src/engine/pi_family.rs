@@ -178,11 +178,12 @@ export default function ccguiAskBridge(pi: ExtensionAPI) {
 		if (!rawLevel || rawLevel === "off") return;
 		const effort = rawLevel;
 		const p = payload as Record<string, any>;
-		// 1. Anthropic messages format: output_config.effort for adaptive thinking (recognized by NewAPI/OneAPI)
-		if (!p.output_config || typeof p.output_config !== "object") {
-			p.output_config = { effort };
-		} else if (!p.output_config.effort) {
-			p.output_config.effort = effort;
+		if (ctx?.model?.api === "anthropic-messages") {
+			if (!p.output_config || typeof p.output_config !== "object") {
+				p.output_config = { effort };
+			} else if (!p.output_config.effort) {
+				p.output_config.effort = effort;
+			}
 		}
 		// 2. OpenAI completions format: top-level reasoning_effort
 		if (!p.reasoning_effort) {
