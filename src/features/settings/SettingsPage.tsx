@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import Puzzle from "lucide-react/dist/esm/icons/puzzle";
+import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid";
 import {
   SettingsShell,
   type SettingsNavGroup,
@@ -133,7 +133,7 @@ export default function SettingsPage() {
       const item = {
         key: def.key,
         label: def.label(),
-        icon: def.icon ?? Puzzle,
+        icon: def.icon ?? LayoutGrid,
       };
       const bucket = byGroup.get(def.group);
       if (bucket) bucket.push(item);

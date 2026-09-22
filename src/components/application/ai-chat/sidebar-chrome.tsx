@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import Globe from "lucide-react/dist/esm/icons/globe";
+import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid";
 import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import PanelLeft from "lucide-react/dist/esm/icons/panel-left";
-import Puzzle from "lucide-react/dist/esm/icons/puzzle";
 import ScanSearch from "lucide-react/dist/esm/icons/scan-search";
 import Settings from "lucide-react/dist/esm/icons/settings";
 import Workflow from "lucide-react/dist/esm/icons/workflow";
@@ -208,7 +208,7 @@ export function SidebarPrimaryNav({
   return (
     <nav className="flex w-full shrink-0 flex-col gap-1">
       <NavItem icon={MessageSquarePlus} label={t("chat.newSession")} onClick={onNewSession} />
-      <NavItem icon={Puzzle} label={t("plugins.hub.title")} onClick={onOpenPlugins} />
+      <NavItem icon={LayoutGrid} label={t("plugins.hub.title")} onClick={onOpenPlugins} />
       {onNewBrowser && (
         <NavItem icon={Globe} label={t("chat.newBrowser")} onClick={onNewBrowser} />
       )}
@@ -218,7 +218,7 @@ export function SidebarPrimaryNav({
       {pluginEntries.map((entry) => (
         <NavItem
           key={entry.id}
-          icon={(entry.icon ?? Puzzle) as IconComponent}
+          icon={(entry.icon ?? LayoutGrid) as IconComponent}
           label={entry.label()}
           onClick={entry.onOpen}
         />

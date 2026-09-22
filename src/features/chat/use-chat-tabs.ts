@@ -4,8 +4,8 @@ import { useShallow } from "zustand/react/shallow";
 import FileText from "lucide-react/dist/esm/icons/file-text";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import Globe from "lucide-react/dist/esm/icons/globe";
+import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid";
 import Network from "lucide-react/dist/esm/icons/network";
-import Puzzle from "lucide-react/dist/esm/icons/puzzle";
 import { BROWSER_TAB_PREFIX, useBrowserStore, type BrowserTab } from "@/features/browser/store";
 import { browserTabLabel } from "@/features/browser/address";
 import { useBetaFeature } from "@/features/settings/beta-features";
@@ -215,7 +215,7 @@ export function useChatTabs({
               key: PLUGIN_HUB_TAB_KEY,
               label: t("plugins.hub.title"),
               title: t("plugins.hub.title"),
-              icon: Puzzle as LucideIcon,
+              icon: LayoutGrid as LucideIcon,
               streaming: false,
             },
           ]
