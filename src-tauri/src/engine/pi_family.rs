@@ -1522,6 +1522,7 @@ mod tests {
             additional_dirs: vec![],
             provider_id: None,
             computer_use: None,
+            allowed_tools: None,
         };
         let built = engine.build_command(&req, "omp").unwrap();
         let args: Vec<String> = built
@@ -1552,6 +1553,7 @@ mod tests {
             additional_dirs: vec![],
             provider_id: None,
             computer_use: None,
+            allowed_tools: None,
         };
         let built = engine.build_command(&req, "omp").unwrap();
         let payload = built.stdin_payload.expect("rpc stdin payload");
@@ -1597,6 +1599,7 @@ mod tests {
             additional_dirs: vec![],
             provider_id: None,
             computer_use: None,
+            allowed_tools: None,
         };
         let built = engine.build_command(&req, "omp").unwrap();
         let args: Vec<String> = built

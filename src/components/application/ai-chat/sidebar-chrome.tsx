@@ -70,7 +70,7 @@ function NavItem({
  *  InfoTip: outside press, Escape, scroll, or a second click closes it). The
  *  button stays enabled so the tip stays reachable; `aria-disabled` carries
  *  the unavailable state. */
-function DisabledNavItem({
+export function DisabledNavItem({
   icon: Icon,
   label,
   tip,
@@ -190,14 +190,16 @@ export function SidebarBrandRow({ onOpenSearch }: { onOpenSearch?: () => void })
   );
 }
 
-/** Primary actions: 新建会话/浏览器 (会话搜索在顶栏图标 + ⌘L 弹窗),
+/** Primary actions: 新建会话/浏览器/任务工作台 (会话搜索在顶栏图标 + ⌘L 弹窗),
  *  其后是插件注册的导航项（SDK 0.3.12 ui:sidebar-entry）。 */
 export function SidebarPrimaryNav({
   onNewSession,
   onNewBrowser,
+  onOpenMission,
 }: {
   onNewSession?: () => void;
   onNewBrowser?: () => void;
+  onOpenMission?: () => void;
 }) {
   const { t } = useTranslation();
   const pluginEntries = [...useRegistry(sidebarNavRegistry)].sort(compareByOrder);
@@ -207,11 +209,9 @@ export function SidebarPrimaryNav({
       {onNewBrowser && (
         <NavItem icon={Globe} label={t("chat.newBrowser")} onClick={onNewBrowser} />
       )}
-      <DisabledNavItem
-        icon={Workflow}
-        label={t("chat.automation")}
-        tip={t("chat.automationComingSoon")}
-      />
+      {onOpenMission && (
+        <NavItem icon={Workflow} label={t("mission.title")} onClick={onOpenMission} />
+      )}
       {pluginEntries.map((entry) => (
         <NavItem
           key={entry.id}

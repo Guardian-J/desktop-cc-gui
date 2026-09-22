@@ -43,6 +43,10 @@ fn build_app(home: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
             Arc::new(app.handle().clone()),
             ccgui_next_lib::event_sink::PLUGIN_AGENT_EVENT_NAME,
         ),
+        mission_sink: EventSink::with_name(
+            Arc::new(app.handle().clone()),
+            ccgui_next_lib::event_sink::MISSION_AGENT_EVENT_NAME,
+        ),
         terminals: terminal::TerminalRegistry::default(),
         processes: Arc::new(ProcessRegistry::default()),
         emitters: ccgui_next_lib::event_sink::BroadcastEmit::new(Arc::new(app.handle().clone())),

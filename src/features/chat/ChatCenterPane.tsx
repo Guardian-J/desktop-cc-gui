@@ -14,6 +14,12 @@ import type { ActiveSession } from "./store";
 
 // CodeMirror + react-markdown are heavy; split them out of the startup chunk.
 const EditorPane = lazy(() => import("@/features/files/EditorPane"));
+// React Flow + dagre are heavy; 任务工作台只在打开时加载。
+const MissionWorkbench = lazy(() =>
+  import("@/features/mission/components/Workbench").then((m) => ({
+    default: m.MissionWorkbench,
+  })),
+);
 
 /** One stacked center surface: invisible surfaces stay mounted (never
  * display:none) so WKWebView keeps its scroll boxes and editor drafts
@@ -71,6 +77,8 @@ export function ChatCenterPane({
   activeBrowserId,
   pluginTabs,
   activePluginTabId,
+  missionOpen,
+  missionActive,
   diffView,
   diffStatus,
   closeDiff,
@@ -90,6 +98,9 @@ export function ChatCenterPane({
    *  exclusive with the other surfaces; use-chat-tabs enforces it). */
   pluginTabs: string[];
   activePluginTabId: string | null;
+  /** 任务工作台中心页签：是否打开 / 是否在视。 */
+  missionOpen: boolean;
+  missionActive: boolean;
   diffView: { workspacePath: string; target: DiffTarget } | null;
   diffStatus: GitStatus | undefined;
   closeDiff: () => void;
@@ -98,9 +109,14 @@ export function ChatCenterPane({
   useBrowserNavSync();
   const browserInView = activeBrowserId !== null && !diffView;
   const pluginInView = activePluginTabId !== null && !diffView;
+  const missionInView = missionActive && !diffView;
   return (
     <>
-      <Surface visible={!(activeFilePath || browserInView || pluginInView || diffView)}>
+      <Surface
+        visible={
+          !(activeFilePath || browserInView || pluginInView || missionInView || diffView)
+        }
+      >
         <ChatConversation
           active={active}
           engines={engines}
@@ -111,7 +127,11 @@ export function ChatCenterPane({
       </Surface>
 
       {openFiles.length > 0 && (
-        <Surface visible={activeFilePath !== null && !browserInView && !pluginInView && !diffView}>
+        <Surface
+          visible={
+            activeFilePath !== null && !browserInView && !pluginInView && !missionInView && !diffView
+          }
+        >
           <Suspense fallback={<CenteredSpinner />}>
             {openFiles.map((path) => (
               <SurfaceItem key={path} active={path === activeFilePath}>
@@ -125,7 +145,7 @@ export function ChatCenterPane({
       {/* Browser tabs: one pane per tab, each owning a native child webview
           painted over its placeholder rect (see BrowserPane). */}
       {browserTabs.length > 0 && (
-        <Surface visible={browserInView}>
+        <Surface visible={browserInView && !missionInView}>
           {browserTabs.map((tab) => (
             <SurfaceItem key={tab.id} active={tab.id === activeBrowserId}>
               <BrowserPane tab={tab} active={browserInView && tab.id === activeBrowserId} />
@@ -137,10 +157,20 @@ export function ChatCenterPane({
       {/* Plugin center tabs: one pane per open tab, keep-alive like the
           other surfaces. */}
       {pluginTabs.length > 0 && (
-        <Surface visible={pluginInView}>
+        <Surface visible={pluginInView && !missionInView}>
           {pluginTabs.map((tabId) => (
             <PluginCenterTab key={tabId} tabId={tabId} active={tabId === activePluginTabId} />
           ))}
+        </Surface>
+      )}
+
+      {/* 任务工作台（原生单实例页签）：打开后保持挂载，只切可见性，
+          对话与运行视图不因切换页签而丢状态。 */}
+      {missionOpen && (
+        <Surface visible={missionInView}>
+          <Suspense fallback={<CenteredSpinner />}>
+            <MissionWorkbench />
+          </Suspense>
         </Surface>
       )}
 

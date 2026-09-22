@@ -136,6 +136,8 @@ export default function ChatPage() {
     activeBrowserId,
     pluginTabs,
     activePluginTabId,
+    missionOpen,
+    missionActive,
     diffView,
     closeDiff,
   } = useChatTabs({ setDialog });
@@ -159,6 +161,7 @@ export default function ChatPage() {
     handleNewSession,
     handleNewSessionInWorkspace,
     handleNewBrowser,
+    handleOpenMission,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
     handleCreateGroup,
@@ -215,6 +218,7 @@ export default function ChatPage() {
         onNewSessionInWorkspace={handleNewSessionInWorkspace}
         onNewSession={handleNewSession}
         onNewBrowser={isWeb ? undefined : handleNewBrowser}
+        onOpenMission={handleOpenMission}
         onReorderWorkspaces={handleReorderWorkspaces}
         onDropWorkspaceToSection={handleDropWorkspaceToSection}
         onCreateGroup={handleCreateGroup}
@@ -287,6 +291,8 @@ export default function ChatPage() {
             activeBrowserId={activeBrowserId}
             pluginTabs={pluginTabs}
             activePluginTabId={activePluginTabId}
+            missionOpen={missionOpen}
+            missionActive={missionActive}
             diffView={diffView}
             diffStatus={diffStatus}
             closeDiff={closeDiff}

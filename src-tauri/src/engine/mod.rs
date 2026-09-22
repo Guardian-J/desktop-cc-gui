@@ -95,6 +95,9 @@ pub struct SendRequest {
     /// as an MCP server (see computer_use.rs). Engines without an
     /// MCP-config launch flag ignore it.
     pub computer_use: Option<bool>,
+    /// 逐次调用的工具白名单（任务工作台只读节点）：引擎必须真正把它兑现
+    /// 为运行时约束，否则 prepare_launch 直接拒绝——不允许用节点名假装。
+    pub allowed_tools: Option<Vec<String>>,
 }
 pub struct BuiltCommand {
     pub command: Command,
@@ -174,6 +177,12 @@ pub trait Engine: Send + Sync {
     }
     /// Whether this engine supports reasoning effort configuration.
     fn supports_effort(&self) -> bool {
+        false
+    }
+    /// Whether this engine can enforce a per-call tool whitelist (mission
+    /// read-only nodes). Engines that return false are rejected before
+    /// spawn rather than silently running without the constraint.
+    fn supports_tool_constraints(&self) -> bool {
         false
     }
     /// Permission modes this engine can honor at spawn ("auto" | "manual" |
@@ -285,6 +294,9 @@ pub struct EngineInfo {
     pub supports_computer_use: bool,
     /// Whether this engine supports reasoning effort configuration.
     pub supports_effort: bool,
+    /// Whether this engine can enforce a per-call tool whitelist (mission
+    /// read-only nodes); the workbench blocks read-only nodes otherwise.
+    pub supports_tool_constraints: bool,
     /// Permission modes the engine honors at spawn; drives the composer
     /// picker's disabled options.
     pub permissions: Vec<String>,
@@ -357,6 +369,7 @@ pub fn list_engines() -> Vec<EngineInfo> {
                 supports_images: engine.supports_images(),
                 supports_computer_use: engine.supports_computer_use(),
                 supports_effort: engine.supports_effort(),
+                supports_tool_constraints: engine.supports_tool_constraints(),
                 permissions: engine
                     .supported_permissions()
                     .iter()
@@ -391,12 +404,30 @@ fn prepare_launch(
     additional_dirs: Vec<String>,
     provider_id: Option<String>,
     computer_use: Option<bool>,
+    allowed_tools: Option<Vec<String>>,
     wsl: bool,
 ) -> Result<Launch, String> {
     let engine_impl = engine_by_id(engine).ok_or_else(|| format!("unknown engine: {engine}"))?;
     // 停用 still gates sending. Channel settings apply to this child below;
     // native CLI files remain the official configuration.
     crate::config::ensure_engine_enabled(engine)?;
+    // 工具白名单是硬约束：引擎不能兑现就直接拒绝启动（不降级为无约束）。
+    let allowed_tools = match allowed_tools {
+        Some(tools) if !tools.is_empty() => {
+            if !engine_impl.supports_tool_constraints() {
+                return Err(format!("engine {engine} does not support per-call tool constraints"));
+            }
+            Some(
+                tools
+                    .into_iter()
+                    .map(|tool| tool.trim().to_string())
+                    .filter(|tool| !tool.is_empty())
+                    .take(32)
+                    .collect::<Vec<_>>(),
+            )
+        }
+        _ => None,
+    };
     let provider_id = provider_id.filter(|s| !s.trim().is_empty());
     let provider = crate::config::resolve_provider(engine, provider_id.as_deref())?;
     let channel_env = provider
@@ -442,6 +473,7 @@ fn prepare_launch(
         provider_id,
         // Only honored by engines that can actually mount the driver.
         computer_use: computer_use.filter(|on| *on && engine_impl.supports_computer_use()),
+        allowed_tools,
     };
     let bin = engine_bin(&settings, engine);
     // Host-transport engines spawn through their driver instead: codex/grok
@@ -548,6 +580,42 @@ pub(crate) async fn plugin_agent_send(
         provider_id,
         Some(run_id),
         None,
+        None,
+    )
+    .await
+}
+
+/// 任务工作台 agent 节点入口（mission::mission_agent_start 调用）：同一条
+/// spawn/reader/registry 管线，事件走独立的 `mission-agent://event` 流。
+/// `allowed_tools` 是逐节点工具白名单（只读约束）；引擎不能兑现时
+/// prepare_launch 直接拒绝，而不是静默降级。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mission_agent_send(
+    state: &crate::AppState,
+    engine: String,
+    workspace_path: String,
+    session_id: Option<String>,
+    prompt: String,
+    model: Option<String>,
+    provider_id: Option<String>,
+    run_id: String,
+    allowed_tools: Option<Vec<String>>,
+) -> Result<SendResult, String> {
+    send_message_inner_with_sink(
+        state,
+        Arc::clone(&state.mission_sink),
+        engine,
+        workspace_path,
+        session_id,
+        prompt,
+        None,
+        model,
+        None,
+        None,
+        provider_id,
+        Some(run_id),
+        None,
+        allowed_tools,
     )
     .await
 }
@@ -581,6 +649,7 @@ pub async fn send_message_inner(
         provider_id,
         run_id,
         computer_use,
+        None,
     )
     .await
 }
@@ -600,6 +669,7 @@ async fn send_message_inner_with_sink(
     provider_id: Option<String>,
     run_id: Option<String>,
     computer_use: Option<bool>,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<SendResult, String> {
     let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if run_id.is_empty() || run_id.len() > 128
@@ -657,6 +727,7 @@ async fn send_message_inner_with_sink(
         killed,
         reader_abort,
         computer_use,
+        allowed_tools,
     )
     .await;
     if result.is_err() {
@@ -685,6 +756,7 @@ async fn send_reserved(
     killed: Arc<std::sync::atomic::AtomicBool>,
     reader_abort: Arc<std::sync::OnceLock<tokio::task::AbortHandle>>,
     computer_use: Option<bool>,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<SendResult, String> {
     // WSL 远程工作区:引擎进程经 ssh 在发行版内执行(见 wsl_transport)。
     let wsl_tp = wsl_transport::transport_for_workspace(&state.db, &workspace_path);
@@ -703,6 +775,7 @@ async fn send_reserved(
         state.db.granted_roots().unwrap_or_default(),
         provider_id,
         computer_use,
+        allowed_tools,
         wsl_tp.is_some(),
     )?;
     // Host-stream engines drive their own transport: no child process — the
@@ -1195,6 +1268,16 @@ mod permission_tests {
         }
     }
 
+    /// 工具白名单是显式能力：只有实现了约束的引擎才允许被任务工作台
+    /// 用于只读节点，其余引擎必须在启动时被拒绝。
+    #[test]
+    fn tool_constraint_support_is_explicit() {
+        assert!(engine_by_id("claude").unwrap().supports_tool_constraints());
+        for id in ["codex", "omp", "grok", "kimi"] {
+            assert!(!engine_by_id(id).unwrap().supports_tool_constraints(), "{id}");
+        }
+    }
+
     fn req(permission: Option<&str>) -> SendRequest {
         SendRequest {
             session_id: None,
@@ -1208,6 +1291,7 @@ mod permission_tests {
             additional_dirs: Vec::new(),
             provider_id: None,
             computer_use: None,
+            allowed_tools: None,
         }
     }
 

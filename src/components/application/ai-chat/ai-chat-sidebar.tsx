@@ -46,6 +46,7 @@ export function AiChatSidebar({
   onNewSessionInWorkspace,
   onNewSession,
   onNewBrowser,
+  onOpenMission,
   onReorderWorkspaces,
   onThreadAction,
   onCopyThreadId,
@@ -94,6 +95,8 @@ export function AiChatSidebar({
   onNewSession?: () => void;
   /** 新建浏览器 nav entry (desktop only): open a browser tab. */
   onNewBrowser?: () => void;
+  /** 任务工作台入口（原生中心页签；替换原「自动化」占位项）。 */
+  onOpenMission?: () => void;
   onOpenSettings?: () => void;
   onClose?: () => void;
   flat?: boolean;
@@ -158,7 +161,11 @@ export function AiChatSidebar({
           className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto scrollbar-none"
           onContextMenu={onCreateGroup ? openBlankMenu : undefined}
         >
-          <SidebarPrimaryNav onNewSession={onNewSession} onNewBrowser={onNewBrowser} />
+          <SidebarPrimaryNav
+            onNewSession={onNewSession}
+            onNewBrowser={onNewBrowser}
+            onOpenMission={onOpenMission}
+          />
 
           <WorkspaceSection
             repos={repos}

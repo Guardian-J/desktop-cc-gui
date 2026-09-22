@@ -16,6 +16,7 @@ pub mod files;
 pub mod git;
 pub mod history;
 pub mod metrics;
+pub mod mission;
 pub mod open_app;
 pub mod paths;
 pub mod plugins;
@@ -43,6 +44,8 @@ pub struct AppState {
     /// 插件 agent 轮次（plugin_agent_start）的独立事件流：与聊天引擎流
     /// 隔离，chat store 不会把插件 run 当孤儿会话收养。
     pub plugin_sink: Arc<event_sink::EventSink>,
+    /// 任务工作台 agent 节点的独立事件流（mission-agent://event）。
+    pub mission_sink: Arc<event_sink::EventSink>,
     /// Webview + any attached web-access broadcasters (web.rs).
     pub emitters: Arc<event_sink::BroadcastEmit>,
     pub terminals: terminal::TerminalRegistry,
@@ -143,6 +146,10 @@ pub fn run() {
                 plugin_sink: event_sink::EventSink::with_name(
                     emitters.clone(),
                     event_sink::PLUGIN_AGENT_EVENT_NAME,
+                ),
+                mission_sink: event_sink::EventSink::with_name(
+                    emitters.clone(),
+                    event_sink::MISSION_AGENT_EVENT_NAME,
                 ),
                 emitters,
                 terminals: terminal::TerminalRegistry::default(),
@@ -437,6 +444,8 @@ pub fn run() {
             plugin_caps::plugin_exec_kill,
             plugin_caps::plugin_agent_start,
             plugin_caps::plugin_agent_interrupt,
+            mission::mission_agent_start,
+            mission::mission_agent_interrupt,
             // web access
             web::web_access_start,
             web::web_access_stop,

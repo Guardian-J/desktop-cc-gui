@@ -134,6 +134,9 @@ export interface EngineInfo {
   /** Permission modes the engine honors at spawn ("auto" | "manual" |
    * "plan" | "bypass"); the composer picker greys out the rest. */
   permissions: string[];
+  /** 引擎能否兑现逐次调用的工具白名单（任务工作台只读节点）；
+   *  不支持的引擎会被工作台阻止运行只读节点。 */
+  supportsToolConstraints?: boolean;
 }
 /** One entry of an engine's model catalog (`--list-models` probe). */
 export interface EngineModel {
@@ -823,6 +826,21 @@ export const ipc = {
   }) => invoke<SendResult>("send_message", args),
   interruptSession: (sessionId: string) =>
     invoke<boolean>("interrupt_session", { sessionId }),
+  /** 任务工作台 agent 节点：原生桥（事件走 mission-agent://event）。 */
+  missionAgentStart: (args: {
+    /** 前端预生成的 runId（mission- 前缀）；先注册监听再 invoke。 */
+    runId: string;
+    engine: string;
+    workspacePath: string;
+    sessionId: string | null;
+    prompt: string;
+    model: string | null;
+    providerId: string | null;
+    /** 只读白名单；null = 不加约束（普通 agent 节点）。 */
+    allowedTools: string[] | null;
+  }) => invoke<SendResult>("mission_agent_start", args),
+  missionAgentInterrupt: (runId: string) =>
+    invoke<boolean>("mission_agent_interrupt", { runId }),
   listEngines: () => invoke<EngineInfo[]>("list_engines"),
   /** Persist a clipboard image to app home; returns its absolute path so it
    * can flow through the same path-based image pipeline as picked files. */

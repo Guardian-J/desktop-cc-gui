@@ -58,6 +58,12 @@ impl Engine for ClaudeEngine {
         &["auto", "manual", "plan", "bypass"]
     }
 
+    /// 只读工具约束：claude 的 plan 模式会拒绝一切编辑/命令，再叠加
+    /// 逐次 --allowedTools 白名单与显式 --disallowedTools。
+    fn supports_tool_constraints(&self) -> bool {
+        true
+    }
+
     fn build_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
         let mut cmd = command_for_binary(bin);
         cmd.arg("-p");
@@ -80,23 +86,41 @@ impl Engine for ClaudeEngine {
         // (headless -p cannot prompt mid-turn, so anything not listed here
         // gets denied outright).
         let mut preapproved: Vec<&str> = Vec::new();
-        match self.resolve_permission(req.permission.as_deref()) {
-            "bypass" => {
-                cmd.arg("--dangerously-skip-permissions");
+        if let Some(tools) = req.allowed_tools.as_deref() {
+            // 任务工作台的只读约束：plan 模式拒绝任何编辑/命令，再叠加
+            // 白名单；headless -p 下未列入 --allowedTools 的工具会被拒。
+            // 已知写工具额外显式 deny，防止模式解析差异。
+            cmd.arg("--permission-mode");
+            cmd.arg("plan");
+            cmd.arg("--allowedTools");
+            for tool in tools {
+                cmd.arg(tool);
             }
-            mode => {
-                cmd.arg("--permission-mode");
-                cmd.arg(match mode {
-                    "manual" => "default",
-                    "plan" => "plan",
-                    _ => "acceptEdits",
-                });
-                if mode == "auto" {
-                    // acceptEdits pre-approves file edits only; WebSearch and
-                    // WebFetch still ask, and headless -p cannot prompt, so
-                    // the CLI would deny every web call outright. Pre-approve
-                    // the two read-only network tools in auto mode.
-                    preapproved.extend(["WebSearch", "WebFetch"]);
+            cmd.arg("--disallowedTools");
+            for tool in ["Bash", "Edit", "Write", "NotebookEdit", "Task"] {
+                if !tools.iter().any(|allowed| allowed == tool) {
+                    cmd.arg(tool);
+                }
+            }
+        } else {
+            match self.resolve_permission(req.permission.as_deref()) {
+                "bypass" => {
+                    cmd.arg("--dangerously-skip-permissions");
+                }
+                mode => {
+                    cmd.arg("--permission-mode");
+                    cmd.arg(match mode {
+                        "manual" => "default",
+                        "plan" => "plan",
+                        _ => "acceptEdits",
+                    });
+                    if mode == "auto" {
+                        // acceptEdits pre-approves file edits only; WebSearch and
+                        // WebFetch still ask, and headless -p cannot prompt, so
+                        // the CLI would deny every web call outright. Pre-approve
+                        // the two read-only network tools in auto mode.
+                        preapproved.extend(["WebSearch", "WebFetch"]);
+                    }
                 }
             }
         }
@@ -1445,6 +1469,7 @@ mod tests {
             additional_dirs: vec![],
             provider_id: None,
             computer_use: None,
+            allowed_tools: None,
         };
         let built = engine.build_command(&request, "claude").unwrap();
         let args: Vec<String> = built
@@ -1468,5 +1493,45 @@ mod tests {
             built.command.as_std().get_envs().find(|(k, _)| *k == "CLAUDE_CODE_EFFORT_LEVEL").and_then(|(_, v)| v),
             Some(std::ffi::OsStr::new("ultra"))
         );
+    }
+
+    /// 任务工作台只读节点：必须真正落到启动参数（plan 模式 + 白名单 +
+    /// 显式拒绝写工具），不允许只靠节点名假装。
+    #[test]
+    fn read_only_tool_constraints_force_plan_mode_and_whitelist() {
+        let engine = ClaudeEngine::new();
+        assert!(engine.supports_tool_constraints());
+        let request = SendRequest {
+            session_id: None,
+            prompt: "hi".into(),
+            images: vec![],
+            workspace: std::path::PathBuf::from("/tmp"),
+            model: None,
+            effort: None,
+            service_tier: None,
+            permission: Some("auto".into()),
+            additional_dirs: vec![],
+            provider_id: None,
+            computer_use: None,
+            allowed_tools: Some(vec!["Read".into(), "Grep".into()]),
+        };
+        let built = engine.build_command(&request, "claude").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
+        assert!(args.windows(2).any(|w| w == ["--allowedTools", "Read"]));
+        let deny_at = args.iter().position(|a| a == "--disallowedTools").expect("deny list");
+        for tool in ["Bash", "Edit", "Write", "NotebookEdit", "Task"] {
+            assert!(
+                args[deny_at + 1..].iter().any(|a| a == tool),
+                "{tool} must be explicitly denied"
+            );
+        }
+        // 普通权限参数不应同时出现（避免 mode 冲突）。
+        assert!(!args.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
     }
 }

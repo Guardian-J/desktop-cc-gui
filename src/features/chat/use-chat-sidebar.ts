@@ -4,6 +4,9 @@ import { useShallow } from "zustand/react/shallow";
 import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-chat-composer";
 import { useBrowserStore } from "@/features/browser/store";
 import { useFilesStore } from "@/features/files/store";
+import { useGitStore } from "@/features/git/store";
+import { useMissionStore } from "@/features/mission/store";
+import { usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
 import type { AiChatRepo, AiChatRepoSection, ThreadAction } from "@/components/application/ai-chat/ai-chat-sidebar";
 import { ARCHIVED_SECTION_ID } from "@/components/application/ai-chat/use-sidebar-state";
 import type { SessionMeta } from "@/lib/ipc";
@@ -291,6 +294,16 @@ export function useChatSidebar({
     useBrowserStore.getState().openTab();
     collapseSidebarOnMobile();
   }, [collapseSidebarOnMobile]);
+  // Sidebar 任务工作台 nav entry（原生）：打开中心页签的工作台，其他
+  // 中心面（浏览器/文件/插件页/差异）暂时让位；数据留在 mission store。
+  const handleOpenMission = useCallback(() => {
+    useFilesStore.getState().clearActiveFile();
+    useBrowserStore.getState().deactivate();
+    usePluginTabsStore.getState().deactivate();
+    useGitStore.getState().closeDiff();
+    useMissionStore.getState().openWorkbench();
+    collapseSidebarOnMobile();
+  }, [collapseSidebarOnMobile]);
   const handleReorderWorkspaces = useCallback(
     (orderedIds: string[]) => void reorderWorkspaces(orderedIds),
     [reorderWorkspaces],
@@ -344,6 +357,7 @@ export function useChatSidebar({
     handleNewSession,
     handleNewSessionInWorkspace,
     handleNewBrowser,
+    handleOpenMission,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
     handleCreateGroup,
