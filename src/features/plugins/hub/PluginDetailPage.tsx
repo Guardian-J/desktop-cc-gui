@@ -11,7 +11,7 @@ import { CenteredSpinner } from "@/components/base/empty-state";
 import { ConfirmDialog } from "@/components/dialogs";
 import { isWeb, openExternal } from "@/lib/platform";
 import { ipc, type MarketPlugin, type PluginInfo } from "@/lib/ipc";
-import { categorizePlugin } from "./catalog";
+import { categorizePlugin, githubAvatarUrl, githubLoginFor } from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
 import { PluginReadme } from "./PluginReadme";
 import { PluginScreenshotCarousel } from "./PluginScreenshotCarousel";
@@ -152,7 +152,7 @@ export function PluginDetailPage({
   installed?: PluginInfo;
   onClose: () => void;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const install = useMarketplaceStore((s) => s.install);
   const installing = useMarketplaceStore((s) => (s.installing?.id === id ? s.installing : null));
   const update = useMarketplaceStore((s) => s.updates.find((u) => u.id === id));
@@ -167,6 +167,7 @@ export function PluginDetailPage({
   const version = installed?.version || entry?.version || "";
   const tier = installed?.tier ?? entry?.tier;
   const repo = entry?.repo;
+  const authorLogin = githubLoginFor({ author, repo });
   // The installed record is the running truth; fall back to the indexed
   // manifest so a not-yet-installed plugin still lists its grants.
   const permissions = installed?.permissions.length
@@ -304,7 +305,15 @@ export function PluginDetailPage({
             <aside className="flex flex-col gap-5 lg:sticky lg:top-6 lg:self-start lg:border-l lg:border-separator-border lg:pl-6">
               <RailRow label={t("plugins.hub.author")}>
                 <span className="flex min-w-0 items-center gap-2">
-                  {author && <PluginAvatar id={author} name={author} size={20} shape="circle" />}
+                  {author && (
+                    <PluginAvatar
+                      id={author}
+                      name={author}
+                      src={authorLogin ? githubAvatarUrl(authorLogin, 20) : null}
+                      size={20}
+                      shape="circle"
+                    />
+                  )}
                   <span className="truncate">{author || "—"}</span>
                 </span>
               </RailRow>
@@ -354,14 +363,6 @@ export function PluginDetailPage({
                 <RailRow label={t("plugins.hub.downloadsLabel")}>
                   <span className={RAIL_VALUE}>
                     {t("plugins.hub.downloadsShort", { n: downloads.toLocaleString() })}
-                  </span>
-                </RailRow>
-              )}
-
-              {installed && installed.installedAt > 0 && (
-                <RailRow label={t("plugins.hub.installedAt")}>
-                  <span className={RAIL_VALUE}>
-                    {new Date(installed.installedAt).toLocaleDateString(i18n.language)}
                   </span>
                 </RailRow>
               )}

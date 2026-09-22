@@ -197,6 +197,16 @@ describe("PluginHub", () => {
     expect(pluginInstallFromMarketplace).toHaveBeenCalledWith("react-doctor");
   });
 
+  it("uses the developer's real GitHub avatar in the market row", async () => {
+    await render();
+
+    // author `zhukunpeng` is the GitHub login, the chip asks for 2×20px.
+    const avatar = document.body.querySelector<HTMLImageElement>(
+      'tbody img[src="https://github.com/zhukunpeng.png?size=40"]',
+    );
+    expect(avatar).not.toBeNull();
+  });
+
   it("filters by category, by query, and clears an empty result", async () => {
     pluginFetchIndex.mockImplementation(async () => [
       MARKET_ENTRY,

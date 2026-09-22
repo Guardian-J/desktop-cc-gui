@@ -959,7 +959,6 @@ export const en: Messages = {
       minAppShort: "CC GUI ≥ {{version}}",
       compatibility: "Compatibility",
       sdkVersion: "SDK",
-      installedAt: "Installed",
       permissionsTitle: "Permissions",
       permissionsEmpty: "No extra permissions needed",
       permissionsCount: "{{n}}",

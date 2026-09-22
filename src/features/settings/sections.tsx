@@ -131,7 +131,7 @@ settingsRegistry.register({
   label: () => i18n.t("settings.checkUpdates"),
   icon: RefreshCw,
   group: "misc",
-  order: 0,
+  order: 1,
   component: UpdateSection,
 });
 settingsRegistry.register({
@@ -140,7 +140,7 @@ settingsRegistry.register({
   label: () => i18n.t("settings.about"),
   icon: Info,
   group: "misc",
-  order: 1,
+  order: 2,
   component: AboutSection,
 });
 settingsRegistry.register({
@@ -149,7 +149,7 @@ settingsRegistry.register({
   label: () => i18n.t("settings.betaFeatures"),
   icon: FlaskConical,
   group: "misc",
-  order: 2,
+  order: 0,
   component: BetaFeaturesSection,
 });
 ENGINE_IDS.forEach((engine, index) => {

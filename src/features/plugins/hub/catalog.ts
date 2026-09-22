@@ -82,6 +82,29 @@ export function pluginAvatarGradient(id: string): { from: string; to: string } {
   return { from, to };
 }
 
+/** GitHub's username rules: alphanumerics and single hyphens, ≤ 39 chars,
+ *  no leading/trailing hyphen. */
+const GITHUB_LOGIN = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
+
+/** The GitHub account behind the developer column. The index stores the
+ *  account on `author`; a manifest may carry a display name instead, in which
+ *  case the repo owner (the account that published) is the real identity.
+ *  Nothing recognizable yields null and the caller keeps the initial tile. */
+export function githubLoginFor(entry: { author: string; repo?: string }): string | null {
+  const author = entry.author.trim();
+  if (GITHUB_LOGIN.test(author)) return author;
+  const parts = entry.repo?.split("/") ?? [];
+  const owner = parts.length === 2 ? parts[0]!.trim() : "";
+  return GITHUB_LOGIN.test(owner) ? owner : null;
+}
+
+/** Real avatar from GitHub's username endpoint. 2× the CSS size keeps the
+ *  chip crisp on retina; 460 is the largest size the endpoint accepts. */
+export function githubAvatarUrl(login: string, cssSize: number): string {
+  const size = Math.min(460, Math.max(1, Math.round(cssSize * 2)));
+  return `https://github.com/${login}.png?size=${size}`;
+}
+
 /** Downloads desc, then name; entries without a count trail the ranked ones
  *  and keep the incoming (index) order among themselves. */
 export function sortByDownloads(entries: MarketPlugin[]): MarketPlugin[] {

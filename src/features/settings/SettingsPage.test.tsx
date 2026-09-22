@@ -123,13 +123,15 @@ async function render(engines: EngineInfo[], page = "stub") {
 
 
 describe("SettingsPage misc rail", () => {
-  it("lists 检查更新 above 社区与反馈 as its own module", async () => {
+  it("lists 内测功能 above 检查更新 and 社区与反馈", async () => {
     await render([]);
 
     const labels = navLabels();
+    const betaAt = labels.indexOf(i18n.t("settings.betaFeatures"));
     const updateAt = labels.indexOf(i18n.t("settings.checkUpdates"));
     const aboutAt = labels.indexOf(i18n.t("settings.about"));
-    expect(updateAt).toBeGreaterThan(-1);
+    expect(betaAt).toBeGreaterThan(-1);
+    expect(updateAt).toBeGreaterThan(betaAt);
     expect(aboutAt).toBeGreaterThan(updateAt);
   });
 });
@@ -149,9 +151,9 @@ describe("SettingsPage system rail", () => {
     // 其他 holds the release/feedback pages plus the 内测功能 gate — engine
     // sections used to lead that group.
     expect(itemsUnder("settings.groupMisc")).toEqual([
+      i18n.t("settings.betaFeatures"),
       i18n.t("settings.checkUpdates"),
       i18n.t("settings.about"),
-      i18n.t("settings.betaFeatures"),
     ]);
   });
 });

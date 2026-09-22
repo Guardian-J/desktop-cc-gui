@@ -3,6 +3,8 @@ import type { MarketPlugin } from "@/lib/ipc";
 import {
   categorizePlugin,
   categoryCounts,
+  githubAvatarUrl,
+  githubLoginFor,
   pluginAvatarGradient,
   pluginInitial,
   pluginMatchesQuery,
@@ -81,6 +83,34 @@ describe("pluginAvatarGradient", () => {
     expect(from).toMatch(/^#[0-9a-f]{6}$/i);
     expect(to).toMatch(/^#[0-9a-f]{6}$/i);
     expect(from).not.toBe(to);
+  });
+});
+
+describe("githubLoginFor", () => {
+  it("prefers a GitHub-shaped author and falls back to the repo owner", () => {
+    expect(githubLoginFor({ author: "libo-zhou", repo: "someone/plugin" })).toBe("libo-zhou");
+    expect(githubLoginFor({ author: " libo-zhou ", repo: "someone/plugin" })).toBe("libo-zhou");
+    // Display-name authors still resolve to the account that published.
+    expect(githubLoginFor({ author: "李波 · 插件作者", repo: "libo-zhou/ccgui-plugin-x" })).toBe(
+      "libo-zhou",
+    );
+  });
+
+  it("yields null when nothing is a real GitHub login", () => {
+    expect(githubLoginFor({ author: "插件作者" })).toBeNull();
+    expect(githubLoginFor({ author: "李波", repo: "ccgui-plugins" })).toBeNull();
+    // The repo isn't `owner/name`, so no owner can be trusted.
+    expect(githubLoginFor({ author: "", repo: "bad/owner/extra" })).toBeNull();
+    expect(githubLoginFor({ author: "-leading" })).toBeNull();
+    expect(githubLoginFor({ author: "trailing-" })).toBeNull();
+    expect(githubLoginFor({ author: "a".repeat(40) })).toBeNull();
+  });
+});
+
+describe("githubAvatarUrl", () => {
+  it("asks GitHub for the account avatar at 2× the chip size, capped", () => {
+    expect(githubAvatarUrl("libo-zhou", 20)).toBe("https://github.com/libo-zhou.png?size=40");
+    expect(githubAvatarUrl("libo-zhou", 400)).toBe("https://github.com/libo-zhou.png?size=460");
   });
 });
 

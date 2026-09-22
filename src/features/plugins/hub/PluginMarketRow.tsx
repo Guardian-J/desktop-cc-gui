@@ -4,6 +4,7 @@ import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import { Button } from "@/components/base/buttons/button";
 import { isWeb } from "@/lib/platform";
 import type { MarketPlugin } from "@/lib/ipc";
+import { githubAvatarUrl, githubLoginFor } from "./catalog";
 import { PluginAvatar } from "./PluginAvatar";
 import { usePluginsStore } from "../manager/usePlugins";
 import { useMarketplaceStore } from "../marketplace/store";
@@ -108,6 +109,7 @@ export function PluginMarketRow({
   showDownloads: boolean;
 }) {
   const { t } = useTranslation();
+  const authorLogin = githubLoginFor(entry);
 
   return (
     <tr
@@ -146,7 +148,13 @@ export function PluginMarketRow({
       <td className={CELL}>
         <div className="flex min-w-0 items-center gap-2">
           {entry.author && (
-            <PluginAvatar id={entry.author} name={entry.author} size={20} shape="circle" />
+            <PluginAvatar
+              id={entry.author}
+              name={entry.author}
+              src={authorLogin ? githubAvatarUrl(authorLogin, 20) : null}
+              size={20}
+              shape="circle"
+            />
           )}
           <span title={entry.author} className="truncate text-body-2-regular text-text-secondary">
             {entry.author || "—"}
