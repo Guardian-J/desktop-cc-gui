@@ -82,14 +82,8 @@ fn build_command(req: &SendRequest, bin: &str, native_model: bool) -> Result<Bui
     let mut cmd = command_for_binary(bin);
     cmd.arg("--output-format");
     cmd.arg("stream-json");
-    match KimiEngine.resolve_permission(req.permission.as_deref()) {
-        "plan" => {
-            cmd.arg("--plan");
-        }
-        "bypass" => {
-            cmd.arg("--yolo");
-        }
-        _ => {}
+    if KimiEngine.resolve_permission(req.permission.as_deref()) == "plan" {
+        return Err("Kimi plan mode requires the local ACP transport; prompt mode cannot enforce it".into());
     }
     if native_model {
         if let Some(model) = req.model.as_deref() {
@@ -252,7 +246,7 @@ mod channel_tests {
             model: Some("selected-model".into()),
             effort: None,
             service_tier: None,
-            permission: Some("plan".into()),
+            permission: Some("auto".into()),
             additional_dirs: vec![],
             provider_id: Some("plugin_model-switcher_probe".into()),
             computer_use: None,
@@ -275,7 +269,7 @@ mod channel_tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--session", "existing-session"]));
-        assert!(args.iter().any(|s| s == "--plan"));
+        assert!(!args.iter().any(|s| matches!(s.as_str(), "--plan" | "--yolo" | "--auto")));
         let injected: HashMap<_, _> = built
             .command
             .as_std()

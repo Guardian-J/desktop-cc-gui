@@ -158,11 +158,22 @@ pub(crate) fn parse_acp_line(value: &Value) -> AcpLine {
                 .get("code")
                 .and_then(Value::as_i64)
                 .unwrap_or(JSONRPC_INTERNAL_ERROR);
-            let message = err
+            let mut message = err
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("JSON-RPC error")
                 .to_string();
+            if let Some(detail) = err.get("data")
+                .and_then(|data| data.get("details").or_else(|| data.get("message")))
+                .and_then(Value::as_str)
+                .and_then(|detail| detail.lines().next())
+                .map(str::trim)
+                .filter(|detail| !detail.is_empty() && !message.contains(detail))
+            {
+                message.push_str(": ");
+                message.extend(detail.chars().take(512));
+            }
+            let message = super::reader::redact_secrets(&message);
             AcpRpcError { code, message }
         });
         return AcpLine::Response {
@@ -807,7 +818,7 @@ impl AcpProcess {
                         continue;
                     }
                     if let Some(error) = error {
-                        return Err(format!("rpc:{}:{}", error.code, error.message));
+                        return Err(format!("rpc:{}:{method}: {}", error.code, error.message));
                     }
                     let result = result.unwrap_or(Value::Null);
                     if !drain_trailing {
@@ -1391,6 +1402,23 @@ mod tests {
         let answer = permission_auto_answer(&params).unwrap();
         assert_eq!(answer["outcome"]["optionId"], json!("yes"));
         assert!(permission_auto_answer(&json!({"options":[]})).is_err());
+    }
+
+    #[test]
+    fn rpc_internal_error_retains_safe_details_instead_of_hiding_the_cause() {
+        let response = json!({"jsonrpc":"2.0", "id":4, "error": {
+            "code":-32603, "message":"Internal error", "data": {
+                "details":"Unknown model alias: missing-model; api_key=sk-private\nprivate stack trace",
+                "request": {"prompt":"private conversation"}
+            }
+        }});
+        let AcpLine::Response { error: Some(error), .. } = parse_acp_line(&response) else {
+            panic!("expected RPC error");
+        };
+        assert!(error.message.contains("Unknown model alias: missing-model"));
+        assert!(!error.message.contains("sk-private"));
+        assert!(!error.message.contains("private stack"));
+        assert!(!error.message.contains("private conversation"));
     }
 
     #[test]

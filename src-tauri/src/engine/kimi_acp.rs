@@ -28,14 +28,30 @@ pub(super) fn initialization() -> Value {
     params
 }
 
+async fn existing_additional_dirs(dirs: &[String]) -> Result<Vec<&str>, String> {
+    let mut existing = Vec::new();
+    for dir in dirs {
+        match tokio::fs::metadata(dir).await {
+            Ok(metadata) if metadata.is_dir() => existing.push(dir.as_str()),
+            Ok(_) => eprintln!("[kimi] skipping a granted root that is no longer a directory"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("[kimi] skipping a granted root that no longer exists");
+            }
+            Err(error) => {
+                return Err(format!("Kimi additional directory {dir:?}: {error}"));
+            }
+        }
+    }
+    Ok(existing)
+}
+
 pub(super) async fn attach_session(
     acp: &mut AcpProcess,
     req: &SendRequest,
     killed: &AtomicBool,
 ) -> Result<(String, Option<String>), String> {
-    let params = json!({
+    let mut params = json!({
         "cwd": req.workspace.to_string_lossy(), "mcpServers": [],
-        "additionalDirectories": req.additional_dirs,
     });
     let (session_id, mut config) = if let Some(session_id) = &req.session_id {
         let mut params = params;
@@ -52,6 +68,8 @@ pub(super) async fn attach_session(
             .await?;
         (session_id.clone(), result)
     } else {
+        params["additionalDirectories"] =
+            json!(existing_additional_dirs(&req.additional_dirs).await?);
         let result = acp
             .routed(
                 "session/new",
@@ -284,6 +302,65 @@ pub(super) fn usage(params: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn additional_dirs_keep_valid_roots_without_mutating_grants() {
+        let home = std::env::temp_dir().join(format!("kimi-grants-{}", uuid::Uuid::new_v4()));
+        let valid = home.join("有效目录 with spaces");
+        let missing = home.join("missing");
+        let file = home.join("file");
+        std::fs::create_dir_all(&valid).unwrap();
+        std::fs::write(&file, "file").unwrap();
+        let dirs: Vec<String> = [&missing, &valid, &file]
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let original = dirs.clone();
+        assert_eq!(
+            existing_additional_dirs(&dirs).await.unwrap(),
+            vec![dirs[1].as_str()]
+        );
+        assert_eq!(dirs, original);
+        assert!(existing_additional_dirs(&[]).await.unwrap().is_empty());
+        assert!(
+            existing_additional_dirs(&[dirs[0].clone(), dirs[2].clone()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::create_dir(&missing).unwrap();
+        assert_eq!(
+            existing_additional_dirs(&dirs).await.unwrap(),
+            vec![dirs[0].as_str(), dirs[1].as_str()]
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn additional_dirs_follow_directory_links_but_report_other_io_errors() {
+        let home = std::env::temp_dir().join(format!("kimi-grant-links-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let valid = home.join("valid-link");
+        let broken = home.join("broken-link");
+        let cyclic = home.join("cyclic-link");
+        std::os::unix::fs::symlink(&home, &valid).unwrap();
+        std::os::unix::fs::symlink(home.join("missing"), &broken).unwrap();
+        std::os::unix::fs::symlink(&cyclic, &cyclic).unwrap();
+        let dirs = vec![
+            valid.to_string_lossy().into_owned(),
+            broken.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(
+            existing_additional_dirs(&dirs).await.unwrap(),
+            vec![dirs[0].as_str()]
+        );
+        let error = existing_additional_dirs(&[cyclic.to_string_lossy().into_owned()])
+            .await
+            .unwrap_err();
+        assert!(error.contains("Kimi additional directory"), "{error}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     fn request() -> Value {
         json!({"mode": "form", "message": "任务？\n语言？\n继续？", "requestedSchema": {

@@ -478,7 +478,7 @@ async fn kimi_explicit_k3_256k_medium_official_channel() {
         "kimi".into(),
         workspace.to_string_lossy().into(),
         None,
-        "只回复你好，不使用任何工具".into(),
+        PROMPT.into(),
         None,
         Some("kimi-code/k3-256k".into()),
         Some("medium".into()),
@@ -487,9 +487,81 @@ async fn kimi_explicit_k3_256k_medium_official_channel() {
         Some("run-kimi-explicit-model".into()),
         None,
     ).await.unwrap();
+    let seen = wait_for(&events, "explicit model question", |seen| {
+        count_kind(seen, "question") > 0 || count_kind(seen, "error") > 0
+    }, ASK_DEADLINE).await;
+    assert_no_error("kimi", "explicit model question", &seen);
+    let question = first_kind(&seen, "question").unwrap();
+    let cards = question["data"]["input"]["questions"].as_array().unwrap();
+    assert_eq!(cards.len(), 3);
+    let answers: serde_json::Map<String, Value> = cards.iter().map(|card| {
+        let label = card["options"][0]["label"].clone();
+        (card["question"].as_str().unwrap().into(),
+            if card["multiSelect"] == true { json!([label]) } else { label })
+    }).collect();
+    engine::answer_question(app.state::<AppState>(), "run-kimi-explicit-model".into(),
+        question["data"]["requestId"].as_str().unwrap().into(), Some(json!(answers))).await.unwrap();
     let seen = wait_done("kimi", &events, 1, "explicit UI model and channel").await;
-    assert!(text_of(&seen).contains("你好"));
+    let reply = text_of(&seen);
+    for card in cards {
+        assert!(reply.contains(label_stem(card["options"][0]["label"].as_str().unwrap())), "{reply}");
+    }
     assert_drained("kimi", &app, "explicit model");
+}
+
+#[tokio::test]
+#[ignore = "needs an authenticated kimi CLI and network"]
+async fn kimi_stale_granted_roots_do_not_block_new_session() {
+    let home = temp_dir("kimi-stale-grants");
+    let workspace = home.join("ws");
+    let valid = home.join("有效授权目录");
+    let missing = home.join("deleted-grant");
+    let file = home.join("not-a-directory");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&valid).unwrap();
+    std::fs::write(&file, "file").unwrap();
+    let (app, events) = build_app(&home);
+    let roots: Vec<String> = [&missing, &file, &valid]
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    for root in &roots {
+        app.state::<AppState>().db.add_granted_root(root).unwrap();
+    }
+    send(
+        &app,
+        "kimi",
+        &workspace,
+        None,
+        "run-kimi-stale-grants",
+        "只回复你好，不调用工具",
+    )
+    .await;
+    let seen = wait_done("kimi", &events, 1, "new session with stale grants").await;
+    assert!(!text_of(&seen).trim().is_empty());
+    let persisted = app.state::<AppState>().db.granted_roots().unwrap();
+    assert_eq!(persisted.len(), roots.len());
+    assert!(roots.iter().all(|root| persisted.contains(root)));
+    assert_drained("kimi", &app, "stale grants");
+}
+
+#[tokio::test]
+#[ignore = "needs a locally configured kimi CLI"]
+async fn kimi_invalid_model_exposes_the_setup_error() {
+    let home = temp_dir("kimi-invalid-model");
+    let workspace = home.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (app, events) = build_app(&home);
+    engine::send_message(app.state::<AppState>(), "kimi".into(), workspace.to_string_lossy().into(),
+        None, "do not run".into(), None, Some("ccgui-nonexistent-model".into()), None,
+        Some("auto".into()), Some("__local_settings_json__".into()), Some("run-kimi-invalid-model".into()), None,
+    ).await.unwrap();
+    let seen = wait_for(&events, "invalid model error", |seen| count_kind(seen, "error") > 0, ASK_DEADLINE).await;
+    let error = first_kind(&seen, "error").unwrap();
+    let message = error["data"].as_str().unwrap();
+    assert!(message.contains("session/set_config_option"), "{message}");
+    assert!(message.contains("ccgui-nonexistent-model"), "{message}");
+    assert_drained("kimi", &app, "invalid model");
 }
 
 #[tokio::test]
