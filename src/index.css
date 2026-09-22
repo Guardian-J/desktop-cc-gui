@@ -26,6 +26,24 @@ body,
 body {
   overscroll-behavior: none;
 }
+
+.pet-overlay {
+  width: 192px;
+  height: 208px;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pet-overlay:active {
+  cursor: grabbing;
+}
+
+.pet-sprite {
+  background-repeat: no-repeat;
+  image-rendering: auto;
+}
 /* 对话内搜索（⌘F / Ctrl+F）命中底色：Custom Highlight API 注册的 Range
    用 ::highlight 伪元素上色——不动 DOM，选择/复制行为不变。 */
 ::highlight(ccgui-chat-search) {

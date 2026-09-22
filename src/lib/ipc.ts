@@ -417,6 +417,12 @@ export interface AppSettings {
   systemProxyEnabled: boolean;
   /** Proxy URL (http/https/socks5); null = unset. */
   systemProxyUrl: string | null;
+  /** Always-on-top desktop pet switch; off by default. */
+  petEnabled?: boolean;
+  /** Selected pet package id. */
+  petId?: string;
+  /** Last desktop-pet position in logical desktop pixels. */
+  petPosition?: { x: number; y: number } | null;
   /** Require a pairing key before the bridge serves a browser. */
   webAuthEnabled?: boolean | null;
   /** 8-character pairing key, minted when the switch is turned on. */
@@ -919,6 +925,19 @@ export interface OfficialConfigDraft {
   content: string;
 }
 
+export interface PetSummary {
+  id: string;
+  displayName: string;
+  description: string;
+  spriteVersionNumber: number;
+  builtIn: boolean;
+}
+
+export interface PetPackage extends PetSummary {
+  spritesheetPath: string;
+  spritesheetDataUrl: string;
+}
+
 export const ipc = {
   // config
   getCliConfig: () => invoke<CliConfig>("get_cli_config"),
@@ -982,6 +1001,15 @@ export const ipc = {
     // not answer — one bad value here blanks every settings page.
     settingsPromise = null;
   },
+  listPets: () => invoke<PetSummary[]>("pet_list"),
+  importPet: (path: string) => invoke<PetSummary>("pet_import", { path }),
+  removePet: (id: string) => invoke<void>("pet_remove", { id }),
+  getPetPackage: (id: string) => invoke<PetPackage>("pet_get_package", { id }),
+  setPetVisible: (visible: boolean) => invoke<void>("pet_set_visible", { visible }),
+  setPetState: (state: { status: string; lookDirection: number; changedAt: number }) =>
+    invoke<void>("pet_set_state", { next: state }),
+  savePetPosition: (position: { x: number; y: number }) =>
+    invoke<void>("pet_save_position", { position }),
   setWindowTheme: (dark: boolean) =>
     invoke<void>("set_window_theme", { dark }),
   /** 立即重启应用（标题栏样式等需重启生效的设置项用）。 */

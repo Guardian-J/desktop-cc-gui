@@ -1,0 +1,309 @@
+//! Codex-compatible v2 pet packages.
+//!
+//! The host deliberately keeps the package contract small: a `pet.json` and
+//! the declared spritesheet. Imported packages are copied into the app data
+//! directory, while built-ins are bundled as Tauri resources.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, Runtime};
+
+const PETS_DIR: &str = "pets";
+const MANIFEST_FILE: &str = "pet.json";
+const DEFAULT_PET_ID: &str = "damiao-codex";
+const ATLAS_WIDTH: u32 = 1536;
+const ATLAS_HEIGHT: u32 = 2288;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetManifest {
+    pub id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    pub sprite_version_number: u32,
+    pub spritesheet_path: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetSummary {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    pub sprite_version_number: u32,
+    pub built_in: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetPackage {
+    #[serde(flatten)]
+    pub summary: PetSummary,
+    pub spritesheet_path: String,
+    pub spritesheet_data_url: String,
+}
+
+fn summary(manifest: &PetManifest, built_in: bool) -> PetSummary {
+    PetSummary {
+        id: manifest.id.clone(),
+        display_name: manifest.display_name.clone(),
+        description: manifest.description.clone(),
+        sprite_version_number: manifest.sprite_version_number,
+        built_in,
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    let Some(first) = chars.next() else { return false };
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && (2..=64).contains(&id.len())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+fn read_manifest(path: &Path) -> Result<PetManifest, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let manifest: PetManifest = serde_json::from_str(&content)
+        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_manifest(manifest: &PetManifest) -> Result<(), String> {
+    if !valid_id(&manifest.id) {
+        return Err(format!("invalid pet id: {}", manifest.id));
+    }
+    if manifest.display_name.trim().is_empty() {
+        return Err("pet displayName must not be empty".to_string());
+    }
+    if manifest.sprite_version_number != 2 {
+        return Err(format!(
+            "unsupported spriteVersionNumber {}; expected 2",
+            manifest.sprite_version_number
+        ));
+    }
+    let path = Path::new(&manifest.spritesheet_path);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(component, std::path::Component::ParentDir)
+        })
+        || path.file_name().is_none()
+    {
+        return Err("spritesheetPath must be a relative file path inside the package".to_string());
+    }
+    Ok(())
+}
+
+fn package_root(app: &AppHandle<impl Runtime>) -> PathBuf {
+    let bundled = app
+        .path()
+        .resource_dir()
+        .unwrap_or_else(|_| PathBuf::new())
+        .join(PETS_DIR);
+    if bundled.exists() {
+        return bundled;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join(PETS_DIR)
+}
+
+fn imported_root() -> PathBuf {
+    crate::paths::app_home().join(PETS_DIR)
+}
+
+fn package_dir(app: &AppHandle<impl Runtime>, id: &str) -> Option<(PathBuf, bool)> {
+    if !valid_id(id) {
+        return None;
+    }
+    let builtin = package_root(app).join(id);
+    if builtin.is_dir() {
+        return Some((builtin, true));
+    }
+    let imported = imported_root().join(id);
+    imported.is_dir().then_some((imported, false))
+}
+
+fn package_files(root: &Path) -> Result<(PetManifest, PathBuf), String> {
+    let manifest = read_manifest(&root.join(MANIFEST_FILE))?;
+    let sprite = root.join(&manifest.spritesheet_path);
+    let root_canonical = fs::canonicalize(root)
+        .map_err(|e| format!("resolve package {}: {e}", root.display()))?;
+    let sprite_canonical = fs::canonicalize(&sprite)
+        .map_err(|e| format!("resolve spritesheet {}: {e}", sprite.display()))?;
+    if !sprite_canonical.starts_with(&root_canonical) {
+        return Err("spritesheetPath escapes the pet package".to_string());
+    }
+    validate_spritesheet(&sprite_canonical)?;
+    Ok((manifest, sprite_canonical))
+}
+
+fn validate_spritesheet(path: &Path) -> Result<(), String> {
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| format!("open spritesheet {}: {e}", path.display()))?
+        .with_guessed_format()
+        .map_err(|e| format!("detect spritesheet format: {e}"))?;
+    let image = reader
+        .decode()
+        .map_err(|e| format!("decode spritesheet {}: {e}", path.display()))?;
+    if image.width() != ATLAS_WIDTH || image.height() != ATLAS_HEIGHT {
+        return Err(format!(
+            "v2 spritesheet must be {ATLAS_WIDTH}x{ATLAS_HEIGHT}, got {}x{}",
+            image.width(),
+            image.height()
+        ));
+    }
+    if !image.color().has_alpha() {
+        return Err("v2 spritesheet must contain an alpha channel".to_string());
+    }
+    Ok(())
+}
+
+fn mime_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
+        _ => "image/webp",
+    }
+}
+
+fn list_from_root(root: &Path, built_in: bool) -> Vec<PetSummary> {
+    let Ok(entries) = fs::read_dir(root) else { return Vec::new() };
+    let mut rows = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let (manifest, _) = package_files(&entry.path()).ok()?;
+            Some(summary(&manifest, built_in))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    rows
+}
+
+#[tauri::command]
+pub fn pet_list<R: Runtime>(app: AppHandle<R>) -> Vec<PetSummary> {
+    let mut rows = list_from_root(&package_root(&app), true);
+    let builtins = rows.iter().map(|row| row.id.clone()).collect::<std::collections::HashSet<_>>();
+    rows.extend(
+        list_from_root(&imported_root(), false)
+            .into_iter()
+            .filter(|row| !builtins.contains(&row.id)),
+    );
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    rows
+}
+
+#[tauri::command]
+pub fn pet_get_package<R: Runtime>(app: AppHandle<R>, id: String) -> Result<PetPackage, String> {
+    let (root, built_in) = package_dir(&app, &id).ok_or_else(|| format!("pet not found: {id}"))?;
+    let (manifest, sprite) = package_files(&root)?;
+    let bytes = fs::read(&sprite).map_err(|e| format!("read {}: {e}", sprite.display()))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(PetPackage {
+        summary: summary(&manifest, built_in),
+        spritesheet_path: manifest.spritesheet_path,
+        spritesheet_data_url: format!("data:{};base64,{encoded}", mime_for(&sprite)),
+    })
+}
+
+#[tauri::command]
+pub fn pet_import<R: Runtime>(app: AppHandle<R>, path: String) -> Result<PetSummary, String> {
+    let selected = PathBuf::from(path.trim());
+    let source_root = if selected.is_file() {
+        if selected.file_name().and_then(|name| name.to_str()) != Some(MANIFEST_FILE) {
+            return Err("请选择宠物目录或其中的 pet.json".to_string());
+        }
+        selected
+            .parent()
+            .ok_or_else(|| "pet.json 没有有效父目录".to_string())?
+            .to_path_buf()
+    } else if selected.is_dir() {
+        selected
+    } else {
+        return Err("宠物路径不存在".to_string());
+    };
+    let source_root = fs::canonicalize(&source_root)
+        .map_err(|e| format!("resolve pet directory: {e}"))?;
+    let (manifest, sprite) = package_files(&source_root)?;
+    if package_dir(&app, &manifest.id).is_some() {
+        return Err(format!("宠物 id 已存在: {}", manifest.id));
+    }
+    let destination = imported_root().join(&manifest.id);
+    fs::create_dir_all(&destination)
+        .map_err(|e| format!("create {}: {e}", destination.display()))?;
+    let result = (|| {
+        fs::copy(source_root.join(MANIFEST_FILE), destination.join(MANIFEST_FILE))
+            .map_err(|e| format!("copy pet.json: {e}"))?;
+        let target_sprite = destination.join(&manifest.spritesheet_path);
+        if let Some(parent) = target_sprite.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("create sprite directory: {e}"))?;
+        }
+        fs::copy(sprite, target_sprite).map_err(|e| format!("copy spritesheet: {e}"))?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&destination);
+        return Err(error);
+    }
+    Ok(summary(&manifest, false))
+}
+
+#[tauri::command]
+pub fn pet_remove<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    let Some((root, built_in)) = package_dir(&app, &id) else {
+        return Err(format!("pet not found: {id}"));
+    };
+    if built_in || id == DEFAULT_PET_ID {
+        return Err("内置宠物不能删除".to_string());
+    }
+    fs::remove_dir_all(root).map_err(|e| format!("remove pet {id}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_v2_ids_and_paths() {
+        assert!(valid_id("damiao-codex"));
+        assert!(!valid_id("../damiao"));
+        assert!(!valid_id("DaMiao"));
+        let manifest = PetManifest {
+            id: "damiao-codex".to_string(),
+            display_name: "大喵".to_string(),
+            description: String::new(),
+            sprite_version_number: 2,
+            spritesheet_path: "spritesheet.webp".to_string(),
+            extra: BTreeMap::new(),
+        };
+        assert!(validate_manifest(&manifest).is_ok());
+        assert!(validate_manifest(&PetManifest {
+            spritesheet_path: "../outside.webp".to_string(),
+            ..manifest
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn bundled_damiao_matches_v2_contract() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("pets")
+            .join(DEFAULT_PET_ID);
+        let (manifest, sprite) = package_files(&root).expect("bundled damiao package is valid");
+        assert_eq!(manifest.id, DEFAULT_PET_ID);
+        assert_eq!(manifest.sprite_version_number, 2);
+        assert!(sprite.ends_with("spritesheet.webp"));
+    }
+}

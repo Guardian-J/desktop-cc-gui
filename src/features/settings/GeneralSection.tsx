@@ -12,8 +12,8 @@ import {
   SettingsRow,
   SettingsSectionLabel,
 } from "@/components/application/settings/settings-rows";
-import { ipc, type AppSettings } from "@/lib/ipc";
-import { IS_WINDOWS } from "@/lib/platform";
+import { ipc, type AppSettings, type PetSummary } from "@/lib/ipc";
+import { IS_WINDOWS, pickDirectory } from "@/lib/platform";
 import { applyTheme } from "./theme";
 import { PromptHistoryManager, PromptHistoryToggleRow } from "./PromptHistorySettings";
 import { useChatStore } from "@/features/chat/store";
@@ -37,6 +37,8 @@ export function GeneralSection() {
   const [limitText, setLimitText] = useState<string | null>(null);
   // 窗口当前是否有系统装饰（isDecorated）；null = 还没读回来。
   const [decorated, setDecorated] = useState<boolean | null>(null);
+  const [pets, setPets] = useState<PetSummary[]>([]);
+  const [petBusy, setPetBusy] = useState(false);
   useEffect(() => {
     let cancelled = false;
     ipc
@@ -49,6 +51,7 @@ export function GeneralSection() {
       .catch((e) => {
         if (!cancelled) setError(String(e));
       });
+    void ipc.listPets().then(setPets).catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -60,15 +63,17 @@ export function GeneralSection() {
   // Read-modify-write: the local `settings` descends from a mount-time
   // snapshot; persisting it whole would clobber concurrent edits (CLI config
   // page, chat-side model pinning). Apply each patch onto a fresh read.
-  const save = useCallback(async (patch: Partial<AppSettings>) => {
+  const save = useCallback(async (patch: Partial<AppSettings>): Promise<boolean> => {
     try {
       const latest = await ipc.getAppSettings();
       const next = { ...latest, ...patch };
       await ipc.updateAppSettings(next);
       setSettings(next);
       setError(null);
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     }
   }, []);
 
@@ -151,6 +156,63 @@ export function GeneralSection() {
     useChatStore.getState().setThinkingAutoCollapse(autoCollapse);
     void save({ thinkingAutoCollapse: autoCollapse });
   };
+  const onPetEnabledChange = (enabled: boolean) => {
+    if (!settings) return;
+    setSettings({ ...settings, petEnabled: enabled });
+    void save({ petEnabled: enabled }).then((ok) => {
+      if (ok) void ipc.setPetVisible(enabled).catch((e) => setError(String(e)));
+    });
+  };
+  const onPetChange = async (key: Key | null) => {
+    if (!settings || key == null) return;
+    const petId = String(key);
+    setSettings({ ...settings, petId });
+    const saved = await save({ petId });
+    if (!saved) return;
+    // Recreate the overlay so the selected package is loaded immediately.
+    try {
+      await ipc.setPetVisible(false);
+      await ipc.setPetVisible(settings.petEnabled ?? false);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  const importPet = async () => {
+    const path = await pickDirectory(t("settings.petImportHint"));
+    if (!path) return;
+    setPetBusy(true);
+    try {
+      const imported = await ipc.importPet(path);
+      setPets((current) => [...current.filter((pet) => pet.id !== imported.id), imported]);
+      setSettings((current) => (current ? { ...current, petId: imported.id } : current));
+      const saved = await save({ petId: imported.id });
+      if (saved && settings?.petEnabled) {
+        await ipc.setPetVisible(false);
+        await ipc.setPetVisible(true);
+      }
+    } catch (e) {
+      setError(`${t("settings.petImportFailed")}: ${String(e)}`);
+    } finally {
+      setPetBusy(false);
+    }
+  };
+  const removePet = async (pet: PetSummary) => {
+    if (pet.builtIn || !window.confirm(t("settings.petRemoveConfirm"))) return;
+    try {
+      await ipc.removePet(pet.id);
+      setPets((current) => current.filter((item) => item.id !== pet.id));
+      if (settings?.petId === pet.id) {
+        setSettings({ ...settings, petId: "damiao-codex" });
+        const saved = await save({ petId: "damiao-codex" });
+        if (saved && settings.petEnabled) {
+          await ipc.setPetVisible(false);
+          await ipc.setPetVisible(true);
+        }
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  };
   return (
     <div className="flex w-full flex-col gap-6">
       {error && (
@@ -231,6 +293,55 @@ export function GeneralSection() {
                 onBlur={commitThreadLimitText}
                 onKeyDown={onThreadLimitKeyDown}
               />
+            </SettingsRow>
+          </SettingsCard>
+        </div>
+      )}
+      {settings && (
+        <div className="flex w-full flex-col gap-2">
+          <SettingsSectionLabel>{t("settings.pet")}</SettingsSectionLabel>
+          <SettingsCard>
+            <SettingsRow
+              label={t("settings.petEnabled")}
+              description={t("settings.petEnabledDesc")}
+            >
+              <Switch
+                size="sm"
+                aria-label={t("settings.petEnabled")}
+                isSelected={settings.petEnabled ?? false}
+                onChange={onPetEnabledChange}
+              />
+            </SettingsRow>
+            <SettingsRow label={t("settings.petCharacter")}>
+              <div className="flex items-center gap-2">
+                <Select
+                  aria-label={t("settings.petCharacter")}
+                  selectedKey={settings.petId ?? "damiao-codex"}
+                  onSelectionChange={onPetChange}
+                  triggerClassName={SELECT_TRIGGER}
+                >
+                  {pets.map((pet) => (
+                    <SelectItem key={pet.id} id={pet.id} textValue={pet.displayName}>
+                      {pet.displayName}{pet.builtIn ? ` (${t("settings.petBuiltIn")})` : ""}
+                    </SelectItem>
+                  ))}
+                </Select>
+                <Button size="small" variant="secondary" onClick={() => void importPet()} disabled={petBusy}>
+                  {t("settings.petImport")}
+                </Button>
+                {pets.find((pet) => pet.id === (settings.petId ?? "damiao-codex"))?.builtIn === false && (
+                  <Button
+                    size="small"
+                    variant="ghost"
+                    onClick={() => {
+                      const pet = pets.find((item) => item.id === (settings.petId ?? "damiao-codex"));
+                      if (pet) void removePet(pet);
+                    }}
+                  >
+                    {t("settings.petRemove")}
+                  </Button>
+                )}
+              </div>
             </SettingsRow>
           </SettingsCard>
         </div>

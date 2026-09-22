@@ -22,6 +22,8 @@ pub mod metrics;
 pub mod mission;
 pub mod open_app;
 pub mod paths;
+pub mod pet_overlay;
+pub mod pets;
 pub mod plugin_caps;
 pub mod plugins;
 pub mod prompts;
@@ -288,6 +290,9 @@ pub fn run() {
             // this hook one stray quit kills every live engine run with no
             // dialog (see quit_guard.rs).
             quit_guard::install(app.handle());
+            // The pet is a separate transparent native window. It is created
+            // only when the persisted setting is enabled; the default is off.
+            pet_overlay::init(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -336,6 +341,14 @@ pub fn run() {
             settings::get_app_settings,
             settings::update_app_settings,
             settings::set_window_theme,
+            // desktop pet
+            pets::pet_list,
+            pets::pet_import,
+            pets::pet_remove,
+            pets::pet_get_package,
+            pet_overlay::pet_set_visible,
+            pet_overlay::pet_set_state,
+            pet_overlay::pet_save_position,
             // updater
             updater::fetch_latest_release_info,
             // plugins

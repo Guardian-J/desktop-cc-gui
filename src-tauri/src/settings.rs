@@ -151,11 +151,27 @@ pub struct AppSettings {
     /// Proxy URL (http/https/socks5); None/empty = unset.
     #[serde(default)]
     pub system_proxy_url: Option<String>,
+    /// Whether the always-on-top desktop pet is visible at startup.
+    #[serde(default)]
+    pub pet_enabled: bool,
+    /// Selected pet package id.
+    #[serde(default = "default_pet_id")]
+    pub pet_id: String,
+    /// Last screen position of the pet overlay, in logical desktop pixels.
+    #[serde(default)]
+    pub pet_position: Option<PetPosition>,
     /// Per-engine binary overrides. flatten keeps the legacy flat shape
     /// (`"claudeBin": …`) the frontend depends on; keys stay camelCase and
     /// unknown extra fields round-trip untouched.
     #[serde(flatten)]
     pub bin_overrides: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetPosition {
+    pub x: f64,
+    pub y: f64,
 }
 
 fn default_theme() -> String {
@@ -211,6 +227,10 @@ fn default_reset_ui_scale_shortcut() -> Option<String> {
 
 fn default_language() -> String {
     "zh".to_string()
+}
+
+fn default_pet_id() -> String {
+    "damiao-codex".to_string()
 }
 
 /// Random 8-character pairing key: no vowels and no look-alikes, so it can
@@ -277,6 +297,9 @@ impl Default for AppSettings {
             dsh_auto_start: None,
             system_proxy_enabled: false,
             system_proxy_url: None,
+            pet_enabled: false,
+            pet_id: default_pet_id(),
+            pet_position: None,
             bin_overrides: HashMap::new(),
         }
     }
