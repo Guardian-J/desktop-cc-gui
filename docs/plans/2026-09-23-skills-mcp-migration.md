@@ -2,8 +2,6 @@
 
 日期：2026-09-23  
 状态：已实施（阶段 1–5 主体落地，阶段 6 完成代码侧验证；真实桌面应用与跨平台验收未完成，见文末《实施记录》）。  
-目标项目：`/Users/zhukunpeng/Desktop/CC GUI 项目/desktop-cc-gui`  
-参考项目：`/Users/zhukunpeng/Desktop/CC GUI 项目/CC GUI 竞品参考/desktop-cc-gui`
 
 ## 一、目标与已确认决策
 
