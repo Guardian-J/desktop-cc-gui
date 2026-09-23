@@ -46,6 +46,7 @@ export function AiChatSidebar({
   onNewSessionInWorkspace,
   onNewSession,
   onNewBrowser,
+  onOpenPlugins,
   onOpenMission,
   onReorderWorkspaces,
   onThreadAction,
@@ -95,6 +96,8 @@ export function AiChatSidebar({
   onNewSession?: () => void;
   /** 新建浏览器 nav entry (desktop only): open a browser tab. */
   onNewBrowser?: () => void;
+  /** 插件 nav entry: open the native plugin hub center tab. */
+  onOpenPlugins?: () => void;
   /** 任务工作台入口（原生中心页签；替换原「自动化」占位项）。 */
   onOpenMission?: () => void;
   onOpenSettings?: () => void;
@@ -164,6 +167,7 @@ export function AiChatSidebar({
           <SidebarPrimaryNav
             onNewSession={onNewSession}
             onNewBrowser={onNewBrowser}
+            onOpenPlugins={onOpenPlugins}
             onOpenMission={onOpenMission}
           />
 

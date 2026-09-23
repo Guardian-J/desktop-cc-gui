@@ -223,6 +223,9 @@ impl Engine for CodexEngine {
     }
 
     fn build_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
+        if super::codex_read_only::requested(req) {
+            return Err("Codex read-only planning requires the local app-server; exec/WSL fallback is forbidden".into());
+        }
         let mut cmd = command_for_binary(bin);
         cmd.arg("exec");
         let mut preassigned = None;
@@ -370,9 +373,11 @@ impl Engine for CodexEngine {
                 // other line) stays a non-terminal notice — only turn.failed
                 // ends the turn.
                 match parse_reconnect_notice(&value) {
-                    Some((attempt, max, message)) => {
-                        out.push(EngineEvent::Retry { attempt, max, message })
-                    }
+                    Some((attempt, max, message)) => out.push(EngineEvent::Retry {
+                        attempt,
+                        max,
+                        message,
+                    }),
                     None => out.push(EngineEvent::Warn(error_message(&value))),
                 }
             }
@@ -619,7 +624,10 @@ mod tests {
         let command = channel_command(&provider, &base_req());
         let config = overrides(&command);
         assert_eq!(config["model_context_window"].as_integer(), Some(1_000_000));
-        assert_eq!(config["model_auto_compact_token_limit"].as_integer(), Some(900_000));
+        assert_eq!(
+            config["model_auto_compact_token_limit"].as_integer(),
+            Some(900_000)
+        );
     }
 
     #[test]

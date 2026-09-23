@@ -1,12 +1,13 @@
-pub mod agents;
 pub mod agent_catalog;
+pub mod agents;
 pub mod baidu_tongji;
 pub mod browser;
 pub mod cc_switch;
 pub mod cli_lifecycle;
-pub mod config;
 pub mod computer_use;
 pub mod computer_use_ax;
+pub mod config;
+pub mod creator_skill;
 pub mod cu_overlay;
 pub mod db;
 pub mod dsh_host;
@@ -15,27 +16,30 @@ pub mod event_sink;
 pub mod files;
 pub mod git;
 pub mod history;
+pub mod mcp;
 pub mod metrics;
 pub mod mission;
 pub mod open_app;
 pub mod paths;
-pub mod plugins;
 pub mod plugin_caps;
+pub mod plugins;
 pub mod prompts;
-pub mod proxy;
 pub mod provider_files;
 pub mod provider_models;
+pub mod proxy;
+pub mod quit_guard;
+pub mod relay;
 pub mod settings;
-pub mod usage;
+pub mod skills_hub;
 pub mod slash_commands;
 pub mod terminal;
-pub mod relay;
 pub mod updater;
+pub mod usage;
 pub mod web;
 
 use std::sync::Arc;
-use tauri::Manager;
 use tauri::Emitter;
+use tauri::Manager;
 
 pub struct AppState {
     pub db: Arc<db::Db>,
@@ -176,15 +180,14 @@ pub fn run() {
             if let Err(error) = cu_overlay::init(app.handle()) {
                 eprintln!("[cu-overlay] init failed (overlay disabled): {error}");
             }
-            app.manage(metrics::MetricsState::new());
+            app.manage(metrics::MetricsState::load().map_err(std::io::Error::other)?);
             app.manage(baidu_tongji::BaiduTongjiState::load());
             // Keep the pairing key from lingering: while the switch is on, a
             // fresh code is minted every ten minutes and broadcast.
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(600));
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
                     loop {
                         interval.tick().await;
                         let _ = crate::settings::rotate_web_auth_key(&handle);
@@ -193,6 +196,10 @@ pub fn run() {
             }
             // Initial history scan, non-blocking.
             history::scanner::spawn_scan(scan_db, scan_sink);
+            // 内置「插件开发」skill：同步进已存在引擎的 skills 根（幂等，失败
+            // 只记日志）——skill 只有落在 CLI 自己的根里才会被引擎加载，
+            // 见 creator_skill.rs 模块注释。
+            creator_skill::install_at_startup(app.handle());
             // DSH host autostart: adopt-or-spawn in the background when
             // enabled; failures are logged, never fatal to startup.
             {
@@ -244,11 +251,14 @@ pub fn run() {
             // 状态必须已经就位。设置改动需重启应用。
             #[cfg(target_os = "windows")]
             let settings = settings::read_settings().unwrap_or_default();
-            let mut window_builder =
-                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-                    .title("CC GUI")
-                    .inner_size(1400.0, 900.0)
-                    .min_inner_size(900.0, 600.0);
+            let mut window_builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("CC GUI")
+            .inner_size(1400.0, 900.0)
+            .min_inner_size(900.0, 600.0);
             #[cfg(target_os = "macos")]
             {
                 // 原 tauri.conf.json: titleBarStyle "Overlay" + hiddenTitle true。
@@ -268,6 +278,11 @@ pub fn run() {
             window_builder
                 .build()
                 .expect("failed to create main window");
+            // Cmd+Q / AppleScript `quit` bypass both the window X's
+            // CloseRequested and Tauri's ExitRequested on macOS; without
+            // this hook one stray quit kills every live engine run with no
+            // dialog (see quit_guard.rs).
+            quit_guard::install(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -324,12 +339,14 @@ pub fn run() {
             plugins::plugin_uninstall,
             plugins::plugin_set_enabled,
             plugins::plugin_quarantine,
+            plugins::plugin_read_artwork,
             plugins::plugin_read_file,
             plugins::plugin_storage_get,
             plugins::plugin_storage_set,
             plugins::plugin_storage_delete,
             // plugin marketplace (Phase 3, plan §6)
             plugins::market::plugin_fetch_index,
+            plugins::market::plugin_fetch_market_readme,
             plugins::market::plugin_install_from_marketplace,
             plugins::market::plugin_check_updates,
             // engine
@@ -350,6 +367,14 @@ pub fn run() {
             computer_use::computer_use_open_permission_settings,
             computer_use::computer_use_drag_source,
             computer_use::computer_use_set_active,
+            // MCP inventory (设置 → 能力扩展 → MCP); desktop-only — the
+            // web bridge intentionally does not dispatch these.
+            mcp::mcp_inventory,
+            mcp::mcp_set_enabled,
+            mcp::probe::mcp_probe,
+            // skills hub (设置 → 能力扩展 → Skills)
+            skills_hub::skills_hub_query,
+            skills_hub::skills_hub_mutate,
             // history
             history::reader::list_sessions,
             history::reader::list_archived_sessions,
@@ -388,6 +413,9 @@ pub fn run() {
             files::list_file_index,
             // composer `/` slash-command picker
             slash_commands::list_slash_commands,
+            // bundled plugin-development skill (created via the plugin hub's
+            // 创建插件 entry; idempotent per-engine install)
+            creator_skill::creator_skill_install,
             // agents & prompts (composer `#`/`!` pickers)
             agents::agent_list,
             agents::agent_add,
@@ -414,6 +442,7 @@ pub fn run() {
             git::git_status,
             git::git_repository_summaries,
             git::git_file_colors,
+            git::git_tree_status,
             git::git_diff,
             git::git_stage,
             git::git_unstage,
@@ -436,6 +465,9 @@ pub fn run() {
             terminal::terminal_close,
             // metrics
             metrics::app_metrics,
+            metrics::performance_diagnostics,
+            metrics::performance_diagnostics_enabled,
+            metrics::performance_diagnostics_set_enabled,
             // plugin capability egress (network:/exec: manifest grants)
             plugin_caps::plugin_http_request,
             plugin_caps::plugin_add_workspace,
@@ -477,8 +509,15 @@ pub fn run() {
             baidu_tongji::load_baidu_tongji_script,
             baidu_tongji::send_baidu_tongji_beacon,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(metrics) = app.try_state::<metrics::MetricsState>() {
+                    metrics.stop();
+                }
+            }
+        });
 }
 /// Probe the user's login+interactive shell for its PATH and install it into
 /// this process. `-l` sources .zprofile (homebrew), `-i` sources .zshrc

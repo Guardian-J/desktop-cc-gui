@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import Puzzle from "lucide-react/dist/esm/icons/puzzle";
 import {
   SettingsShell,
   type SettingsNavGroup,
@@ -12,6 +11,7 @@ import {
   useRegistry,
 } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
+import { pluginSettingsNavIcon } from "@/features/plugins/hub/PluginSettingsNavIcon";
 import { useChatStore } from "@/features/chat/store";
 import { ENGINE_IDS, type EngineId } from "./providers";
 import { CliHeaderActions } from "./CliHeaderActions";
@@ -29,8 +29,9 @@ const GROUP_META: Record<string, { labelKey: string; order: number }> = {
   system: { labelKey: "settings.groupSystem", order: 0 },
   plugins: { labelKey: "settings.groupPlugins", order: 1 },
   cli: { labelKey: "settings.cliManage", order: 2 },
-  workspace: { labelKey: "settings.groupWorkspace", order: 3 },
-  misc: { labelKey: "settings.groupMisc", order: 4 },
+  capabilities: { labelKey: "settings.groupCapabilities", order: 3 },
+  workspace: { labelKey: "settings.groupWorkspace", order: 4 },
+  misc: { labelKey: "settings.groupMisc", order: 5 },
 };
 const KNOWN_GROUP_COUNT = Object.keys(GROUP_META).length;
 /** localStorage key for the user's CLI 管理 rail order (section keys). */
@@ -133,7 +134,7 @@ export default function SettingsPage() {
       const item = {
         key: def.key,
         label: def.label(),
-        icon: def.icon ?? Puzzle,
+        icon: pluginSettingsNavIcon(def),
       };
       const bucket = byGroup.get(def.group);
       if (bucket) bucket.push(item);
@@ -209,6 +210,11 @@ export default function SettingsPage() {
             label: meta ? t(meta.labelKey) : group,
             order,
             items: enabledItems,
+            // The rail, the 未安装 bucket and the 未启用 bucket fold; the two
+            // buckets start folded so the installed-and-enabled CLIs stay in
+            // view, while the main rail starts open.
+            collapsible: true,
+            defaultExpanded: true,
             // The CLI 管理 rail is drag-sortable; the order persists across
             // sessions (localStorage) and new engines append at the end. A
             // reorder only covers the enabled rows — the stored list keeps
@@ -225,14 +231,18 @@ export default function SettingsPage() {
             dragHandleLabel: t("settings.cliDrag"),
           },
         ];
-        // Bucket order: 未安装 sorts before 未启用; both render as static
-        // sections like the main groups.
+        // Bucket order: 未安装 sorts before 未启用; both are folded buckets
+        // that unfold on click (and stay visible on the mobile rail, which
+        // has no headings to toggle). `nested` tucks each bucket under the
+        // CLI 管理 rail with a tighter gap than a full section gets.
         if (uninstalledItems.length > 0) {
           rail.push({
             id: "cli-missing",
             label: t("settings.cliNotInstalledGroup"),
             order: order + 0.5,
             items: uninstalledItems,
+            collapsible: true,
+            nested: true,
           });
         }
         if (disabledItems.length > 0) {
@@ -241,6 +251,8 @@ export default function SettingsPage() {
             label: t("settings.cliDisabledGroup"),
             order: order + 0.6,
             items: disabledItems,
+            collapsible: true,
+            nested: true,
           });
         }
         return rail;
@@ -258,6 +270,7 @@ export default function SettingsPage() {
 
   return (
     <SettingsShell
+      key={pageParam}
       onClose={() => navigate("/")}
       defaultPage={pageParam}
       ariaLabel={t("settings.title")}

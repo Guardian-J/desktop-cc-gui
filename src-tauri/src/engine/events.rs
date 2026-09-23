@@ -31,6 +31,11 @@ pub enum EngineEvent {
     SessionId(String),
     /// Token usage snapshot from the engine.
     Usage(Value),
+    /// Throughput accounting marker (never streamed to the UI): a model
+    /// response's stream opened (`active: true`) or closed (`active: false`).
+    /// `reader.rs` folds the spans into the next usage report's `genMs` wire
+    /// field, which plugins use to compute generation speed.
+    Generation { active: bool },
     /// Engine-reported error.
     Error(String),
     /// Non-terminal engine notice (e.g. an upstream 429 the CLI is
@@ -100,6 +105,15 @@ pub enum EngineEvent {
     Model(String),
     /// Reasoning effort level requested at launch, then the level the engine actually reported.
     Effort(String),
+    /// MCP servers the CLI reported as loaded for this session (claude
+    /// `system/init`): `(name, status)` pairs plus the session's tool names
+    /// (used to attribute `mcp__<server>__<tool>` tools back to their server).
+    /// Consumed by the MCP settings page's runtime section; not streamed to
+    /// the chat UI.
+    McpServers {
+        servers: Vec<(String, Option<String>)>,
+        tools: Vec<String>,
+    },
 }
 /// One todo entry carried to the frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -142,7 +156,8 @@ pub(crate) fn parse_tool_args_value(value: &Value) -> Option<Value> {
                 return None;
             }
             match serde_json::from_str::<Value>(trimmed) {
-                Ok(parsed) => parse_tool_args_value(&parsed).or_else(|| Some(Value::String(trimmed.to_string()))),
+                Ok(parsed) => parse_tool_args_value(&parsed)
+                    .or_else(|| Some(Value::String(trimmed.to_string()))),
                 Err(_) => Some(Value::String(trimmed.to_string())),
             }
         }
@@ -385,7 +400,11 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
         }),
         "append" => {
             let items = match args.get("items").and_then(Value::as_array) {
-                Some(items) => items.iter().filter_map(Value::as_str).map(pending_item).collect(),
+                Some(items) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(pending_item)
+                    .collect(),
                 None => phase_items(args),
             };
             Some(TodosPayload {

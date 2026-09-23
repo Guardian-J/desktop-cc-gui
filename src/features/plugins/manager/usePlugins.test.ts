@@ -4,10 +4,14 @@ import type { PluginInstallProgress } from "@/lib/events";
 
 const pluginList = vi.fn(async (): Promise<PluginInfo[]> => []);
 const pluginInstallFromPath = vi.fn();
+const pluginSetEnabled = vi.fn(async (id: string, enabled: boolean) =>
+  info({ id, enabled, quarantined: false, lastError: null }),
+);
 vi.mock("@/lib/ipc", () => ({
   ipc: {
     pluginList: () => pluginList(),
     pluginInstallFromPath: (path: string) => pluginInstallFromPath(path),
+    pluginSetEnabled: (id: string, enabled: boolean) => pluginSetEnabled(id, enabled),
   },
 }));
 
@@ -61,6 +65,8 @@ function info(over: Partial<PluginInfo> = {}): PluginInfo {
     permissions: [],
     installedAt: 0,
     minAppVersion: null,
+    icon: null,
+    screenshots: [],
     ...over,
   };
 }
@@ -111,5 +117,31 @@ describe("installFromDirectory", () => {
 
     expect(usePluginsStore.getState().installing).toBeNull();
     expect(pluginInstallFromPath).not.toHaveBeenCalled();
+  });
+});
+
+describe("retry", () => {
+  it("clears the quarantine through the backend and reloads in place", async () => {
+    pluginSetEnabled.mockResolvedValueOnce(info({ quarantined: false, lastError: null }));
+
+    await usePluginsStore
+      .getState()
+      .retry(info({ quarantined: true, lastError: "Importing a module script failed." }));
+
+    // Re-enabling is the backend's "trust it again" upsert (it clears
+    // quarantined + lastError), so the retry path must go through it.
+    expect(pluginSetEnabled).toHaveBeenCalledWith("p", true);
+    expect(reloadPlugin).toHaveBeenCalledOnce();
+    expect(loadPlugin).not.toHaveBeenCalled();
+    expect(pluginList).toHaveBeenCalled();
+  });
+
+  it("surfaces a backend failure without touching the loader", async () => {
+    pluginSetEnabled.mockRejectedValueOnce(new Error("no such plugin"));
+
+    await usePluginsStore.getState().retry(info({ quarantined: true }));
+
+    expect(reloadPlugin).not.toHaveBeenCalled();
+    expect(usePluginsStore.getState().error).toContain("no such plugin");
   });
 });

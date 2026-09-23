@@ -31,6 +31,8 @@ interface PluginsStore {
   refresh: () => Promise<void>;
   installFromDirectory: () => Promise<void>;
   setEnabled: (plugin: PluginInfo, enabled: boolean) => Promise<void>;
+  /** Clear a quarantine/failure and load the plugin again, in place. */
+  retry: (plugin: PluginInfo) => Promise<void>;
   uninstall: (plugin: PluginInfo, deleteData: boolean) => Promise<void>;
 }
 
@@ -61,6 +63,13 @@ function withBuiltins(installed: PluginInfo[]): PluginInfo[] {
     if (!seen[builtin.info.id]) merged.push(builtin.info);
   }
   return merged;
+}
+
+/** Builtins carry no manifest fields in their backend record, so the loader
+ *  needs the in-tree manifest/activate pair when the id matches one. */
+function loadableFor(plugin: PluginInfo, info: PluginInfo) {
+  const builtin = BUILTIN_PLUGINS.find((b) => b.info.id === plugin.id);
+  return { info, manifest: builtin?.manifest, builtinActivate: builtin?.builtinActivate };
 }
 
 export const usePluginsStore = create<PluginsStore>((set, get) => ({
@@ -110,15 +119,24 @@ export const usePluginsStore = create<PluginsStore>((set, get) => ({
     try {
       const info = await ipc.pluginSetEnabled(plugin.id, enabled);
       if (enabled) {
-        const builtin = BUILTIN_PLUGINS.find((b) => b.info.id === plugin.id);
-        await loadPlugin({
-          info,
-          manifest: builtin?.manifest,
-          builtinActivate: builtin?.builtinActivate,
-        });
+        await loadPlugin(loadableFor(plugin, info));
       } else {
         unloadPlugin(plugin.id);
       }
+      await get().refresh();
+    } catch (error) {
+      set({ error: String(error) });
+    }
+  },
+
+  retry: async (plugin) => {
+    try {
+      // `plugin_set_enabled(true)` is the backend's "trust it again" upsert:
+      // it clears quarantined + lastError, which is what the loader's sticky
+      // skip keys off. Same recovery as toggling the switch off→on, without
+      // showing a misleading disabled state in between.
+      const info = await ipc.pluginSetEnabled(plugin.id, true);
+      await reloadPlugin(loadableFor(plugin, info));
       await get().refresh();
     } catch (error) {
       set({ error: String(error) });

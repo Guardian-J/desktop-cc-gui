@@ -6,6 +6,8 @@ import { findCapability } from "../catalog";
 import { latestRunOf } from "../runtime";
 import { useMissionStore } from "../store";
 import type {
+  MissionFlow,
+  MissionFlowDefinition,
   MissionFlowNode,
   MissionRun,
   MissionTaskInstance,
@@ -17,8 +19,7 @@ import { NODE_TYPE_I18N_KEY, STATUS_I18N_KEY } from "./canvas/status";
  * 运行实例不可手工改图；业务决策在收件箱进行，流程结构通过对话修改。
  */
 export function NodeInspector() {
-  const { t } = useTranslation();
-  const { flows, runs, selectedFlowId, selectedRunId, selectedNodeKey, selectNode, selectInbox, setActiveView, selectFlow } =
+  const { flows, runs, selectedFlowId, selectedRunId, selectedNodeKey, selectNode } =
     useMissionStore(
       useShallow((s) => ({
         flows: s.flows,
@@ -27,103 +28,144 @@ export function NodeInspector() {
         selectedRunId: s.selectedRunId,
         selectedNodeKey: s.selectedNodeKey,
         selectNode: s.selectNode,
-        selectInbox: s.selectInbox,
-        setActiveView: s.setActiveView,
-        selectFlow: s.selectFlow,
       })),
     );
-  const inbox = useMissionStore((s) => s.inbox);
 
   if (!selectedNodeKey) return null;
   const flow = flows.find((item) => item.id === selectedFlowId);
   if (!flow?.draft) return null;
-  const draft = flow.draft;
   const run: MissionRun | null =
     (selectedRunId && runs[selectedRunId]) || latestRunOf(flow, runs);
 
-  const definition = resolveDefinition(draft.nodes, selectedNodeKey);
-  const task = resolveTask(run, selectedNodeKey);
-
   const close = () => selectNode(null);
+  const task = resolveTask(run, selectedNodeKey);
+  if (task) {
+    return <TaskInspector task={task} draft={flow.draft} run={run} onClose={close} />;
+  }
+
+  const definition = resolveDefinition(flow.draft.nodes, selectedNodeKey);
+  if (!definition) return null;
+  return (
+    <DefinitionInspector
+      definition={definition}
+      flow={flow}
+      run={run}
+      onClose={close}
+    />
+  );
+}
+
+/** 任务实例详情：状态、同一输入项下的兄弟任务、反馈与关联消息。 */
+function TaskInspector({
+  task,
+  draft,
+  run,
+  onClose,
+}: {
+  task: MissionTaskInstance;
+  draft: MissionFlowDefinition;
+  run: MissionRun | null;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const inbox = useMissionStore((s) => s.inbox);
+  const selectInbox = useMissionStore((s) => s.selectInbox);
+  const setActiveView = useMissionStore((s) => s.setActiveView);
+
+  const related = inbox.find((item) => item.taskId === task.id);
+  const nodeTasks = run?.tasks ?? [];
+  const bodyTasks = task.itemId
+    ? nodeTasks.filter(
+        (row) => row.itemId === task.itemId && row.parentTaskId === task.parentTaskId,
+      )
+    : [];
 
   const openInbox = (inboxId: string) => {
     selectInbox(inboxId);
     setActiveView("inbox");
   };
 
-  if (task) {
-    const related = inbox.find((item) => item.taskId === task.id);
-    const nodeTasks = run?.tasks ?? [];
-    const bodyTasks = task.itemId
-      ? nodeTasks.filter(
-          (row) => row.itemId === task.itemId && row.parentTaskId === task.parentTaskId,
-        )
-      : [];
-    return (
-      <Panel
-        onClose={close}
-        eyebrow={t("mission.taskEyebrow")}
-        title={`${task.itemLabel ?? task.title} · ${
-          resolveDefinition(draft.nodes, `node:${task.nodeId}`)?.title ?? task.title
-        }`}
-      >
-        <p className="text-caption-1-regular leading-relaxed text-text-secondary">
-          {t("mission.taskMeta", {
-            status: t(STATUS_I18N_KEY[task.status]),
-            attempt: task.attempt,
-            risk: task.approved ? t("mission.approvedBadge") : "",
-          })}
+  return (
+    <Panel
+      onClose={onClose}
+      eyebrow={t("mission.taskEyebrow")}
+      title={`${task.itemLabel ?? task.title} · ${
+        resolveDefinition(draft.nodes, `node:${task.nodeId}`)?.title ?? task.title
+      }`}
+    >
+      <p className="text-caption-1-regular leading-relaxed text-text-secondary">
+        {t("mission.taskMeta", {
+          status: t(STATUS_I18N_KEY[task.status]),
+          attempt: task.attempt,
+          risk: task.approved ? t("mission.approvedBadge") : "",
+        })}
+      </p>
+      {bodyTasks.length > 1 && (
+        <div className="mt-2">
+          {bodyTasks.map((row) => (
+            <div
+              key={row.id}
+              className="flex items-center justify-between gap-2 border-b border-separator-border py-1 text-caption-1-regular"
+            >
+              <span className="truncate text-text-secondary">
+                {resolveDefinition(draft.nodes, `node:${row.nodeId}`)?.title ?? row.nodeId}
+              </span>
+              <span className="shrink-0 text-text-tertiary">
+                {["running", "waiting_human", "failed"].includes(row.status)
+                  ? t(STATUS_I18N_KEY[row.status])
+                  : row.status === "succeeded"
+                    ? t("mission.checkpointReached")
+                    : t("mission.statusPending")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {task.feedback.length > 0 && (
+        <p className="mt-2 whitespace-pre-wrap text-caption-1-regular text-text-secondary">
+          {t("mission.taskFeedbackList", { text: task.feedback.join("\n") })}
         </p>
-        {bodyTasks.length > 1 && (
-          <div className="mt-2">
-            {bodyTasks.map((row) => (
-              <div
-                key={row.id}
-                className="flex items-center justify-between gap-2 border-b border-separator-border py-1 text-caption-1-regular"
-              >
-                <span className="truncate text-text-secondary">
-                  {resolveDefinition(draft.nodes, `node:${row.nodeId}`)?.title ?? row.nodeId}
-                </span>
-                <span className="shrink-0 text-text-tertiary">
-                  {["running", "waiting_human", "failed"].includes(row.status)
-                    ? t(STATUS_I18N_KEY[row.status])
-                    : row.status === "succeeded"
-                      ? t("mission.checkpointReached")
-                      : t("mission.statusPending")}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        {task.feedback.length > 0 && (
-          <p className="mt-2 whitespace-pre-wrap text-caption-1-regular text-text-secondary">
-            {t("mission.taskFeedbackList", { text: task.feedback.join("\n") })}
-          </p>
-        )}
-        {task.error && (
-          <p className="mt-2 whitespace-pre-wrap text-caption-1-regular text-status-rose-text">
-            {task.error}
-          </p>
-        )}
-        <p className="mt-2 text-caption-1-regular leading-relaxed text-text-tertiary">
-          {t("mission.taskReadonlyNote")}
+      )}
+      {task.error && (
+        <p className="mt-2 whitespace-pre-wrap text-caption-1-regular text-status-rose-text">
+          {task.error}
         </p>
-        {related && (
-          <Button size="xs" className="mt-2" onClick={() => openInbox(related.id)}>
-            {t("mission.openRelatedMessage")}
-          </Button>
-        )}
-      </Panel>
-    );
-  }
+      )}
+      <p className="mt-2 text-caption-1-regular leading-relaxed text-text-tertiary">
+        {t("mission.taskReadonlyNote")}
+      </p>
+      {related && (
+        <Button size="xs" className="mt-2" onClick={() => openInbox(related.id)}>
+          {t("mission.openRelatedMessage")}
+        </Button>
+      )}
+    </Panel>
+  );
+}
 
-  if (!definition) return null;
+/** 流程节点定义详情：能力、Agent 指令、人工确认、输出与并行配置。 */
+function DefinitionInspector({
+  definition,
+  flow,
+  run,
+  onClose,
+}: {
+  definition: MissionFlowNode;
+  flow: MissionFlow;
+  run: MissionRun | null;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const selectFlow = useMissionStore((s) => s.selectFlow);
+  const selectNode = useMissionStore((s) => s.selectNode);
+
   const capability = findCapability(
     definition.input?.capabilityId ?? definition.tool?.capabilityId,
   );
+
   return (
     <Panel
-      onClose={close}
+      onClose={onClose}
       eyebrow={t("mission.definitionEyebrow")}
       title={`${t(NODE_TYPE_I18N_KEY[definition.type] ?? definition.type)} · ${definition.title}`}
     >
@@ -184,7 +226,7 @@ export function NodeInspector() {
               selectFlow(flow.id, "run", run.id);
               selectNode(null);
               useMissionStore.getState().setInboxFilter("attention");
-              setActiveView("inbox");
+              setActiveInboxView();
             }}
           >
             {t("mission.toInboxAttention")}
@@ -196,7 +238,7 @@ export function NodeInspector() {
               selectFlow(flow.id, "run", run.id);
               selectNode(null);
               useMissionStore.getState().setInboxFilter("failed");
-              setActiveView("inbox");
+              setActiveInboxView();
             }}
           >
             {t("mission.toInboxFailed")}
@@ -205,6 +247,11 @@ export function NodeInspector() {
       )}
     </Panel>
   );
+}
+
+/** 切到收件箱视图（两个入口共用）。 */
+function setActiveInboxView(): void {
+  useMissionStore.getState().setActiveView("inbox");
 }
 
 function Panel({

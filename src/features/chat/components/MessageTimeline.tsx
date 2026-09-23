@@ -20,10 +20,10 @@ import { MESSAGE_ANCHOR_RAIL_BAND_CLASS, MessageAnchorRail } from "./MessageAnch
 import { createAnchorRowsBuilder } from "./timeline-anchors";
 import { buildRows, collectToolKeys, rowKey, type TimelineRow } from "./timeline-rows";
 import { formatDuration } from "./format-duration";
-import { ProcessDisclosure } from "./ProcessDisclosure";
+import { ProcessDisclosure, type ProcessSearchTarget } from "./ProcessDisclosure";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { useScrollFollow, useTailPin } from "./use-scroll-follow";
-import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { ScrollControl } from "./ScrollControl";
 import { pluginIdFromRegistryKey, timelineRowRegistry, useRegistry } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import { useAnchorRailScroll } from "./use-anchor-rail-scroll";
@@ -35,6 +35,7 @@ import {
   clearSearchHighlights,
   findTimelineMatches,
   paintSearchHighlights,
+  rowSearchText,
   searchHighlightSupported,
 } from "./timeline-search";
 
@@ -45,6 +46,7 @@ const TimelineRowView = memo(function TimelineRowView({
   autoExpand,
   thinkingAutoCollapse,
   seenTools,
+  searchTarget,
 }: {
   row: TimelineRow;
   workspacePath: string;
@@ -56,6 +58,7 @@ const TimelineRowView = memo(function TimelineRowView({
   /** False keeps a settled thinking row expanded (设置 → 通用 → 行为). */
   thinkingAutoCollapse: boolean;
   seenTools: Set<string>;
+  searchTarget?: ProcessSearchTarget;
 }) {
   // Plugin-defined row kinds (plan §4.2 #5) dispatch to the registered
   // renderer before the builtin switch below; builtin kinds never hit this
@@ -83,6 +86,7 @@ const TimelineRowView = memo(function TimelineRowView({
         thinkingAutoCollapse={thinkingAutoCollapse}
         processId={row.firstSeq}
         seenTools={seenTools}
+        searchTarget={searchTarget}
       />
     );
   }
@@ -321,6 +325,7 @@ function useTimelineSearch({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCursor, setSearchCursor] = useState(0);
+  const [searchRevision, setSearchRevision] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   // 快捷键是开关：再按一次关闭（而不是浏览器式的重新聚焦）。Ref written
   // in an effect so render stays pure; the shortcut only fires post-commit.
@@ -354,15 +359,41 @@ function useTimelineSearch({
       : 0;
   const currentSearchRow =
     searchMatches.length > 0 ? searchMatches[safeCursor].rowIndex : null;
+  const currentSearchItem = useMemo(() => {
+    if (currentSearchRow === null) return undefined;
+    const row = rows[currentSearchRow];
+    if (row.kind !== "process") return undefined;
+    const occurrence = safeCursor - searchMatches.findIndex((match) => match.rowIndex === currentSearchRow);
+    const needle = searchQuery.trim().toLowerCase();
+    const text = rowSearchText(row).toLowerCase();
+    let offset = -needle.length;
+    for (let index = 0; index <= occurrence; index++) offset = text.indexOf(needle, offset + needle.length);
+    let itemEnd = 0;
+    for (let index = 0; index < row.items.length; index++) {
+      itemEnd += row.items[index].text.toLowerCase().length + 1;
+      if (offset < itemEnd) return index;
+    }
+    return undefined;
+  }, [currentSearchRow, rows, safeCursor, searchMatches, searchQuery]);
+  const processSearchTarget = useMemo<ProcessSearchTarget | undefined>(
+    () => currentSearchItem === undefined ? undefined : {
+      itemIndex: currentSearchItem,
+      requestKey: JSON.stringify([currentSearchRow, currentSearchItem, searchQuery, safeCursor, searchRevision]),
+    },
+    [currentSearchRow, currentSearchItem, searchQuery, safeCursor, searchRevision],
+  );
   const handleSearchQuery = (value: string) => {
     setSearchQuery(value);
     setSearchCursor(0);
+    setSearchRevision((value) => value + 1);
   };
   const gotoNextMatch = () => {
+    setSearchRevision((value) => value + 1);
     if (searchMatches.length > 0)
       setSearchCursor((safeCursor + 1) % searchMatches.length);
   };
   const gotoPrevMatch = () => {
+    setSearchRevision((value) => value + 1);
     if (searchMatches.length > 0)
       setSearchCursor(
         (safeCursor - 1 + searchMatches.length) % searchMatches.length,
@@ -375,7 +406,7 @@ function useTimelineSearch({
     userPausedRef.current = true;
     atBottomRef.current = false;
     virtualizer.scrollToIndex(currentSearchRow, { align: "auto" });
-  }, [currentSearchRow, virtualizer, userPausedRef, atBottomRef]);
+  }, [currentSearchRow, processSearchTarget, virtualizer, userPausedRef, atBottomRef]);
   // 命中底色：虚拟列表挂载/卸载与流式增改都会触发重绘；rAF 合帧。
   useEffect(() => {
     const el = scrollRef.current;
@@ -408,6 +439,7 @@ function useTimelineSearch({
     safeCursor,
     matchCount: searchMatches.length,
     currentSearchRow,
+    processSearchTarget,
     gotoNextMatch,
     gotoPrevMatch,
     searchInputRef,
@@ -474,7 +506,7 @@ export const MessageTimeline = memo(function MessageTimeline({
       index < rows.length ? rowKey(rows[index]) : "streaming-tail",
   });
 
-  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, resumeFollow } = useScrollFollow({ scrollRef });
+  const { atBottomRef, userPausedRef, isFollowing, scrollToBottom, scrollToEdge } = useScrollFollow({ scrollRef });
   const {
     searchOpen,
     setSearchOpen,
@@ -483,6 +515,7 @@ export const MessageTimeline = memo(function MessageTimeline({
     safeCursor,
     matchCount,
     currentSearchRow,
+    processSearchTarget,
     gotoNextMatch,
     gotoPrevMatch,
     searchInputRef,
@@ -552,7 +585,7 @@ export const MessageTimeline = memo(function MessageTimeline({
         getFallbackTitle={(index) => t("chat.anchorUserTitle", { index: index + 1 })}
         onScrollToAnchor={handleScrollToAnchor}
       />
-      <ScrollToBottomButton scrollRef={scrollRef} contentSignal={count} onJump={resumeFollow} />
+      <ScrollControl scrollRef={scrollRef} onJump={scrollToEdge} />
       {searchOpen && (
         <TimelineSearchBar
           query={searchQuery}
@@ -640,6 +673,7 @@ export const MessageTimeline = memo(function MessageTimeline({
                     }
                     thinkingAutoCollapse={thinkingAutoCollapse}
                     seenTools={seenTools}
+                    searchTarget={item.index === currentSearchRow ? processSearchTarget : undefined}
                   />
                 )}
               </div>

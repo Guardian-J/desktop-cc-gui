@@ -203,6 +203,26 @@ test("thinking window drops whole rows from the revealed cursor, not from the re
   assert.ok(past.text.length<=limit);
   assert.ok(past.text.startsWith("1234567890\n"));
 });
+test("a cancelled drain resumes on the next identical snapshot instead of freezing", () => {
+  // Fast Refresh re-running effects (or StrictMode's double effect) cleans up
+  // between two commits that carry the same text. The pending tail must not
+  // stay hidden until the provider happens to send more.
+  const c=clock(), reveal=new StreamReveal(true,c.api);
+  reveal.update("x".repeat(200),true);
+  c.advance(32);
+  const before=reveal.read(0,200);
+  assert.ok(before>0 && before<200,`mid-drain: ${before}`);
+  reveal.cancel();
+  assert.equal(reveal.read(0,200),before,"cancel keeps the cursor for a real unmount");
+  reveal.update("x".repeat(200),true);
+  // Re-arms without moving the deadline: the burst still lands by 240ms.
+  for(let i=0;i<6;i++)c.advance(1000/60);
+  const resumed=reveal.read(0,200);
+  assert.ok(resumed>before && resumed<200,`resumed: ${before} -> ${resumed}`);
+  for(let i=0;i<7;i++)c.advance(1000/60);
+  assert.equal(reveal.read(0,200),200,"cleared by the original deadline");
+  assert.equal(c.pending(),0);
+});
 test("reused grapheme reader preserves exact boundaries while the cursor moves both ways", async () => {
   const { createVisibleTextReader } = await import("../src/features/chat/components/stream-reveal.ts");
   const text = "A👩‍💻e\u0301🇨🇳你好".repeat(30);

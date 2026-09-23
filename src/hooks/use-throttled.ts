@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ThrottledText, nextParseInterval, streamParseInterval } from "./throttled-text";
+import { performanceRecorder } from "@/lib/performance-diagnostics";
 
 export { nextParseInterval, streamParseInterval };
 
@@ -9,10 +10,13 @@ export { nextParseInterval, streamParseInterval };
  * markdown parse, highlighting and React's reconciliation. */
 export function useLiveParseInterval(live: boolean, length: number): number {
   const commitMs = useRef(0);
-  const started = useRef(0);
-  started.current = performance.now();
+  // Timestamp taken in render and captured by this render's layout effect:
+  // same render + commit measurement, without mutating a ref during render
+  // (React may replay or discard render work).
+  const renderStartedAt = performance.now();
   useLayoutEffect(() => {
-    commitMs.current = performance.now() - started.current;
+    commitMs.current = performance.now() - renderStartedAt;
+    if (live) performanceRecorder.duration("liveRenderCommit", commitMs.current);
   });
   return live ? nextParseInterval(streamParseInterval(length), commitMs.current) : 0;
 }

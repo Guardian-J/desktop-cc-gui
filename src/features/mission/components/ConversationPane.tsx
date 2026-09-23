@@ -8,6 +8,7 @@ import { cx } from "@/utils/cx";
 import { sendMissionMessage } from "../ai-orchestrator";
 import { usesOnlySimulatedCapabilities } from "../engine/validator";
 import { useMissionStore } from "../store";
+import { keyedLines } from "./keyed-lines";
 
 /**
  * 编排对话区：用户描述目标/提出修改，AI 生成结构化提案；变更摘要在
@@ -118,9 +119,9 @@ export function ConversationPane() {
                   {t("mission.changeCardTitle", { version: message.change.version })}
                 </div>
                 <ul className="mt-1 space-y-0.5">
-                  {message.change.lines.map((line, index) => (
-                    <li key={index} className="text-caption-1-regular leading-relaxed text-text-secondary">
-                      {line}
+                  {keyedLines(message.change.lines).map(({ key, text }) => (
+                    <li key={key} className="text-caption-1-regular leading-relaxed text-text-secondary">
+                      {text}
                     </li>
                   ))}
                 </ul>

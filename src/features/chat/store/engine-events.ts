@@ -1,14 +1,15 @@
-import { ipc, type Message, type QuestionSpec, type SessionMeta, type TodosPayload } from "@/lib/ipc";
+import { ipc, type Message, type QuestionSpec, type SessionMeta } from "@/lib/ipc";
 import type { EngineEventPayload } from "@/lib/events";
 import { errorText } from "@/lib/errors";
 import { dedupeTabs, persistTabs, sessionKey } from "./persistence";
 import {
   EMPTY_SESSION,
-  appendToolMessage,
+  appendToolMessages,
   applyStreamParts,
   bufferStreamPart,
   drainPending,
   migratePendingStream,
+  moveRetryingFlag,
   moveStreamingFlag,
   patchSession,
   resolveSessionEffort,
@@ -17,11 +18,13 @@ import {
   routeRun,
   runRouting,
   scheduleDeltaFlush,
+  setRetryingFlag,
   setStreamingFlag,
   settleLiveRows,
   touchRun,
   untrackRun,
   updatePendingStreamModel,
+  type ToolMessageInput,
 } from "./stream";
 import type { ChatStore } from "../store";
 import {
@@ -244,26 +247,7 @@ function onMessage(
   const data = event.data as {
     role: string;
     text: string;
-    path?: string | null;
-    todos?: TodosPayload;
-    args?: unknown;
-    result?: unknown;
-    patch?: boolean;
   };
-  if (data.role === "tool" || data.role === "tool_result") {
-    appendToolMessage(
-      deps.set,
-      key,
-      data.text,
-      stampedModel(deps, event.engine, key),
-      data.path ?? null,
-      data.todos ?? null,
-      data.args,
-      data.patch === true,
-      data.result,
-    );
-    return;
-  }
   if (data.role !== "assistant") return;
   // Full-snapshot assistant lines (kimi/codex non-delta) append as settled
   // messages; any live row above is finished growing.
@@ -439,6 +423,7 @@ function onSession(
       delete drafts[fromKey];
     }
     const streamingByKey = moveStreamingFlag(s.streamingByKey, fromKey, newKey);
+    const retryingByKey = moveRetryingFlag(s.retryingByKey, fromKey, newKey);
     const activeNext =
       s.active &&
       s.active.engine === event.engine &&
@@ -446,7 +431,7 @@ function onSession(
       s.active.workspacePath === workspacePath
         ? { ...s.active, sessionId: nativeId, effort: undefined, provider: undefined }
         : s.active;
-    return { bySession, drafts, streamingByKey, active: activeNext };
+    return { bySession, drafts, streamingByKey, retryingByKey, active: activeNext };
   });
   // The pending tab owning this run adopts the native id. Stamp only the
   // first match: blanketing every pending tab of this engine+workspace
@@ -519,16 +504,18 @@ export function settleOrphanedRuns(
   for (const [, key] of orphaned) retryingKeys.delete(key);
   set((s) => {
     let streamingByKey = s.streamingByKey;
+    let retryingByKey = s.retryingByKey;
     let bySession = s.bySession;
     for (const [, key] of orphaned) {
       streamingByKey = setStreamingFlag(streamingByKey, key, false);
+      retryingByKey = setRetryingFlag(retryingByKey, key, false);
       const cur = bySession[key];
       if (cur?.streaming || cur?.retry) {
         if (bySession === s.bySession) bySession = { ...s.bySession };
         bySession[key] = { ...cur, streaming: false, turnStartedAt: null, retry: null, compaction: null };
       }
     }
-    return { bySession, streamingByKey };
+    return { bySession, streamingByKey, retryingByKey };
   });
 }
 
@@ -625,10 +612,9 @@ function onError(
   key: string,
   deps: EngineEventDeps,
 ) {
-  retryingKeys.delete(key);
+  clearRetry(key, deps);
   // A round cannot outlive its turn: the CLI's question died with it.
   askLoops.delete(key);
-  if (deps.get().bySession[key]?.retry) patchSession(deps.set, key, { retry: null });
   if (deps.get().bySession[key]?.compaction) patchSession(deps.set, key, { compaction: null });
   // Fold unflushed chunks into rows and settle them: the turn stops here,
   // and the scheduled flush must not write them in after the fact.
@@ -675,6 +661,7 @@ function onError(
         },
       },
       streamingByKey: setStreamingFlag(s.streamingByKey, key, false),
+      retryingByKey: setRetryingFlag(s.retryingByKey, key, false),
     };
   });
   // The run is over: drop its routing entry and usage bookkeeping so the
@@ -985,6 +972,9 @@ function onRetry(event: EngineEventPayload, key: string, deps: EngineEventDeps) 
     return;
   }
   retryingKeys.add(key);
+  if (!deps.get().retryingByKey[key]) {
+    deps.set((s) => ({ retryingByKey: setRetryingFlag(s.retryingByKey, key, true) }));
+  }
   patchSession(deps.set, key, {
     retry: {
       attempt,
@@ -999,8 +989,11 @@ function onRetry(event: EngineEventPayload, key: string, deps: EngineEventDeps) 
  *  event and the chip never lingers over a healthy stream. */
 function clearRetry(key: string, deps: EngineEventDeps) {
   retryingKeys.delete(key);
-  if (!deps.get().bySession[key]?.retry) return;
-  patchSession(deps.set, key, { retry: null });
+  const state = deps.get();
+  if (state.bySession[key]?.retry) patchSession(deps.set, key, { retry: null });
+  if (state.retryingByKey[key]) {
+    deps.set((s) => ({ retryingByKey: setRetryingFlag(s.retryingByKey, key, false) }));
+  }
 }
 
 /** Engine-reported compaction progress (omp rpc-ui `auto_compaction_*`):
@@ -1020,9 +1013,8 @@ function onCompaction(event: EngineEventPayload, key: string, deps: EngineEventD
 }
 
 function onDone(event: EngineEventPayload, key: string, deps: EngineEventDeps) {
-  retryingKeys.delete(key);
+  clearRetry(key, deps);
   askLoops.delete(key);
-  if (deps.get().bySession[key]?.retry) patchSession(deps.set, key, { retry: null });
   if (deps.get().bySession[key]?.compaction) patchSession(deps.set, key, { compaction: null });
   const prev = deps.get().bySession[key] ?? EMPTY_SESSION;
   const data = event.data as { usage: unknown };
@@ -1092,6 +1084,7 @@ function onDone(event: EngineEventPayload, key: string, deps: EngineEventDeps) {
         },
       },
       streamingByKey: setStreamingFlag(s.streamingByKey, key, false),
+      retryingByKey: setRetryingFlag(s.retryingByKey, key, false),
     };
   });
   // The run is over: drop its routing entry so the map cannot grow forever.
@@ -1178,7 +1171,26 @@ export function handleEngineEvents(
   events: EngineEventPayload[],
   deps: EngineEventDeps,
 ) {
+  let toolBatch: { event: EngineEventPayload; key: string; tools: ToolMessageInput[] } | undefined;
+  const flushTools = () => {
+    if (!toolBatch) return;
+    const { event, key, tools } = toolBatch;
+    toolBatch = undefined;
+    appendToolMessages(deps.set, key, tools, stampedModel(deps, event.engine, key));
+  };
   for (const event of events) {
+    const data = event.kind === "message"
+      ? event.data as ToolMessageInput & { role: string }
+      : undefined;
+    const isTool = data?.role === "tool" || data?.role === "tool_result";
+    if (toolBatch && (
+      !isTool ||
+      event.runId !== toolBatch.event.runId ||
+      event.engine !== toolBatch.event.engine ||
+      event.sessionId !== toolBatch.event.sessionId
+    )) {
+      flushTools();
+    }
     const settled = settledRuns.get(event.runId);
     // EOF stderr/failure can follow Done, and the turn's final usage report
     // can trail either terminal event. Keep those, but never adopt the run
@@ -1252,7 +1264,13 @@ export function handleEngineEvents(
         onThinking(event, key, deps);
         break;
       case "message":
-        onMessage(event, key, deps);
+        if (isTool && data) {
+          if (retryingKeys.has(key)) clearRetry(key, deps);
+          toolBatch ??= { event, key, tools: [] };
+          toolBatch.tools.push({ ...data, patch: data.patch === true });
+        } else {
+          onMessage(event, key, deps);
+        }
         break;
       case "session":
         onSession(event, key, deps);
@@ -1293,4 +1311,5 @@ export function handleEngineEvents(
         break;
     }
   }
+  flushTools();
 }
