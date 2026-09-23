@@ -5,6 +5,20 @@ const chat = (session: Record<string, unknown>) => ({ bySession: { current: sess
 const mission = (runs: Record<string, unknown>) => ({ runs }) as never;
 
 describe("pet state aggregation", () => {
+  it("works on the v1.0.8 session shape without PR #1266 task signals", () => {
+    const state = derivePetState(
+      chat({
+        error: null,
+        streaming: true,
+        messages: [{ role: "thinking", text: "正在分析", live: true }],
+      }),
+      mission({}),
+    );
+
+    expect(state.status).toBe("running");
+    expect(state.activity).toBe("thinking");
+  });
+
   it("prioritizes terminal failures over waiting", () => {
     expect(
       derivePetState(

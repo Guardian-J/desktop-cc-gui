@@ -24,17 +24,32 @@ export interface PetStateSnapshot {
   activity: PetActivity;
 }
 
+/** Optional signals added by PR #1266. Keep the pet feature buildable against
+ * the v1.0.8 baseline while still consuming those signals when that PR lands. */
+interface PetTaskSignal {
+  status?: string;
+  taskType?: string;
+  description?: string;
+  progress?: string;
+  lastTool?: string;
+}
+
+interface PetSessionCompatibility {
+  backgroundActive?: boolean;
+  awaitingTasks?: boolean;
+  tasks?: PetTaskSignal[];
+}
+
 type PetChatState = Pick<ChatStore, "bySession"> &
   Partial<Pick<ChatStore, "sessions">>;
 
 const COMMAND_SIGNAL = /\b(command|shell|terminal|powershell|bash|cmd|exec|run)\b/i;
 
-function isCommandTask(task: {
-  taskType: string;
-  description: string;
-  progress?: string;
-  lastTool?: string;
-}): boolean {
+function petSignals(session: SessionState): PetSessionCompatibility {
+  return session as SessionState & PetSessionCompatibility;
+}
+
+function isCommandTask(task: PetTaskSignal): boolean {
   return [task.taskType, task.description, task.progress, task.lastTool]
     .filter((value): value is string => Boolean(value))
     .some((value) => COMMAND_SIGNAL.test(value));
@@ -42,7 +57,7 @@ function isCommandTask(task: {
 
 function runningActivity(sessions: SessionState[]): PetActivity {
   const runningTasks = sessions.flatMap((session) =>
-    session.tasks.filter((task) => task.status === "running"),
+    (petSignals(session).tasks ?? []).filter((task) => task.status === "running"),
   );
   if (runningTasks.some(isCommandTask)) return "command";
 
@@ -97,13 +112,17 @@ function stateForSession(
     sessionName,
     lookDirection: 0,
   } as const;
-  if (session.streaming || session.backgroundActive) {
+  const signals = petSignals(session);
+  if (session.streaming || signals.backgroundActive === true) {
     return { ...base, status: "running", activity: runningActivity([session]) };
   }
-  if (session.error || session.tasks.some((task) => taskIsFailed(task.status))) {
+  if (
+    session.error ||
+    (signals.tasks ?? []).some((task) => task.status && taskIsFailed(task.status))
+  ) {
     return { ...base, status: "failed", activity: "failed" };
   }
-  if (session.awaitingTasks) {
+  if (signals.awaitingTasks === true) {
     return { ...base, status: "waiting", activity: "waiting" };
   }
   return null;
