@@ -128,6 +128,8 @@ export function SkillDetailDialog({
   // Only engines that are installed, or that already hold a copy, are offered.
   const engineTargets = relevantTargets(skill, targets);
   const hiddenEngineCount = targets.length - engineTargets.length;
+  // 统计失败时不能说成“从未使用”：不可用与“确实没调用过”是两回事。
+  const usageUnavailable = Boolean(usageError);
   const invocations = usage?.invocations ?? 0;
   const lastUsedDays = daysSince(usage?.lastUsedAt);
   const lastUsedLabel =
@@ -211,16 +213,22 @@ export function SkillDetailDialog({
           <p className="text-body-2-medium text-text-primary">{t("skills.detail.activity")}</p>
           <div className="rounded-2lg border border-separator-border px-3 py-1">
             <PropertyRow label={t("skills.detail.invocations")}>
-              <span className="tabular-nums">{usageLoading ? "—" : invocations}</span>
+              <span className="tabular-nums">
+                {usageLoading || usageUnavailable ? "—" : invocations}
+              </span>
             </PropertyRow>
             <PropertyRow label={t("skills.detail.lastUsed")}>
               <span className="inline-flex items-center gap-1.5">
                 <span className={cx("size-1.5 rounded-full", freshnessTone(lastUsedDays))} aria-hidden />
-                {usageLoading ? t("skills.detail.activityLoading") : lastUsedLabel}
+                {usageLoading
+                  ? t("skills.detail.activityLoading")
+                  : usageUnavailable
+                    ? "—"
+                    : lastUsedLabel}
               </span>
             </PropertyRow>
           </div>
-          {usageError ? (
+          {usageUnavailable ? (
             <p className="text-caption-1-regular text-text-tertiary">
               {t("skills.detail.usageUnavailable")}
             </p>
@@ -236,37 +244,37 @@ export function SkillDetailDialog({
               the list scrolls in place instead. */}
           <div className="flex max-h-[13rem] flex-col gap-0.5 overflow-y-auto pr-1">
             {engineTargets.map((target) => {
-            const state = skill.targetStates?.[target.id] ?? "off";
-            const busy = busyTarget === target.id;
-            // 未纳管的本地技能：已存在的副本是用户自己的目录，不能在这里取消。
-            const locked = !skill.managed && state === "synced";
-          return (
-            <label
-              key={target.id}
-              title={locked ? t("skills.row.localCopyLocked") : undefined}
-              className={cx(
-                "flex items-center gap-2 rounded-md px-1 py-0.5",
-                !readonly && !pending && !locked && "cursor-pointer hover:bg-background-tertiary-default",
-              )}
-            >
-              <Checkbox
-                size="sm"
-                isSelected={state === "synced"}
-                isDisabled={readonly || pending || busy || locked}
-                onChange={(next) => toggleTarget(target.id as SkillTargetId, next)}
-              >
-                <span className="flex items-center gap-2">
-                  <EngineIcon engine={target.id} size={16} />
-                  {target.label}
-                </span>
-              </Checkbox>
-              <span className="ml-auto flex items-center gap-1.5 text-caption-1-regular text-text-tertiary">
-                {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
-                {t(`skills.targetStateShort.${state}`)}
-              </span>
-            </label>
-          );
-        })}
+              const state = skill.targetStates?.[target.id] ?? "off";
+              const busy = busyTarget === target.id;
+              // 未纳管的本地技能：已存在的副本是用户自己的目录，不能在这里取消。
+              const locked = !skill.managed && state === "synced";
+              return (
+                <label
+                  key={target.id}
+                  title={locked ? t("skills.row.localCopyLocked") : undefined}
+                  className={cx(
+                    "flex items-center gap-2 rounded-md px-1 py-0.5",
+                    !readonly && !pending && !locked && "cursor-pointer hover:bg-background-tertiary-default",
+                  )}
+                >
+                  <Checkbox
+                    size="sm"
+                    isSelected={state === "synced"}
+                    isDisabled={readonly || pending || busy || locked}
+                    onChange={(next) => toggleTarget(target.id as SkillTargetId, next)}
+                  >
+                    <span className="flex items-center gap-2">
+                      <EngineIcon engine={target.id} size={16} />
+                      {target.label}
+                    </span>
+                  </Checkbox>
+                  <span className="ml-auto flex items-center gap-1.5 text-caption-1-regular text-text-tertiary">
+                    {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+                    {t(`skills.targetStateShort.${state}`)}
+                  </span>
+                </label>
+              );
+            })}
           </div>
           {hiddenEngineCount > 0 ? (
             <p className="text-caption-1-regular text-text-tertiary">

@@ -418,6 +418,16 @@ describe("InstalledPane", () => {
     expect(document.body.textContent).toContain("尚未调用");
   });
 
+  it("does not claim a skill was never used when usage stats are unavailable", async () => {
+    api.usage.mockRejectedValue(new Error("transcripts unreadable"));
+    await renderPane();
+    await act(async () => {
+      buttonByText("alpha").click();
+    });
+    expect(document.body.textContent).toContain("使用统计暂不可用");
+    expect(document.body.textContent).not.toContain("尚未调用");
+  });
+
   it("uninstalls through a confirmation and offers the trash restore", async () => {
     api.uninstall.mockResolvedValue({
       ok: true,
