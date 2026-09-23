@@ -20,6 +20,7 @@ import { MESSAGE_ANCHOR_RAIL_BAND_CLASS, MessageAnchorRail } from "./MessageAnch
 import { createAnchorRowsBuilder } from "./timeline-anchors";
 import { buildRows, collectToolKeys, rowKey, type TimelineRow } from "./timeline-rows";
 import { formatDuration } from "./format-duration";
+import { modelDisplayName } from "@/features/settings/usage-model";
 import { ProcessDisclosure } from "./ProcessDisclosure";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { useScrollFollow, useTailPin } from "./use-scroll-follow";
@@ -163,7 +164,9 @@ function MessageMeta({ message }: { message: Message }) {
   }, [message.durationMs, t]);
 
   const modelFormatted = useMemo(() => {
-    return message.model ? t("chat.metaModel", { model: message.model }) : null;
+    return message.model
+      ? t("chat.metaModel", { model: modelDisplayName(message.model) })
+      : null;
   }, [message.model, t]);
 
   const parts = [
@@ -522,7 +525,9 @@ export const MessageTimeline = memo(function MessageTimeline({
   }, [session.activeEffort, items]);
 
   const activeModelFormatted = useMemo(() => {
-    return activeModel ? t("chat.metaModel", { model: activeModel }) : null;
+    return activeModel
+      ? t("chat.metaModel", { model: modelDisplayName(activeModel) })
+      : null;
   }, [activeModel, t]);
 
   const activeEffortFormatted = useMemo(() => {
