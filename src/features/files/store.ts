@@ -4,6 +4,7 @@ import { useGitStore } from "@/features/git/store";
 import { useMissionStore } from "@/features/mission/store";
 import { usePluginHubStore } from "@/features/plugins/hub/store";
 import { usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
+import { useReleaseNotesTabStore } from "@/features/update/notes-tab";
 import {
   ipc,
   type DirEntry,
@@ -118,15 +119,17 @@ interface FilesStore {
   closeSearch: () => void;
 }
 
-/** 文件抢到中心前，非文件面（差异/浏览器/插件页/插件中心/任务工作台）让位。
- *  页签条的选择器（use-chat-tabs）会完整清场，但文件树、搜索和插件桥直接调
- *  openFile 时同样得切过去——否则编辑器页签亮了，画面还停在上一个面。 */
+/** 文件抢到中心前，非文件面（差异/浏览器/插件页/插件中心/任务工作台/版本
+ *  更新说明）让位。页签条的选择器（use-chat-tabs）会完整清场，但文件树、
+ *  搜索和插件桥直接调 openFile 时同样得切过去——否则编辑器页签亮了，画面还
+ *  停在上一个面。 */
 function dismissNonFileSurfaces() {
   useGitStore.getState().closeDiff();
   useBrowserStore.getState().deactivate();
   usePluginTabsStore.getState().deactivate();
   usePluginHubStore.getState().deactivate();
   useMissionStore.getState().deactivate();
+  useReleaseNotesTabStore.getState().deactivate();
 }
 
 export const useFilesStore = create<FilesStore>((set, get) => ({

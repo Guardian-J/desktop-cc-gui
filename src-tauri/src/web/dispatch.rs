@@ -33,6 +33,11 @@ struct DeviceIdArgs {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct DiagnosticsEnabledArgs {
+    enabled: bool,
+}
+
 fn parse_args<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, String> {
     serde_json::from_value(raw.clone()).map_err(|e| format!("invalid args: {e}"))
 }
@@ -473,7 +478,11 @@ struct TerminalResizeArgs {
 /// milliseconds-scale, and the per-invoke tokio task keeps the read loop
 /// unblocked. Commands that genuinely need a thread pool already
 /// spawn_blocking internally (git_status, read_file, search_text…).
-pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> Result<Value, String> {
+pub(super) async fn dispatch(
+    app: &tauri::AppHandle,
+    cmd: &str,
+    raw: Value,
+) -> Result<Value, String> {
     match cmd {
         // config
         "get_cli_config" => ser(crate::config::get_cli_config()),
@@ -591,25 +600,15 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         // failed with `unknown command: answer_question`.
         "answer_question" => {
             let a: AnswerQuestionArgs = parse_args(&raw)?;
-            ser(crate::engine::answer_question(
-                app.state(),
-                a.session_id,
-                a.request_id,
-                a.answers,
+            ser(
+                crate::engine::answer_question(app.state(), a.session_id, a.request_id, a.answers)
+                    .await,
             )
-            .await)
         }
         "list_engines" => ser(crate::engine::list_engines().await),
         "list_engine_models" => {
             let a: EngineArgs = parse_args(&raw)?;
-            ser(
-                crate::engine::models::list_engine_models(
-                    app.state(),
-                    a.engine,
-                    a.workspace,
-                )
-                .await,
-            )
+            ser(crate::engine::models::list_engine_models(app.state(), a.engine, a.workspace).await)
         }
         "save_pasted_image" => {
             let a: SavePastedImageArgs = parse_args(&raw)?;
@@ -629,11 +628,18 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         "archive_session" => {
             let a: ArchiveSessionArgs = parse_args(&raw)?;
-            ser(crate::history::reader::archive_session(app.state(), a.session))
+            ser(crate::history::reader::archive_session(
+                app.state(),
+                a.session,
+            ))
         }
         "restore_session" => {
             let a: EngineSessionArgs = parse_args(&raw)?;
-            ser(crate::history::reader::restore_session(app.state(), a.engine, a.session_id))
+            ser(crate::history::reader::restore_session(
+                app.state(),
+                a.engine,
+                a.session_id,
+            ))
         }
         // Usage ledger: the mobile/web client renders the same page, so the
         // bridge must route it like every other settings surface.
@@ -667,18 +673,16 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         "load_remote_session_page" => {
             let a: LoadRemoteSessionPageArgs = parse_args(&raw)?;
-            ser(
-                crate::history::reader::load_remote_session_page(
-                    app.state(),
-                    a.workspace_path,
-                    a.engine,
-                    a.session_id,
-                    a.remote_path,
-                    a.limit,
-                    a.before_seq,
-                )
-                .await,
+            ser(crate::history::reader::load_remote_session_page(
+                app.state(),
+                a.workspace_path,
+                a.engine,
+                a.session_id,
+                a.remote_path,
+                a.limit,
+                a.before_seq,
             )
+            .await)
         }
         "delete_session" => {
             let a: EngineSessionArgs = parse_args(&raw)?;
@@ -686,7 +690,13 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         "delete_remote_session" => {
             let a: DeleteRemoteSessionArgs = parse_args(&raw)?;
-            ser(crate::history::reader::delete_remote_session(app.state(), a.workspace_path, a.engine, a.remote_path).await)
+            ser(crate::history::reader::delete_remote_session(
+                app.state(),
+                a.workspace_path,
+                a.engine,
+                a.remote_path,
+            )
+            .await)
         }
         "pin_session" => {
             let a: PinSessionArgs = parse_args(&raw)?;
@@ -717,18 +727,17 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         "add_workspace" => {
             let a: PathArgs = parse_args(&raw)?;
-            ser(crate::history::reader::add_workspace(app.state(), a.path, a.meta))
+            ser(crate::history::reader::add_workspace(
+                app.state(),
+                a.path,
+                a.meta,
+            ))
         }
         "plugin_add_workspace" => {
             let a: PluginAddWorkspaceArgs = parse_args(&raw)?;
             ser(
-                crate::plugin_caps::plugin_add_workspace(
-                    app.state(),
-                    a.plugin_id,
-                    a.path,
-                    a.meta,
-                )
-                .await,
+                crate::plugin_caps::plugin_add_workspace(app.state(), a.plugin_id, a.path, a.meta)
+                    .await,
             )
         }
         "remember_session_effort" => {
@@ -821,20 +830,13 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         "search_messages" => {
             let a: SearchMessagesArgs = parse_args(&raw)?;
             ser(
-                crate::history::search::search_messages(
-                    app.state(),
-                    a.query,
-                    a.limit,
-                    a.offset,
-                )
-                .await,
+                crate::history::search::search_messages(app.state(), a.query, a.limit, a.offset)
+                    .await,
             )
         }
         "list_file_index" => {
             let a: FileIndexArgs = parse_args(&raw)?;
-            ser(
-                crate::files::list_file_index(app.state(), a.path, a.include_ignored).await,
-            )
+            ser(crate::files::list_file_index(app.state(), a.path, a.include_ignored).await)
         }
         "list_slash_commands" => {
             let a: PathArgs = parse_args(&raw)?;
@@ -903,7 +905,8 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
                 a.description,
                 a.argument_hint,
                 a.content,
-            ).await)
+            )
+            .await)
         }
         "prompts_update" => {
             let a: PromptUpdateArgs = parse_args(&raw)?;
@@ -1014,6 +1017,18 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         // metrics
         "app_metrics" => ser(crate::metrics::app_metrics(app.state())),
+        "performance_diagnostics" => ser(crate::metrics::performance_diagnostics(app.state())),
+        "performance_diagnostics_enabled" => {
+            ser(crate::metrics::performance_diagnostics_enabled(app.state()))
+        }
+        "performance_diagnostics_set_enabled" => {
+            let args: DiagnosticsEnabledArgs = parse_args(&raw)?;
+            ser(crate::metrics::performance_diagnostics_set_enabled(
+                args.enabled,
+                app.state(),
+                app.state(),
+            ))
+        }
         // web access: phones may read status; start/stop stay desktop-only.
         "web_access_status" => ser(Ok(web_access_status(app.clone()))),
         // The relay has no bootstrap problem (unlike the bridge, which cannot

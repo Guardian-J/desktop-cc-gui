@@ -40,6 +40,7 @@ const UI_LABELS: Record<string, string> = {
   "ui:session-menu": "uiSessionMenu",
   "ui:sidebar-entry": "uiSidebarEntry",
   "ui:center-tab": "uiCenterTab",
+  "ui:conversation-mode": "uiConversationMode",
 };
 
 export function describePermission(permission: string): PermissionDescription {

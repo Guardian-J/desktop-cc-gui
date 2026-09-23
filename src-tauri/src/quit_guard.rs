@@ -137,7 +137,9 @@ mod macos {
                 sel_registerName(c"sharedApplication".as_ptr()),
             );
             if shared.is_null() {
-                eprintln!("[quit-guard] sharedApplication unavailable; system quits stay unguarded");
+                eprintln!(
+                    "[quit-guard] sharedApplication unavailable; system quits stay unguarded"
+                );
                 return;
             }
             let delegate = msg_send(shared, sel_registerName(c"delegate".as_ptr()));

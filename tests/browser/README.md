@@ -1,5 +1,31 @@
 # Chat streaming regression
 
+Open `/tests/browser/relay-plugin.html` for the installable Relay plugin's actual
+React UI with a fake Agent transport. The plugin source is a sibling checkout at
+`../ccgui-plugin/ccgui-plugin-plan-execute-relay` (dev server allows sibling
+plugin repos per `vite.config.ts`); without that checkout the page cannot load.
+Configure the two nodes, send two planning turns, verify that neither reply
+starts execution, then approve the latest plan.
+An unsent draft must disable approval. The visible request counter distinguishes
+planning and execution. Test editing/version selection, stopping, and returning
+to regular chat. No real model, credentials, CLI or workspace files are used.
+This is not evidence of native read-only enforcement or live-model correctness.
+
+Open `/tests/browser/process-disclosure-bounded.html` for large process groups.
+The production disclosure renders 120 or 500 synthetic tools with at most 40
+items per page. Previous/next/latest preserve access to every item; append while
+reading an earlier page must not switch it. Arguments and results remain lazy.
+This is a DOM-bound check, not a native CPU benchmark.
+
+Open `/tests/browser/performance-diagnostics.html` for the real diagnostic dialog
+with synthetic native data and the real renderer monitor. The selectable JSON
+summary must be bounded to 12,000 UTF-8 bytes; full export keeps all samples in a
+separate JSON file. Check the five-minute/60-sample explanation and default-on
+toggle: disabling clears the preview, enabling starts a new recording window.
+Clipboard refusal retains the summary for manual copy; save cancellation must
+not show success. This fixture mocks preference persistence and native samples,
+so it does not verify production CPU, restart persistence or cross-window IPC.
+
 With the Vite development server running, open
 `http://localhost:1420/tests/browser/stream-throttle.html`.
 The page reports `PASS` after exercising actual React StrictMode commits:

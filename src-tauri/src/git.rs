@@ -62,7 +62,10 @@ fn exact_repository_summary(path: &std::path::Path) -> Option<RepositorySummary>
     repository_summary_cached(path, &mut TreeSnapshots::new(true))
 }
 
-fn repository_summary_cached(path: &Path, snapshots: &mut TreeSnapshots) -> Option<RepositorySummary> {
+fn repository_summary_cached(
+    path: &Path,
+    snapshots: &mut TreeSnapshots,
+) -> Option<RepositorySummary> {
     let repo = open_exact_repo(path)?;
     let branch = repo
         .head()
@@ -125,8 +128,7 @@ fn file_tree_colors_cached(
     let listed = Path::new(path);
     let mut out: HashMap<String, &'static str> = HashMap::new();
     // O(1) membership for the two hot loops below (status entries × files).
-    let file_set: std::collections::HashSet<&str> =
-        files.iter().map(String::as_str).collect();
+    let file_set: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
 
     let mut prefix = String::new();
     if let Ok(repo) = Repository::discover(listed) {
@@ -379,35 +381,59 @@ fn diff_line_counts(diff: &mut git2::Diff) -> HashMap<String, (usize, usize)> {
     counts.into_inner()
 }
 
-/// (+lines, 0) for an untracked file. Chunked reads, capped at 100k lines:
-/// the count only feeds a stats badge, so a huge file must not be slurped.
+const MAX_UNTRACKED_BYTES: usize = 1024 * 1024;
+const MAX_UNTRACKED_LINES: usize = 100_000;
+
+/// Exact (+lines, 0) for regular untracked text within 1 MiB and 100k lines.
+/// Unsupported files and exceeded budgets leave the optional stats unknown.
 fn count_untracked_lines(repo: &Repository, file: &str) -> Option<(usize, usize)> {
-    use std::io::Read;
-    const MAX_COUNTED: usize = 100_000;
     let full = repo.workdir()?.join(file);
-    let mut reader = std::io::BufReader::new(std::fs::File::open(full).ok()?);
+    let metadata = std::fs::symlink_metadata(&full).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_UNTRACKED_BYTES as u64 {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let reader = options.open(full).ok()?;
+    let metadata = reader.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_UNTRACKED_BYTES as u64 {
+        return None;
+    }
+    count_untracked_reader(reader)
+}
+
+fn count_untracked_reader(mut reader: impl std::io::Read) -> Option<(usize, usize)> {
+    let mut bytes_read = 0usize;
     let mut lines = 0usize;
     let mut last_byte: Option<u8> = None;
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        match reader.read(&mut chunk) {
+        let read_limit = chunk.len().min(MAX_UNTRACKED_BYTES + 1 - bytes_read);
+        match reader.read(&mut chunk[..read_limit]) {
             Ok(0) => break,
             Ok(n) => {
+                bytes_read += n;
+                if bytes_read > MAX_UNTRACKED_BYTES || chunk[..n].contains(&0) {
+                    return None;
+                }
                 lines += chunk[..n].iter().filter(|b| **b == b'\n').count();
-                last_byte = chunk.get(n.wrapping_sub(1)).copied();
-                if lines >= MAX_COUNTED {
-                    lines = MAX_COUNTED;
-                    break;
+                last_byte = Some(chunk[n - 1]);
+                if lines > MAX_UNTRACKED_LINES {
+                    return None;
                 }
             }
             Err(_) => return None,
         }
     }
-    // BufRead::lines also yields a final line without a trailing newline.
-    if lines < MAX_COUNTED && last_byte.is_some_and(|b| b != b'\n') {
+    if last_byte.is_some_and(|b| b != b'\n') {
         lines += 1;
     }
-    Some((lines, 0))
+    (lines <= MAX_UNTRACKED_LINES).then_some((lines, 0))
 }
 
 /// Bucket status entries into staged/unstaged/untracked file lists.
@@ -515,7 +541,6 @@ fn ahead_behind(repo: &Repository) -> Option<(usize, usize)> {
 /// Sync body of `git_status` — libgit2 walks can touch thousands of files,
 /// far too heavy for the IPC main thread.
 fn git_status_blocking(path: &str) -> Result<GitStatus, String> {
-
     let repo = open_repo(path)?;
     let branch = repo
         .head()
@@ -686,7 +711,9 @@ pub fn git_unstage(path: String, files: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 pub fn git_discard(path: String, files: Vec<String>) -> Result<(), String> {
     let repo = open_repo(&path)?;
-    let workdir = repo.workdir().ok_or_else(|| "bare repository".to_string())?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| "bare repository".to_string())?;
     let mut index = repo.index().map_err(|e| e.to_string())?;
     for file in &files {
         let file_path = Path::new(file);
@@ -850,7 +877,10 @@ fn ff_conflicting_files(repo: &Repository, target: git2::Oid) -> Vec<String> {
     let mut touched_paths = std::collections::HashSet::new();
     let _ = touched.foreach(
         &mut |delta, _| {
-            for p in [delta.old_file().path(), delta.new_file().path()].into_iter().flatten() {
+            for p in [delta.old_file().path(), delta.new_file().path()]
+                .into_iter()
+                .flatten()
+            {
                 touched_paths.insert(p.to_string_lossy().into_owned());
             }
             true
@@ -902,7 +932,9 @@ fn git_pull_blocking(path: &str) -> Result<(), String> {
         // uncommitted local edits — report the conflicting files instead.
         // Keep HEAD at the old tree until checkout succeeds, otherwise local
         // edits are compared against the new commit and the index is stranded.
-        let target = repo.find_commit(fetch_commit.id()).map_err(|e| e.to_string())?;
+        let target = repo
+            .find_commit(fetch_commit.id())
+            .map_err(|e| e.to_string())?;
         let mut checkout = git2::build::CheckoutBuilder::new();
         checkout.safe();
         if let Err(e) = repo.checkout_tree(target.as_object(), Some(&mut checkout)) {
@@ -1016,10 +1048,8 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "ccgui-next-git-summary-{}",
-                uuid::Uuid::new_v4()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("ccgui-next-git-summary-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
         }
@@ -1028,6 +1058,160 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn untracked_line_count_rejects_over_budget_single_line() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        std::fs::write(scratch.0.join("long.txt"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "long.txt"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_accepts_exact_byte_budget() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let mut content = vec![b'x'; 1024 * 1024];
+        std::fs::write(scratch.0.join("exact.txt"), &content).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "exact.txt"), Some((1, 0)));
+        *content.last_mut().unwrap() = b'\n';
+        std::fs::write(scratch.0.join("exact.txt"), content).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "exact.txt"), Some((1, 0)));
+    }
+
+    #[test]
+    fn untracked_line_count_preserves_text_and_newline_semantics() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        for (content, expected) in [
+            ("", 0),
+            ("中文🙂", 1),
+            ("第一行\n第二行", 2),
+            ("第一行\n第二行\n", 2),
+            ("\n", 1),
+            ("\n\n", 2),
+            ("one\r\ntwo\r\n", 2),
+        ] {
+            std::fs::write(scratch.0.join("text.txt"), content).unwrap();
+            assert_eq!(
+                count_untracked_lines(&repo, "text.txt"),
+                Some((expected, 0)),
+                "{content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untracked_line_count_rejects_binary_even_after_first_chunk() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let mut content = vec![b'x'; 20 * 1024];
+        content.push(0);
+        std::fs::write(scratch.0.join("binary.dat"), content).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "binary.dat"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_does_not_report_a_truncated_line_total() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        for (content, expected) in [
+            ("\n".repeat(100_000), Some((100_000, 0))),
+            ("\n".repeat(100_001), None),
+            (format!("{}tail", "\n".repeat(100_000)), None),
+        ] {
+            std::fs::write(scratch.0.join("lines.txt"), content).unwrap();
+            assert_eq!(count_untracked_lines(&repo, "lines.txt"), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_line_count_rejects_non_regular_targets() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        std::os::unix::fs::symlink("/dev/null", scratch.0.join("device")).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "device"), None);
+        std::fs::create_dir(scratch.0.join("directory")).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "directory"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_stops_when_file_grows_during_read() {
+        use std::io::{Read, Write};
+
+        struct GrowingFile {
+            reader: std::fs::File,
+            writer: Option<std::fs::File>,
+            bytes_read: usize,
+        }
+
+        impl Read for GrowingFile {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.reader.read(buffer)?;
+                self.bytes_read += read;
+                if let Some(mut writer) = self.writer.take() {
+                    writer.write_all(&vec![b'x'; 1024 * 1024])?;
+                }
+                Ok(read)
+            }
+        }
+
+        let scratch = Scratch::new();
+        let path = scratch.0.join("growing.txt");
+        std::fs::write(&path, vec![b'x'; 16 * 1024]).unwrap();
+        let mut reader = GrowingFile {
+            reader: std::fs::File::open(&path).unwrap(),
+            writer: Some(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap(),
+            ),
+            bytes_read: 0,
+        };
+        assert_eq!(reader.reader.metadata().unwrap().len(), 16 * 1024);
+        assert_eq!(
+            count_untracked_reader(&mut reader),
+            None,
+            "read {} bytes",
+            reader.bytes_read
+        );
+        assert_eq!(reader.bytes_read, 1024 * 1024 + 1);
+        assert!(std::fs::metadata(path).unwrap().len() > 1024 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_line_count_rejects_fifo_without_opening_it() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let path = std::ffi::CString::new(scratch.0.join("pipe").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert_eq!(count_untracked_lines(&repo, "pipe"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_leaves_optional_stats_unknown_when_skipped() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        std::fs::write(scratch.0.join("large.txt"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        std::fs::write(scratch.0.join("binary.dat"), b"binary\0data").unwrap();
+        std::fs::write(scratch.0.join("empty.txt"), b"").unwrap();
+        let status = git_status_blocking(scratch.0.to_str().unwrap()).unwrap();
+        assert_eq!(status.untracked.len(), 3);
+        for entry in status.untracked {
+            let expected = if entry.path == "empty.txt" {
+                Some(0)
+            } else {
+                None
+            };
+            assert_eq!(entry.additions, expected, "{}", entry.path);
+            assert_eq!(entry.deletions, expected, "{}", entry.path);
         }
     }
 
@@ -1162,7 +1346,10 @@ mod tests {
         let unstaged = git_diff_blocking(scratch.0.to_str().unwrap(), "new.txt", false).unwrap();
         assert!(unstaged.contains("+hello"), "unstaged patch: {unstaged}");
         let staged = git_diff_blocking(scratch.0.to_str().unwrap(), "new.txt", true).unwrap();
-        assert!(!staged.contains("+hello"), "staged must not leak untracked: {staged}");
+        assert!(
+            !staged.contains("+hello"),
+            "staged must not leak untracked: {staged}"
+        );
     }
 
     #[test]
@@ -1191,7 +1378,11 @@ mod tests {
         }
         std::fs::write(scratch.0.join("big.log"), &content).unwrap();
         let text = git_diff_blocking(scratch.0.to_str().unwrap(), "big.log", false).unwrap();
-        assert!(text.contains(DIFF_TRUNCATED_MARKER), "marker in: {} bytes", text.len());
+        assert!(
+            text.contains(DIFF_TRUNCATED_MARKER),
+            "marker in: {} bytes",
+            text.len()
+        );
         assert!(
             text.len() <= MAX_DIFF_PATCH_BYTES + DIFF_TRUNCATED_MARKER.len() + 1,
             "output bounded: {} bytes",
@@ -1210,8 +1401,15 @@ mod tests {
         let signature = git2::Signature::now("test", "test@example.com").unwrap();
         let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
         let parents: Vec<&git2::Commit> = parent.iter().collect();
-        repo.commit(Some("HEAD"), &signature, &signature, "init", &tree, &parents)
-            .unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "init",
+            &tree,
+            &parents,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1223,7 +1421,11 @@ mod tests {
             commit_file(&origin, "shared.txt", "base\n");
             let local_path = scratch.0.join("local");
             let local = Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
-            local.config().unwrap().set_bool("core.autocrlf", false).unwrap();
+            local
+                .config()
+                .unwrap()
+                .set_bool("core.autocrlf", false)
+                .unwrap();
             let old_head = local.head().unwrap().target().unwrap();
             std::fs::write(local_path.join("shared.txt"), "local\n").unwrap();
             if staged {
@@ -1236,7 +1438,10 @@ mod tests {
             let error = git_pull_blocking(local_path.to_str().unwrap()).unwrap_err();
             assert_eq!(local.head().unwrap().target(), Some(old_head), "{error}");
             assert_eq!(local.index().unwrap().write_tree().unwrap(), old_index);
-            assert_eq!(std::fs::read_to_string(local_path.join("shared.txt")).unwrap(), "local\n");
+            assert_eq!(
+                std::fs::read_to_string(local_path.join("shared.txt")).unwrap(),
+                "local\n"
+            );
             assert!(error.contains("shared.txt"), "{error}");
         }
     }
@@ -1270,7 +1475,11 @@ mod tests {
         commit_file(&origin, "local.txt", "base\n");
         let local_path = scratch.0.join("local");
         let local = Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
-        local.config().unwrap().set_bool("core.autocrlf", false).unwrap();
+        local
+            .config()
+            .unwrap()
+            .set_bool("core.autocrlf", false)
+            .unwrap();
         // Windows CI clones with global core.autocrlf=true, so the worktree
         // lands CRLF while the index stays LF — shared.txt then reads dirty and
         // the fast-forward refuses. Re-checkout under autocrlf=false so the
@@ -1289,11 +1498,31 @@ mod tests {
         std::fs::write(local_path.join("new.txt"), "untracked\n").unwrap();
         commit_file(&origin, "shared.txt", "remote\n");
         git_pull_blocking(local_path.to_str().unwrap()).unwrap();
-        assert_eq!(local.head().unwrap().target(), origin.head().unwrap().target());
-        assert_eq!(std::fs::read_to_string(local_path.join("shared.txt")).unwrap(), "remote\n");
-        assert_eq!(std::fs::read_to_string(local_path.join("local.txt")).unwrap(), "unstaged\n");
-        assert_eq!(std::fs::read_to_string(local_path.join("new.txt")).unwrap(), "untracked\n");
-        assert_eq!(local.index().unwrap().get_path(Path::new("local.txt"), 0).unwrap().id, staged_blob);
+        assert_eq!(
+            local.head().unwrap().target(),
+            origin.head().unwrap().target()
+        );
+        assert_eq!(
+            std::fs::read_to_string(local_path.join("shared.txt")).unwrap(),
+            "remote\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(local_path.join("local.txt")).unwrap(),
+            "unstaged\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(local_path.join("new.txt")).unwrap(),
+            "untracked\n"
+        );
+        assert_eq!(
+            local
+                .index()
+                .unwrap()
+                .get_path(Path::new("local.txt"), 0)
+                .unwrap()
+                .id,
+            staged_blob
+        );
         git_pull_blocking(local_path.to_str().unwrap()).unwrap();
     }
 
@@ -1387,10 +1616,7 @@ mod tests {
         let child = scratch.0.join("plain");
         std::fs::create_dir(&child).unwrap();
 
-        let colors = file_tree_colors(
-            &child.to_string_lossy(),
-            &["whatever.txt".to_string()],
-        );
+        let colors = file_tree_colors(&child.to_string_lossy(), &["whatever.txt".to_string()]);
 
         assert!(colors.is_empty());
     }
@@ -1453,9 +1679,17 @@ mod tests {
         );
 
         assert_eq!(colors.get("kept.txt"), None, "colors={colors:?}");
-        assert_eq!(colors.get("inner.txt"), Some(&"modified"), "colors={colors:?}");
+        assert_eq!(
+            colors.get("inner.txt"),
+            Some(&"modified"),
+            "colors={colors:?}"
+        );
         // An untracked directory lights up green (collapsed `newdir/` entry).
-        assert_eq!(colors.get("newdir"), Some(&"untracked"), "colors={colors:?}");
+        assert_eq!(
+            colors.get("newdir"),
+            Some(&"untracked"),
+            "colors={colors:?}"
+        );
     }
 
     #[test]
@@ -1492,8 +1726,7 @@ mod tests {
         commit_file(&origin, "a.txt", "a\n");
 
         let local_path = scratch.0.join("local");
-        let local =
-            Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
+        let local = Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
 
         // One local-only commit → ahead 1; one origin-only commit → behind 1
         // once the local repo has fetched it.
@@ -1527,7 +1760,10 @@ mod tests {
         for (autocrlf, expected) in [(false, "staged\n"), (true, "staged\r\n")] {
             let scratch = Scratch::new();
             let repo = Repository::init(&scratch.0).unwrap();
-            repo.config().unwrap().set_bool("core.autocrlf", autocrlf).unwrap();
+            repo.config()
+                .unwrap()
+                .set_bool("core.autocrlf", autocrlf)
+                .unwrap();
             repo.config().unwrap().set_str("core.eol", "lf").unwrap();
             commit_file(&repo, "a.txt", "base\n");
             std::fs::write(scratch.0.join("a.txt"), "staged\n").unwrap();
@@ -1536,13 +1772,32 @@ mod tests {
                 index.add_path(Path::new("a.txt")).unwrap();
                 index.write().unwrap();
             }
-            let staged_blob = repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id;
+            let staged_blob = repo
+                .index()
+                .unwrap()
+                .get_path(Path::new("a.txt"), 0)
+                .unwrap()
+                .id;
             std::fs::write(scratch.0.join("a.txt"), "unstaged\n").unwrap();
 
-            git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
+            git_discard(
+                scratch.0.to_string_lossy().into_owned(),
+                vec!["a.txt".to_string()],
+            )
+            .unwrap();
 
-            assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), expected);
-            assert_eq!(repo.index().unwrap().get_path(Path::new("a.txt"), 0).unwrap().id, staged_blob);
+            assert_eq!(
+                std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
+                expected
+            );
+            assert_eq!(
+                repo.index()
+                    .unwrap()
+                    .get_path(Path::new("a.txt"), 0)
+                    .unwrap()
+                    .id,
+                staged_blob
+            );
             assert_eq!(repo.find_blob(staged_blob).unwrap().content(), b"staged\n");
         }
     }
@@ -1552,15 +1807,25 @@ mod tests {
         for (autocrlf, expected) in [(false, "keep\n"), (true, "keep\r\n")] {
             let scratch = Scratch::new();
             let repo = Repository::init(&scratch.0).unwrap();
-            repo.config().unwrap().set_bool("core.autocrlf", autocrlf).unwrap();
+            repo.config()
+                .unwrap()
+                .set_bool("core.autocrlf", autocrlf)
+                .unwrap();
             repo.config().unwrap().set_str("core.eol", "lf").unwrap();
             commit_file(&repo, "a.txt", "keep\n");
             let staged_tree = repo.index().unwrap().write_tree().unwrap();
             std::fs::remove_file(scratch.0.join("a.txt")).unwrap();
 
-            git_discard(scratch.0.to_string_lossy().into_owned(), vec!["a.txt".to_string()]).unwrap();
+            git_discard(
+                scratch.0.to_string_lossy().into_owned(),
+                vec!["a.txt".to_string()],
+            )
+            .unwrap();
 
-            assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), expected);
+            assert_eq!(
+                std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
+                expected
+            );
             assert_eq!(repo.index().unwrap().write_tree().unwrap(), staged_tree);
         }
     }
@@ -1570,7 +1835,10 @@ mod tests {
         for (autocrlf, expected) in [(false, "fresh\n"), (true, "fresh\r\n")] {
             let scratch = Scratch::new();
             let repo = Repository::init(&scratch.0).unwrap();
-            repo.config().unwrap().set_bool("core.autocrlf", autocrlf).unwrap();
+            repo.config()
+                .unwrap()
+                .set_bool("core.autocrlf", autocrlf)
+                .unwrap();
             repo.config().unwrap().set_str("core.eol", "lf").unwrap();
             commit_file(&repo, "base.txt", "base\n");
             std::fs::write(scratch.0.join("new.txt"), "fresh\n").unwrap();
@@ -1581,9 +1849,16 @@ mod tests {
             }
             let staged_tree = repo.index().unwrap().write_tree().unwrap();
 
-            git_discard(scratch.0.to_string_lossy().into_owned(), vec!["new.txt".to_string()]).unwrap();
+            git_discard(
+                scratch.0.to_string_lossy().into_owned(),
+                vec!["new.txt".to_string()],
+            )
+            .unwrap();
 
-            assert_eq!(std::fs::read_to_string(scratch.0.join("new.txt")).unwrap(), expected);
+            assert_eq!(
+                std::fs::read_to_string(scratch.0.join("new.txt")).unwrap(),
+                expected
+            );
             assert_eq!(repo.index().unwrap().write_tree().unwrap(), staged_tree);
         }
     }
@@ -1603,6 +1878,9 @@ mod tests {
         .unwrap();
 
         assert!(!scratch.0.join("sub/new.txt").exists());
-        assert_eq!(std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(), "a\n");
+        assert_eq!(
+            std::fs::read_to_string(scratch.0.join("a.txt")).unwrap(),
+            "a\n"
+        );
     }
 }

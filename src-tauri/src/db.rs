@@ -714,7 +714,8 @@ mod tests {
         };
         assert_eq!(read(), None, "no record yet");
 
-        db.remember_session_effort("omp", "s1", "xhigh", 10).unwrap();
+        db.remember_session_effort("omp", "s1", "xhigh", 10)
+            .unwrap();
         assert_eq!(read().as_deref(), Some("xhigh"), "the level survives");
 
         db.remember_session_effort("omp", "s1", "low", 20).unwrap();
@@ -809,10 +810,16 @@ mod tests {
         assert!(db.web_device_approve("d1", 2_000).unwrap());
         let approved = db.web_device_get("d1").unwrap().unwrap();
         assert_eq!(approved.approved_at, Some(2_000));
-        assert_eq!(approved.created_at, 1_000, "approval keeps the first-seen time");
+        assert_eq!(
+            approved.created_at, 1_000,
+            "approval keeps the first-seen time"
+        );
 
         assert!(db.web_device_revoke("d1").unwrap());
-        assert!(db.web_device_get("d1").unwrap().is_none(), "revoked = forgotten");
+        assert!(
+            db.web_device_get("d1").unwrap().is_none(),
+            "revoked = forgotten"
+        );
     }
 
     #[test]
@@ -943,11 +950,15 @@ mod tests {
         let db = Db::open_at(&scratch.path("app.db")).unwrap();
         assert_eq!(db.plugin_kv_get("p1", "k").unwrap(), None);
 
-        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 1})).unwrap();
-        db.plugin_kv_set("p1", "other", &serde_json::json!("s")).unwrap();
-        db.plugin_kv_set("p2", "k", &serde_json::json!(true)).unwrap();
+        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 1}))
+            .unwrap();
+        db.plugin_kv_set("p1", "other", &serde_json::json!("s"))
+            .unwrap();
+        db.plugin_kv_set("p2", "k", &serde_json::json!(true))
+            .unwrap();
         // Same key under another plugin is an independent row; overwrite wins.
-        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 2})).unwrap();
+        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 2}))
+            .unwrap();
         assert_eq!(
             db.plugin_kv_get("p1", "k").unwrap(),
             Some(serde_json::json!({"n": 2}))

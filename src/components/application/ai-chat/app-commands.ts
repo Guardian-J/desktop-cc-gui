@@ -12,15 +12,18 @@ import { useSlashCommandStore } from "./slash-commands";
  * defined that command for the CLI, and the CLI expands it — the app
  * shortcut is only the fallback when no such command exists.
  */
-export type AppCommand = "new" | "compact";
+export type AppCommand = "new" | "compact" | "mcp";
 
 /** Bare input → catalog key. `/clear` is an alias of `/new`: in-place
  *  clearing is a TUI feature no headless/protocol launch honors, and a new
- *  session is the same net effect. */
+ *  session is the same net effect. `/mcp` opens the app's MCP panel instead
+ *  of being sent — the CLIs only run their own `/mcp` in interactive TUI
+ *  mode, which is exactly what this launch path bypasses. */
 const APP_COMMAND_NAMES: Record<string, AppCommand> = {
   "/new": "new",
   "/clear": "new",
   "/compact": "compact",
+  "/mcp": "mcp",
 };
 
 export function matchAppCommand(
@@ -61,6 +64,12 @@ export function appCommandEntries(): SlashCommandEntry[] {
     {
       name: "compact",
       description: i18n.t("chat.slashAppCompact"),
+      source: "app",
+      kind: "app",
+    },
+    {
+      name: "mcp",
+      description: i18n.t("chat.slashAppMcp"),
       source: "app",
       kind: "app",
     },

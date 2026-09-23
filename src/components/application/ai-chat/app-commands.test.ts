@@ -54,10 +54,12 @@ describe("matchAppCommand", () => {
     useSlashCommandStore.setState({ byRoot: {} });
   });
 
-  it("matches bare /new and /compact only", () => {
+  it("matches bare /new, /compact and /mcp only", () => {
     expect(matchAppCommand("/new", WS)).toBe("new");
     expect(matchAppCommand("/clear", WS)).toBe("new");
     expect(matchAppCommand("  /compact  ", WS)).toBe("compact");
+    expect(matchAppCommand("/mcp", WS)).toBe("mcp");
+    expect(matchAppCommand("/mcp 参数", WS)).toBeNull();
     expect(matchAppCommand("/compact 聚焦改动", WS)).toBeNull();
     expect(matchAppCommand("/news", WS)).toBeNull();
     expect(matchAppCommand("hello /new", WS)).toBeNull();
@@ -76,6 +78,7 @@ describe("matchAppCommand", () => {
     });
     expect(matchAppCommand("/new", WS)).toBeNull();
     expect(matchAppCommand("/compact", WS)).toBe("compact");
+    expect(matchAppCommand("/mcp", WS)).toBe("mcp");
   });
 });
 

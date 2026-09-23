@@ -54,6 +54,11 @@
 
 ## 3. 状态与可用性
 
+- **插件会话模式**：获得 `ui:conversation-mode` 授权后，在 CLI 选择器旁提供入口，不伪装成 CLI 或权限选项；普通轮次或发送队列未结束时禁止切入。模式替换当前聊天内容区与输入框，保留原普通对话。运行、取消待确认及恢复待核对期间禁止通过宿主「返回普通对话」绕过插件的退出锁。
+- **接力首版**：规划与执行分别配置引擎 / 渠道 / 模型，配置浮层限高滚动且动作区保持可见。允许多轮讨论和手工编辑，每份完整计划保存为新版本；只有最新、已保存、无未解问题且无未发送草稿的计划可点击「确认此版并执行」。普通发送、AI 回复结束和保存编辑均不授权执行。确认冻结交接包，执行新建原生会话；历史版本只读。
+- **接力停止与恢复**：停止是请求取消，不是回滚；等待进程终态才结束忙碌状态，失败不自动重试写入。重新打开已保存接力记录先核对上次进程及工作区，不自动续跑。明确披露记录独立于普通聊天、其他会话与外部编辑器不受接力单任务锁保护。
+- **活动插件标签保护**：插件报告忙碌后，标签关闭和会替换草稿的引擎切换同样受阻断；切换到别的标签不释放原任务锁。锁与草稿身份持久化，插件被禁用时显示恢复提示，不回落为可发送的普通对话；重新启用插件并停止 / 核对后解锁。目录读取失败仍显示恢复与停止入口。
+
 - 可交互元素至少实现：默认 / hover / `focus-visible`（`ring-border-focus-ring`）/ active / disabled。按钮类控件的焦点环只走 `focus-visible`（不打扰鼠标用户）；输入类控件可以用 `focus:border-border-focus-ring` 表示聚焦，因为文本输入聚焦本身就是用户意图。
 - disabled 必须改变光标语义（`disabled:cursor-not-allowed` 或 `disabled:cursor-default`）并降低强调（`opacity-50`~`60` 或语义 disabled token），不能只是点不动。
 - **异步动作进行中不可重入**：进行中禁用按钮（或首行拦截 `if (running) return`），避免重复请求。
@@ -71,14 +76,31 @@
 - **设置页插件条目用插件自己的品牌图**：设置页导航（`SettingsPage.tsx`）里每个插件 section（registry id 前缀 `plugin:`）的 16px 图标，插件注册了 `icon` 就用它；没注册时回落该插件 manifest 的 `icon`（经 `plugin_read_artwork`，与面板页签、插件市场同一条素材链），只有插件没有品牌素材时才用共用的 `layout-grid` 兜底。这里不画市场同款渐变首字母瓷砖：导航栏其他行的图标都是单色 lucide，彩色瓷砖会喧宾夺主，没有真实素材时中性宫格才是这一列的基调（`PluginSettingsNavIcon.tsx`）。回归：`SettingsPage.test.tsx`。
 - **页头文字按钮的两种禁用分开**：插件中心页头（`PluginHub.tsx`）同一种文字按钮分两个禁用语义——「进行中」用 `disabled:cursor-wait`（`HEADER_BUTTON_BUSY`），「前提不满足」用 `disabled:cursor-not-allowed` + `opacity-50`（`HEADER_BUTTON_BLOCKED`），且后者必须给 `title` 说明缺什么（如「创建插件」在没有工作区时不可点）。等待态不能用来表达「你还没准备好前提」。
 - **跳转后必须真的给光标**：从插件中心/浏览器/文件切回聊天（「创建插件」「新建会话」）时，输入框要真的获得焦点——中心面用 `.invisible` 切换，隐藏元素上的 `focus()` 会被浏览器静默忽略（fixture 实测：切换到可聚焦要 ~250ms）；统一走 `src/features/chat/focus-composer.ts`，它在时间窗内逐帧重试，并在焦点落到可见输入框时立即停手。**预填草稿的光标由我们自己落位**：草稿恢复会重建 editable 的 DOM，浏览器手里的插入点随之消失，随后 `focus()` 会把光标搁回内容开头；`Composer` 的外部 value 同步（`replaceEditableText`）在重建后把插入点放到文本末尾，用户可直接接着敲需求。回归：`tests/browser/creator-jump.html`（断言输入框内容是预填原文、光标在文本末尾）、`ai-chat-composer.test.tsx`。
-- **激活哪一个面，哪一个面就必须真的在视**：中心区同一时刻只有一个面在视（对话 / 文件 / 浏览器 / 插件页签 / 插件中心 / 任务工作台 / 差异），互斥靠各激活入口维护（`ChatCenterPane.centerSurfaces` 只按布尔量判定可见性）。新建会话（侧栏、页签条 `+`、快捷键）、工作区行 `+`、点击会话线程、新建浏览器、打开文件（文件树/搜索/插件桥）以及插件的 `openCenterTab` / `selectSession`，在激活自己的面之前必须清掉其他面（`src/features/chat/center-surfaces.ts` 的 `dismissCenterSurfaces`；文件侧是 `files/store.ts` 的等价清场，先清后设 `activeFilePath`），否则页签条已经高亮到新页签、画面还停在上一个面。回归：`use-chat-sidebar.test.tsx`、`files/store.test.ts`。
+- **激活哪一个面，哪一个面就必须真的在视**：中心区同一时刻只有一个面在视（对话 / 文件 / 浏览器 / 插件页签 / 插件中心 / 任务工作台 / 版本更新说明 / 差异），互斥靠各激活入口维护（`ChatCenterPane.centerSurfaces` 只按布尔量判定可见性）。新建会话（侧栏、页签条 `+`、快捷键）、工作区行 `+`、点击会话线程、新建浏览器、打开文件（文件树/搜索/插件桥）以及插件的 `openCenterTab` / `selectSession`，在激活自己的面之前必须清掉其他面（`src/features/chat/center-surfaces.ts` 的 `dismissCenterSurfaces`；文件侧是 `files/store.ts` 的等价清场，先清后设 `activeFilePath`），否则页签条已经高亮到新页签、画面还停在上一个面。回归：`use-chat-sidebar.test.tsx`、`files/store.test.ts`。
+- **更新说明页签与浮层提示各管一摊**：更新检查发现新版本时，除右下角浮层提示（`UpdateToast`）外还自动把发布说明开成中心页签（原生单实例，`useReleaseNotesTabStore`，模式同插件中心 / 任务工作台），排在页签条最尾；状态栏版本号按钮与命令面板「查看版本更新说明」（`builtin:openReleaseNotes`）打开的是同一个页签。浮层「稍后」只收起待更新状态与提示，页签里的说明继续可读（`notesRelease` 快照不随 `dismiss` 清空）。页签正文优先渲染更新清单的 `notes`（新版本自带的单语 markdown），没有时回落本地 `CHANGELOG_DATA` 里**同版本**条目（双语排序，markdown 映射就在 `ReleaseNotesPane.tsx` 内），两者都没有时明说「这个版本没有附带更新说明」——不把相邻版本的说明挂在当前版本标题下。页签是最弱的单实例面：自动弹出时不抢已在视的插件中心 / 任务工作台（`centerSurfaces` 的优先级）。
+- **更新页签的页头就是更新入口**：发现新版本时给「立即更新」，任何时候都能就地「检查更新」。检查是刷新型动作，走 §4.1 的转圈 → 对号，**检查失败（store 的 error 阶段）不出对号**（`useActionFeedback` 的 `isFailure`）；检查中与下载/安装期间按钮禁用，不重入。结果行与设置页（`UpdateSection`）共用一份文案（`useUpdateDescription`）：检查中是「正在检查更新…」，已是最新给「当前已是最新版本 · 最新版为 vX（日期 发布）」——日期用清单的 `pub_date`，按当前语言格式化，取不到日期就只说版本；失败行用 `role="alert"`，重试就是同一个「检查更新」按钮，不另开第二个按钮。检查更新不是列表重新读取，故不进 [§7](#7-刷新入口清单)。按版本翻页的「版本记录」弹窗与本地历史翻页已随页签上线下线（页签只展示本次发现 / 最新一条）。回归：`ReleaseNotesPane.test.tsx`、`UpdateSection.test.tsx`、`app-status-bar.test.tsx`。
 - **详情页的滚动契约**：`lg` 上右信息栏 sticky 之外还要有高度上限和自己的滚动（`PluginDetailPage.tsx` 的 `RAIL`：`lg:max-h-[calc(100dvh-10.5rem)]` + `lg:overflow-y-auto`）——权限展开后信息栏可以比窗口高，只 sticky 不限高会把它压在视口里，「链接」等末尾行要把左侧 README 滚到底才看得到。左栏 README 的代码块由 `prose-plugin-readme pre`（`src/index.css`）自己横向滚动：单行超长命令在正文列内滚动，不允许画到右信息栏上。
 - **插件权限必须自称归属**：插件详情页右栏的权限行标签是「权限（CCGUI权限）」（`plugins.hub.permissionsTitle`）——只写「权限」会被读成电脑系统权限，括号里的归属是必需的，不是可选修饰；中英文同步（`Permissions (CCGUI)`）。该行的 `permissionsEmpty` / `permissionsCount` 与列表项语义不变。不要与聊天输入框的引擎权限模式（`plugins.hub` 之外的 `permissions` / `permissionLabel`）混用同一处修改。
 - **「链接」三项各带目标图标**：插件详情页右栏的仓库 / 发布记录 / 问题反馈在文字前各给一个 14px（`size-3.5 shrink-0`）lucide 图标——GitHub 标记（`github`）、发布标签（`tag`）、issue 圆点（`circle-dot`），三个目的地不读文字也能分开；图标 `aria-hidden`，可访问名仍只有链接文字。文字后的 `square-arrow-out-up-right` 保留：图标说明去哪儿，箭头说明会离开应用，两者不互相替代（`ExternalLink`）。回归：`PluginHub.test.tsx` 详情页用例。
 - **浮动滚动浮标方向跟随滚轮**：聊天时间线的浮动控件（`ScrollControl.tsx`）只在用户滚轮后出现——向上滚显示「回到顶部」（`ArrowUp` / `chat.backToTop`，点击暂停跟随后平滑滚回顶部），向下滚显示「回到底部」（`ArrowDown` / `chat.backToBottom`，点击恢复跟随并平滑滑向尾部，落定后再硬钉一次吸收动画期间长高的内容）；仅在内容不足一屏、已在底部（距底 100px 内）或滚轮停下 1.5s 后隐藏。`scroll` / `resize` 只负责隐藏、从不主动显示，所以流式钉底不会闪出浮标；平滑滑向尾部的整个过程中自动钉底让位（`use-scroll-follow.ts` 的 `smoothPinRef`），避免中途一次流式刷新把过渡掐断；`prefers-reduced-motion` 下两侧都改为瞬时跳转。
 - **可折叠分组标题的箭头尾随标签**：设置页导航（`src/components/application/settings/settings-shell.tsx`）里可折叠分组的标题行是「标签 + 右侧箭头」——箭头只占行尾，标题文字留在与静态分组标题（如「插件」）相同的左侧内边距列上，而不是被头部箭头推进条目图标列；展开只转箭头（`rotate-90`），`aria-expanded` 同步。
+- **行内只画「有副本」的引擎**：能力扩展 → Skills 行的引擎同步态只渲染真有副本的引擎图标（`TargetEngines`，`src/features/skills/components.tsx`）：彩色=已同步、右下角红点=副本丢失（orphan，点它即重新同步）；点已同步图标会移除该引擎副本（未纳管技能自己目录里的副本除外，它禁用取消并在 `title` 说明「你自己的本地副本；应用不会删除它」；这个禁用**只改光标与 `title`，不降图标透明度**——半透明图标读起来像副本丢了或渲染坏了，而这里要说的恰恰是「有副本、只是不能在这里删」，透明度只留给进行中的动作）。没有副本的引擎**不占行内位置**——一份技能在 13 个引擎里只剩 1~2 个图标，而不是铺一地淡图标；未安装且无副本的引擎不渲染（后端 `available:false`），但已有副本或副本丢失的引擎必须保留，否则清理路径就消失了。「加一个引擎」在详情面板的「同步到」里做，未纳管技能的「纳管」也只在那里（行内不挂这个按钮：本地技能多的时候列表右侧会排满按钮，而且纳管是低频的一次性动作，不配和同步态图标抢位）。
+- **发现页先让人看懂再让人装**：skills.sh 的搜索/热门只返回 name / repo / installs（描述字段后端固定为空串），行主体点开详情（`SkillDiscoverDialog.tsx`）按需调 `remote_skill_content` 回仓库读 `SKILL.md`——列表不预取，几十行 × 两个 GitHub 请求会直接撞限流。详情先给 frontmatter 描述与正文，再看安装按钮；读不到时给「仓库里没有这个技能的 SKILL.md」的说明 + 仓库入口 + 重试，不把后端英文原文当用户文案。id 与仓库目录名不一致时按「同名 / 去掉仓库前缀 / `:` → `-`」对齐（`vercel-react-best-practices` → `skills/react-best-practices`），对不上报 `not_found`，不拿别的技能正文冒充；安装走同一套对齐规则（`resolve_existing_skill_dir`），否则这些条目会死在「SKILL.md not found」。没有描述时行里第二行就是 `owner/repo · 安装数`，不再把仓库重复贴两遍。图标是行按钮的兄弟节点，点它不会顺便打开详情面板；每个按钮带 `aria-pressed`（synced 为 true）与 `title` / `aria-label`（「{{引擎}} 已同步 / 副本丢失 / 无副本」），不把颜色当唯一信息。
+- **配置态与运行时态分开表达**：能力扩展 → MCP 页把「配置已启用」（CLI 配置文件里的状态）与「运行时已连接」（某次会话实际加载的服务）拆成两个清单：运行时条目必须带来源会话与采集时间，没有会话 / 引擎不支持查询时用状态文案说明原因，不显示成「没有服务」。配置条目里，不可安全写入的来源只渲染带 `title` 原因的锁图标（`src/features/mcp/McpSection.tsx`），不渲染不可用的开关；开关只对已验证写入语义的来源开放。
+- **MCP 页要显式表达「这个 CLI 支不支持」**：引擎选择行列出后端 `ENGINES` 里的全部引擎（含未安装、含不内置 MCP 的），引擎级状态由 `support` 字段给出——`native` 正常展示清单，`plugin` 说明 MCP 由插件提供（dsh 列出 profile 里的 `dsh-mcp-client` 实例），`none` 只给「未内置 MCP」说明、不渲染空清单（`pi` 属于此类，不为它伪造来源）。只读原因用可本地化的原因码（`mcp.readonlyReason.*`，缺失时回落后端字面文案）。清单为空时列出本页读取的来源文件（`sources`，含尚未创建的并标注「尚未创建」），把「没配」与「不支持」分开。引擎支持深链 `#/settings?page=mcp&engine=<id>`（`engineIdFromHash` 从 hash 读取，区块在 Router 外也能渲染）。回归：`McpSection.test.tsx`。
+- **引擎选择器与 Skills 同形**：MCP 页的引擎行用与 Skills 相同的 `Chip`（`src/components/base/chips/chip.tsx`，两处共用）+ `EngineIcon`（12px）+ 品牌名，有配置时在名字后跟条数；不用蓝色 PillTab 条——两个「能力扩展」页面的引擎筛选应该长得一样。范围筛选（全部 / 配置 / 运行时）也用同一颗 Chip。
+- **`/mcp` 面板与设置页同源**：输入框的 `/mcp` 既是 `/` 选择器里的内置行（`app-commands`；用户自定义同名目录命令优先），也是直接提交的命令；点该行或提交都打开 `McpCommandPanel`，按当前会话引擎列出配置清单与运行时状态。数据与设置页共用同一个 `mcp_inventory` 调用（`useMcpInventory`），两处不存在第二份口径；面板提供刷新（§7 登记）、可写来源的开关、连接检测、条目详情弹窗与「在设置中管理」深链到对应引擎页签（`openMcpSettings`）。引擎不支持 MCP 时面板同样只给说明。回归：`McpCommandPanel.test.tsx`。
+- **连接状态由本应用显式检测，打开页面即跑，并带缓存与并行上限**：面板与设置页出现时自动开跑（`useAutoProbe`），但只针对「启用 + 可检测 + 没有新鲜结果」的条目，指纹由「启用条目的 id + 配置哈希」组成，所以重复打开只吃缓存、配置一变只补变了的那几条。检测会按配置真的启动 stdio 服务（`npx` 可能触发下载）或连远程地址，做 `initialize` + `tools/list` 握手后立即结束进程（整组杀，不留孤儿子进程），状态落在行内徽标：已连接（绿色，带工具数）/ 需要登录 / 连接失败（原因在 `title` 与详情里），结果带检测时间（标题行「状态更新于 …」）、耗时、服务名与工具名（`probe-ui.tsx`）。新鲜度窗口 `PROBE_TTL_MS` = 3 分钟（`probe-store.ts`），窗口内自动检测直接复用，工具栏「检测全部」是强制重跑；同时最多 `PROBE_CONCURRENCY` = 4 个在飞（stdio 启动是 I/O 等待，串行太慢，全并行会同时拉起一堆 npx）。本机回环地址不走环境代理（`HTTP_PROXY` 会把 127.0.0.1 请求变成 502）；`${VAR}` / `${VAR:-default}` 按 CLI 习惯展开；返回缺字段的响应不当作已连接（边界校验）。这与运行时分区（CLI 会话自报的连接状态）是两个概念，页面上分开表达。回归：`probe-store.test.ts`、`McpSection.test.tsx`、`McpCommandPanel.test.tsx`。
+- **Claude 的用户 / local 来源可以就地启停**：启用/停用写 `~/.claude.json` 的 `projects[<工作区>].disabledMcpServers`（与 Claude Code TUI 的「停用（本项目）」同一把开关，已用 `claude mcp list` 对拍：列表显示 ⊘ Disabled），不往服务定义里塞 `enabled`；没有活动工作区时该来源降级为只读（`mcp.readonlyReason.needs_workspace`）。工作区键优先按原样匹配，再回退 `canonicalize`（Claude Code 用 realpath 作键）。
+- **禁用目标不能谎报**：Skills 详情里的目标复选框对只读来源（内置 / 系统 / 插件）禁用并同时给出只读原因文案（`skills.readonly.*`），不用静默过滤把只读来源「藏掉」。移除操作要分开「已删除」与「保留了你自己目录里的副本」（后端 `kept`）：后者不能报成「已移除」，否则刷新后图标还在，自相矛盾。
+- **多引擎列表自带滚动，底部动作必须留在框内**：Skills 详情（`SkillDetailDialog.tsx`）的「同步到」最多 13 个引擎，整页内容（描述 / 属性 / 活动情况 / 同步到 / SKILL.md）放在同一个滚动体里，同步列表自己再限高滚动（`max-h-[13rem]`），「从所有 Agent 移除 / 更新 / 关闭」固定在框底——引擎变多不能把底部动作推出可视区。
+- **终端路径链接用修饰键点击才唤起文件管理器**：终端输出里的绝对路径（`src/features/terminal/links.ts`）悬停仍有下划线与手型，但普通单击不再直接打开——只有 macOS `⌥`+点击、Windows/Linux `Ctrl`+点击才 reveal（`holdsRevealModifier` 从 xterm 传来的 `MouseEvent` 取修饰键；非 mac 选 Ctrl 与 Windows Terminal / GNOME Terminal 的开链习惯一致）。理由是选中文本、点回窗口很容易碰到链接，无修饰直接唤起访达的干扰太大。macOS 同时把 xterm 的 `altClickMovesCursor` 关掉（`TerminalView.tsx`）：同一个 `⌥`+点击否则还会把 shell 光标挪到点击处；Windows/Linux 保留该功能（那里的 reveal 手势是 Ctrl）。右键菜单里的「在访达中显示」不受影响——显式动作不需要修饰键。回归：`links.test.ts` 的修饰键用例。
 
 ## 4. 动作反馈
+
+- **大型过程组有界展示**：`ProcessDisclosure` 每页最多 40 条思考/工具条目，默认展示最新页；「上一页 / 下一页 / 回到最新」保留全部历史可访问。用户翻到旧页后，新增工具不抢回最新页；对话内搜索命中隐藏条目时展开过程并定位到对应页。大组或批量入场取消 blur/height/mask 动画，不裁剪思考或工具原文。
+- **性能诊断入口**：底部状态栏「性能」与设置「其他 → 性能诊断」页的「查看性能诊断」按钮打开同一个弹窗（该页已从「社区与反馈」页移出，含说明与打开按钮）。默认开启，提供「自动性能诊断」开关并持久保存选择；关闭停止前端与原生采样、清空记录和预览，重新开启从新窗口开始。关闭前提示先导出需保留的证据；保存失败保留原状态并显示错误。前端与原生各保留最近 **5 分钟、最多 60 条**，记录仍仅在内存，重启清空。默认只读预览与「复制诊断摘要」使用不超过 **12,000 UTF-8 字节**的结构化摘要（峰值、前五进程、峰值附近采样与最严重阻塞附近采样）；「导出完整诊断文件」保留当前快照的全部数据，以紧凑 JSON 保存，不拼接旧报告。桌面选择保存路径，取消不提示成功，写入失败提示重试；Web 发起下载后仅提示已发起，不假称落盘成功。按钮生成前/操作中禁用，窄屏允许换行。保留隐私、单核与整机 CPU 区别及 WebKit 候选归属说明；原生不可用仍可复制前端摘要；剪贴板拒绝显示 `role="alert"` 并保留手动选择文本。弹窗使用 `ModalShell`、标准按钮与可滚动内容区，不新增刷新入口。
+- **渲染性能面板（react-scan）**：设置 → 其他 → 性能诊断页内的独立开关，**默认关闭**，手动开启后即时生效并持久化。打包（生产）版只提供重渲染高亮与次数，不含单次渲染耗时（开发版 `pnpm dev` 才有）。react-scan 必须在 React/react-dom 首次导入前接管 instrumentation，因此入口 `src/main.tsx` 只做启动编排：先装轻量 devtools hook，再按开关决定是否加载 overlay，应用体经动态导入的 `src/bootstrap.tsx` 加载；`src/lib/react-scan.ts` 只在开关开启时拉取 react-scan 本体 chunk（未开启时只多取几 KB 的 hook chunk，开关无需重启即生效）。
 
 异步动作必须让用户看到三件事：**正在进行**、**成功**、**失败**。失败要么有对号以外的显式反馈（错误文案 / 状态标记），要么保持原样不误导。
 
@@ -132,7 +154,7 @@ const feedback = useRunningFeedback(store.loading);
 
 ### 4.2 复制到剪贴板：Copy → Check
 
-- 用 `src/hooks/use-copied.ts` 的 `useCopied(resetMs = 1500)`，成功后图标换成 `Check`，**1500ms** 后复位。
+- 用 `src/hooks/use-copied.ts` 的 `useCopied(resetMs = COPY_FEEDBACK_MS)`，成功后图标换成 `Check`，**1500ms** 后复位。性能诊断需要显式处理复制失败，使用同一 `COPY_FEEDBACK_MS` 常量，成功反馈与卸载清理语义保持一致。
 - 与刷新反馈的差异：复制没有别的成功信号，所以**可访问名一起改成"已复制"**（`aria-label` / `title`），刷新反馈则不改名。这是刻意的差别，不要强行统一。
 - 复制按钮旁边有明文内容时（如密钥框），保留原布局尺寸与分隔符，只换图标。
 
@@ -166,8 +188,13 @@ const feedback = useRunningFeedback(store.loading);
 | 模型目录 | `src/components/application/ai-chat/engine-model-panel.tsx` | `useActionFeedback` | — |
 | 浏览器刷新 | `src/features/browser/BrowserPane.tsx` | `useActionFeedback` | webview 无加载完成事件，对号 = 指令已下发 |
 | 状态栏「立即同步」 | `src/components/application/app-status-bar/app-status-bar.tsx` | `useRunningFeedback(syncing)` | 进度由 `scan://progress` 事件驱动 |
+| Skills 刷新 | `src/features/skills/InstalledPane.tsx` | `useActionFeedback({ spin: true })` | 一次动作同时重读已安装列表与更新信号；失败走行内 `role="alert"` |
+| MCP 刷新 | `src/features/mcp/McpSection.tsx` | `useActionFeedback({ spin: true })` | 重读配置清单与运行时分区；写入成功后也会自动重读 |
+| `/mcp` 面板刷新 | `src/features/mcp/McpCommandPanel.tsx` | `useActionFeedback({ spin: true })` | 与设置页同一份 `mcp_inventory` 数据；写入成功后自动重读 |
+| MCP 连接检测 | `src/features/mcp/McpSection.tsx`、`McpCommandPanel.tsx` | 行内状态徽标（`probe-ui.tsx`，检测中转圈） | 打开页面自动跑（复用 3 分钟内的结果），「检测全部」强制重跑；最多 4 个并行 |
 | 报错态「刷新」 | `src/features/files/FileTreeBody.tsx`、`src/features/files/EditorPane.tsx` | **不加反馈** | 纯文本恢复入口，见 §8 |
 | 更换密钥 | `src/features/settings/WebAuthCard.tsx` | **不加反馈** | 语义是"轮换"不是"刷新" |
+| 接力引擎列表 | `ccgui-plugin/ccgui-plugin-plan-execute-relay/main.js` | 异步动作期间禁用，失败行内告警 | 独立 ESM 插件的文本动作；不导入宿主私有反馈 hook。刷新仅重读可用引擎、渠道名和模型，不触发模型请求 |
 
 ## 8. 待收敛
 
@@ -183,6 +210,21 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.42 | 2026-09-23 | MCP 连接检测改为打开页面即自动跑（只补没有新鲜结果的条目，3 分钟窗口内复用缓存，配置一变成指纹自动只补变化项），手动「检测全部」为强制重跑；检测改为最多 4 个并行（原先串行）；标题行显示「状态更新于 …」；§3 与 §7 同步 |
+| v0.41 | 2026-09-23 | MCP 页引擎选择器改为与 Skills 同形的 Chip + 品牌图标（共用 `Chip`）；新增「连接检测」——显式按配置启动/连接并握手，行内给已连接/需要登录/连接失败状态（与 CLI 会话上报的运行时分区分开），本机地址绕开环境代理；Claude 用户级与 local 来源可就地启停（写 `.claude.json` 的 `projects[<ws>].disabledMcpServers`，已与 `claude mcp list` 对拍）；§3 补五条规则、§7 登记检测入口 |
+| v0.40 | 2026-09-23 | MCP 覆盖全部已接入 CLI：新增 Kimi / Grok / OMP / OpenCode / Antigravity / Qoder（含 CN）/ dsh 来源，PI 显式标注不内置 MCP；grok、opencode 开放启停（本机 CLI 验证过语义），其余来源只读并给可本地化的原因码；清单为空时列出本页读取的来源文件，页签支持引擎深链；输入框 `/mcp`（选择器点击或提交）弹出当前引擎的 MCP 面板，与设置页共用同一份数据；§3 补两条规则、§7 登记面板刷新 |
+| v0.39 | 2026-09-23 | 终端路径链接改为修饰键点击才唤起文件管理器：macOS `⌥`+点击、Windows/Linux `Ctrl`+点击，普通单击不再直接触发；macOS 同步关闭 xterm 的 `altClickMovesCursor` 让出该手势，Windows/Linux 保留；§3 补充规则 |
+| v0.38 | 2026-09-23 | Skills 发现页可看详情：行主体点开弹窗，按需回仓库读 `SKILL.md`（描述 + 正文 + 安装），读不到时说人话并给仓库入口；skills.sh 的 id 与仓库目录名按「同名 / 去仓库前缀 / `:`→`-`」对齐，安装与详情同一套规则（修掉 vercel-labs 这类条目的 `SKILL.md not found`）；§3 补充规则 |
+| v0.37 | 2026-09-23 | Skills 行内不再挂「纳管」按钮：本地技能的纳管入口只在详情面板（勾选「同步到」的引擎同样会触发纳管），行内只剩引擎同步态与可选的「更新」；§3 补充规则 |
+| v0.36 | 2026-09-23 | Skills 行内引擎图标：自有本地副本的禁用态不再给图标降透明度（只用 `cursor-not-allowed` 与 `title` 表达不可点），避免读成副本丢失/渲染坏了；§3 补充规则 |
+| v0.35 | 2026-09-23 | 新版本说明改为中心页签：发现更新时自动打开并排在页签条最尾，正文优先用更新清单 `notes`、否则回落本地同版本条目；浮层「稍后」不再影响页签内容；状态栏版本号改开该页签，页头提供「立即更新」与「检查更新」（刷新型反馈 + 与设置页共用的结果行，含「已是最新版本 · 最新版 vX（日期）」），按版本翻页的版本记录弹窗随之下线；§3 补充两条规则 |
+| v0.34 | 2026-09-23 | Skills 支持全部已接入 CLI（Claude / Codex / Kimi / Grok / PI / OMP / DeepSeek / Antigravity / Gemini / OpenCode / Qoder / Qoder CN / Hermes + 隐藏的 agents）：行内同步态改为可点的引擎图标（三态 + 只画有副本的引擎 + 自有本地副本不可取消），详情页加「活动情况」与「同步到」图标列表并固定底部「从所有 Agent 移除」，多引擎列表限高滚动；§3 同步规则 |
+| v0.33 | 2026-09-23 | 增加聊天内插件会话模式与接力首版：显式确认最新版、多轮规划、停止与恢复、退出锁；登记插件引擎列表刷新入口 |
+| v0.32 | 2026-09-23 | 性能诊断页新增「渲染性能面板（react-scan）」开关：默认关闭、即时生效并持久化，打包版仅高亮与次数；入口先装 devtools hook 再动态加载 bootstrap/overlay；§4 同步 |
+| v0.31 | 2026-09-23 | 性能诊断从「社区与反馈」页移出，改为设置「其他」分组下的独立页面（说明 + 「查看性能诊断」按钮），不影响状态栏入口与弹窗行为；§4 同步 |
+| v0.30 | 2026-09-23 | 诊断统一五分钟/60 条；默认复制限长摘要、完整 JSON 文件导出；默认开启、持久化开关及关闭清理语义 |
+| v0.29 | 2026-09-23 | 大型过程组每页 40 条及搜索定位；状态栏与社区反馈加入本地性能诊断入口，规定隐私、采样限制、复制失败提示，复制时长复用 COPY_FEEDBACK_MS |
+| v0.28 | 2026-09-23 | 新增设置「能力扩展」分组的 UI 约定：Skills 的引擎同步圆点带可访问名；MCP 把配置态与运行时态拆开、只读来源用带原因的锁而不是假开关；§7 登记 Skills / MCP 刷新入口 |
 | v0.27 | 2026-09-23 | 修复「新建会话/点击会话后中心面不跳转」：新建会话（侧栏、页签条 +、快捷键）、工作区行 +、点击会话线程、新建浏览器、打开文件与插件 `openCenterTab`/`selectSession` 统一先清掉其他中心面（`center-surfaces.ts`），页签高亮与画面一致；§3 补充规则 |
 | v0.26 | 2026-09-23 | 设置页导航插件条目改用插件真实品牌图：`icon` → manifest 素材（`plugin_read_artwork`）→ `layout-grid` 兜底；§2.2 与 §3 同步规则 |
 | v0.25 | 2026-09 | 设置页导航可折叠分组标题改为「标签 + 尾随箭头」，标题文字与静态分组标题同一左列对齐；§3 补充规则 |

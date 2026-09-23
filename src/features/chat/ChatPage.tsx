@@ -141,6 +141,8 @@ export default function ChatPage() {
     pluginHubActive,
     missionOpen,
     missionActive,
+    notesOpen,
+    notesActive,
     diffView,
     closeDiff,
   } = useChatTabs({ setDialog });
@@ -304,6 +306,8 @@ export default function ChatPage() {
             pluginHubActive={pluginHubActive}
             missionOpen={missionOpen}
             missionActive={missionActive}
+            notesOpen={notesOpen}
+            notesActive={notesActive}
             diffView={diffView}
             diffStatus={diffStatus}
             closeDiff={closeDiff}

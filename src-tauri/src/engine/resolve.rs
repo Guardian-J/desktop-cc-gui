@@ -114,7 +114,8 @@ fn discover_npm_global_bin_dir(seed_paths: &[PathBuf]) -> Option<PathBuf> {
     #[cfg(windows)]
     super::hide_console(&mut command);
 
-    let output_path = std::env::temp_dir().join(format!("ccgui-npm-{}.stdout", uuid::Uuid::new_v4()));
+    let output_path =
+        std::env::temp_dir().join(format!("ccgui-npm-{}.stdout", uuid::Uuid::new_v4()));
     let mut output_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -220,8 +221,8 @@ fn build_windows_extra_search_paths(
         // Legacy codemoss builds bundled the Claude Agent SDK under the app
         // home; users whose only claude is that copy have nothing on PATH.
         // Scan for the arch-specific package dir instead of hardcoding x64.
-        let codemoss_sdk_root = user_profile
-            .join(".codemoss\\dependencies\\claude-sdk\\node_modules\\@anthropic-ai");
+        let codemoss_sdk_root =
+            user_profile.join(".codemoss\\dependencies\\claude-sdk\\node_modules\\@anthropic-ai");
         if let Ok(entries) = std::fs::read_dir(&codemoss_sdk_root) {
             for entry in entries.flatten() {
                 let candidate = entry.path();
@@ -628,7 +629,9 @@ pub(crate) fn find_cli_binary(name: &str, custom_bin: Option<&str>) -> Option<Pa
     if let Some(bin) = custom_bin.filter(|v| !v.trim().is_empty()) {
         let bin_path = Path::new(bin.trim());
         if bin_path.exists() {
-            return Some(strip_verbatim(upgrade_executable_variant(bin_path.to_path_buf())));
+            return Some(strip_verbatim(upgrade_executable_variant(
+                bin_path.to_path_buf(),
+            )));
         }
     }
 
@@ -669,8 +672,7 @@ pub(crate) fn resolve_launchable_cli_binary(name_or_path: &str) -> String {
             .to_string_lossy()
             .into_owned();
     }
-    let looks_like_path =
-        path.is_absolute() || trimmed.contains('/') || trimmed.contains('\\');
+    let looks_like_path = path.is_absolute() || trimmed.contains('/') || trimmed.contains('\\');
     if looks_like_path {
         return trimmed.to_string();
     }
@@ -802,7 +804,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let binary = root.join("npm.cmd");
         let mut paths = vec![root.clone()];
-        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
         std::fs::write(&binary, "@echo off\r\necho C:\\prefix with spaces\r\n").unwrap();
         let prefix = discover_npm_global_bin_dir(&paths);
         std::fs::write(
@@ -848,7 +852,9 @@ mod tests {
         )
         .unwrap();
         let mut paths = vec![root.clone()];
-        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
         let prefix = discover_npm_global_bin_dir(&paths);
         std::thread::sleep(Duration::from_secs(5));
         let leaked = root.join("leaked").exists();
@@ -876,15 +882,17 @@ mod tests {
 
     #[test]
     fn prefer_windows_executable_variant_prefers_cmd_over_posix_shim() {
-        let root =
-            std::env::temp_dir().join(format!("ccgui-posix-shim-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ccgui-posix-shim-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temp dir");
         let posix_shim = root.join("dsh");
         let cmd_path = root.join("dsh.cmd");
         std::fs::write(&posix_shim, "#!/bin/sh\n").expect("write shim");
         std::fs::write(&cmd_path, "@echo off\n").expect("write cmd");
 
-        assert_eq!(prefer_windows_executable_variant(posix_shim.clone()), cmd_path);
+        assert_eq!(
+            prefer_windows_executable_variant(posix_shim.clone()),
+            cmd_path
+        );
         // Already-executable variants and missing dirs pass through.
         assert_eq!(
             prefer_windows_executable_variant(cmd_path.clone()),
@@ -910,7 +918,13 @@ mod tests {
         assert_eq!(program, "powershell");
         assert_eq!(
             leading,
-            vec!["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", r"C:\npm\claude.ps1"]
+            vec![
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                r"C:\npm\claude.ps1"
+            ]
         );
 
         assert!(windows_wrapper(r"C:\npm\claude.exe").is_none());

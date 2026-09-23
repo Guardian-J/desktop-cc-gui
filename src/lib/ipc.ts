@@ -1,5 +1,6 @@
 // Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
 import { invoke } from "./transport";
+import type { NativePerformanceDiagnostics } from "./performance-types";
 import { withGrantRetry } from "./grant";
 
 // ==================== Shared types (mirror Rust serde camelCase) ====================
@@ -1132,6 +1133,9 @@ export const ipc = {
     invoke<void>("reveal_in_file_manager", { path }),
   // metrics
   appMetrics: () => invoke<AppMetrics>("app_metrics"),
+  performanceDiagnostics: () => invoke<NativePerformanceDiagnostics>("performance_diagnostics"),
+  performanceDiagnosticsEnabled: () => invoke<boolean>("performance_diagnostics_enabled"),
+  performanceDiagnosticsSetEnabled: (enabled: boolean) => invoke<boolean>("performance_diagnostics_set_enabled", { enabled }),
   // plugins
   pluginList: () => invoke<PluginInfo[]>("plugin_list"),
   pluginInstallFromPath: (path: string) =>
