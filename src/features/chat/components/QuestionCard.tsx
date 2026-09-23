@@ -29,7 +29,8 @@ export function QuestionCard({ message }: { message: Message }) {
   const question = message.question;
   if (!question) return null;
   const { questions } = question;
-  const current = questions[Math.min(page, questions.length - 1)];
+  const currentIndex = Math.min(page, questions.length - 1);
+  const current = questions[currentIndex];
   if (!current) return null;
 
   const pick = (text: string, label: string, multi: boolean) => {
@@ -45,35 +46,50 @@ export function QuestionCard({ message }: { message: Message }) {
         ? ""
         : label;
     // An option pick replaces any typed answer for that question.
-    setOther((cur) => ({ ...cur, [text]: "" }));
-    setPicked((cur) => ({ ...cur, [text]: value }));
+    const nextOther = { ...other, [text]: "" };
+    const nextPicked = { ...picked, [text]: value };
+    setOther(nextOther);
+    setPicked(nextPicked);
     // Submit waits for every question, so the pick answering a single-select
     // one walks the user on: leaving them to find the pager is a dead end.
-    if (!multi && typeof value === "string" && value) setPage(nextUnanswered());
+    if (!multi && typeof value === "string" && value)
+      setPage(nextUnanswered(page, nextPicked, nextOther));
   };
   /** Option pick, or the typed free-form answer when one is present. */
-  const valueFor = (text: string): string | string[] => {
-    const typed = (other[text] ?? "").trim();
-    return typed ? typed : picked[text] ?? "";
+  const valueFor = (
+    text: string,
+    pickedState = picked,
+    otherState = other,
+  ): string | string[] => {
+    const typed = (otherState[text] ?? "").trim();
+    return typed ? typed : pickedState[text] ?? "";
   };
   /** Whether a question already has an answer (an option pick or typed text). */
-  const hasAnswer = (text: string) => {
-    const value = valueFor(text);
+  const hasAnswer = (
+    text: string,
+    pickedState = picked,
+    otherState = other,
+  ) => {
+    const value = valueFor(text, pickedState, otherState);
     return Array.isArray(value) ? value.length > 0 : Boolean(value);
   };
-  const openQuestions = questions.filter((q) => !hasAnswer(q.question)).length;
-  const complete = openQuestions === 0;
   /** Index of the next question still without an answer, wrapping; the current
    * page when none is open. */
-  const nextUnanswered = () => {
-    const from = Math.min(page, questions.length - 1);
+  const nextUnanswered = (
+    fromPage = page,
+    pickedState = picked,
+    otherState = other,
+  ) => {
+    const from = Math.min(fromPage, questions.length - 1);
     for (let step = 1; step <= questions.length; step++) {
       const at = (from + step) % questions.length;
       const spec = questions[at];
-      if (spec && !hasAnswer(spec.question)) return at;
+      if (spec && !hasAnswer(spec.question, pickedState, otherState)) return at;
     }
     return from;
   };
+  const openQuestions = questions.filter((q) => !hasAnswer(q.question)).length;
+  const complete = openQuestions === 0;
   const answer = () => {
     if (!key || !complete) return;
     const merged: Record<string, string | string[]> = {};
@@ -164,13 +180,22 @@ export function QuestionCard({ message }: { message: Message }) {
               className={rowClass(selected)}
             >
               <span
-                className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${
+                className={`mt-0.5 flex size-4 shrink-0 items-center justify-center border ${
+                  current.multiSelect ? "rounded" : "rounded-full"
+                } ${
                   selected
-                    ? "border-button-primary bg-button-primary text-text-white"
+                    ? current.multiSelect
+                      ? "border-button-primary bg-button-primary text-text-white"
+                      : "border-button-primary bg-background-primary-default"
                     : "border-border-secondary"
                 }`}
               >
-                {selected && <Check className="size-3" aria-hidden />}
+                {selected &&
+                  (current.multiSelect ? (
+                    <Check className="size-3" aria-hidden />
+                  ) : (
+                    <span className="size-2 rounded-full bg-button-primary" aria-hidden />
+                  ))}
               </span>
               <span className="flex min-w-0 flex-col">
                 <span className="text-caption-1-medium text-text-primary">
@@ -229,14 +254,25 @@ export function QuestionCard({ message }: { message: Message }) {
           >
             {t("chat.questionSkip")}
           </button>
-          <button
-            type="button"
-            disabled={!complete}
-            onClick={answer}
-            className={`${btn} bg-button-primary text-text-white disabled:cursor-not-allowed disabled:text-button-primary-disabled-foreground`}
-          >
-            {t("chat.questionSubmit")}
-          </button>
+          {current.multiSelect && !complete && hasAnswer(current.question) && (
+            <button
+              type="button"
+              onClick={() => setPage(nextUnanswered())}
+              className={`${btn} border border-border-secondary bg-background-secondary-default text-text-secondary hover:bg-background-tertiary-hover`}
+            >
+              {t("chat.questionConfirmAndContinue")}
+            </button>
+          )}
+          {(!current.multiSelect || currentIndex === questions.length - 1) && (
+            <button
+              type="button"
+              disabled={!complete}
+              onClick={answer}
+              className={`${btn} bg-button-primary text-text-white disabled:cursor-not-allowed disabled:text-button-primary-disabled-foreground`}
+            >
+              {t("chat.questionSubmit")}
+            </button>
+          )}
         </div>
       </div>
     </div>
