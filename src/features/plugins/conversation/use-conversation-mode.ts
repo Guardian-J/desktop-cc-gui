@@ -18,8 +18,10 @@ const unsubscribeChat = useChatStore.subscribe((current, previous) => {
 let registered = conversationModeRegistry.getSnapshot();
 const unsubscribeModes = conversationModeRegistry.subscribe(() => {
   const next = conversationModeRegistry.getSnapshot();
+  // Set keeps the identity check (`includes` semantics) at constant time.
+  const nextSet = new Set(next);
   for (const mode of registered) {
-    if (!next.includes(mode)) state.removeMode(mode.id);
+    if (!nextSet.has(mode)) state.removeMode(mode.id);
   }
   registered = next;
 });

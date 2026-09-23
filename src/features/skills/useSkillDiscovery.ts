@@ -82,7 +82,7 @@ export function useSkillDiscovery(active: boolean): SkillDiscoveryStore {
       if (!canCommit()) return;
       setDiscoverError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (canCommit()) setDiscoverLoading(false);
+      setDiscoverLoading((value) => (canCommit() ? false : value));
     }
   }, []);
 
@@ -102,7 +102,7 @@ export function useSkillDiscovery(active: boolean): SkillDiscoveryStore {
       if (!canCommit()) return;
       setDiscoverError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (canCommit()) setDiscoverLoading(false);
+      setDiscoverLoading((value) => (canCommit() ? false : value));
     }
   }, []);
 
@@ -122,7 +122,7 @@ export function useSkillDiscovery(active: boolean): SkillDiscoveryStore {
       setSearchError(error instanceof Error ? error.message : String(error));
       setSearchResults([]);
     } finally {
-      if (canCommit()) setSearchLoading(false);
+      setSearchLoading((value) => (canCommit() ? false : value));
     }
   }, []);
 

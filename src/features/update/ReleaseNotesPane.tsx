@@ -6,12 +6,12 @@ import CircleAlert from "lucide-react/dist/esm/icons/circle-alert";
 import Info from "lucide-react/dist/esm/icons/info";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import RefreshCcw from "lucide-react/dist/esm/icons/refresh-ccw";
-import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
+import { ActionFeedbackIcon, useActionFeedback, type ActionFeedback } from "@/components/base/action-feedback";
 import { Button } from "@/components/base/buttons/button";
 import { cx } from "@/utils/cx";
 import { CHANGELOG_DATA, type ChangelogEntry } from "@/version/changelog";
 import { useUpdateDescription } from "./stage-message";
-import { useUpdateStore } from "./store";
+import { useUpdateStore, type UpdateStage } from "./store";
 
 /**
  * Resolve content to display. Shows both EN and ZH when both exist,
@@ -84,8 +84,135 @@ function localEntryFor(version?: string): ChangelogEntry | undefined {
  * 页头就是更新入口：发现新版本给「立即更新」，任何时候都能就地「检查更新」
  * （结果行复用设置页同一份文案，见 `useUpdateDescription`）。
  */
+/** Pane header: title, announced version/date and the update/check actions. */
+function ReleaseHeader({
+  displayVersion,
+  displayDate,
+  stage,
+  checkFeedback,
+  onUpdate,
+  onCheck,
+}: {
+  displayVersion: string | undefined;
+  displayDate: string | undefined;
+  stage: UpdateStage;
+  checkFeedback: ActionFeedback;
+  onUpdate: () => void;
+  onCheck: () => void;
+}) {
+  const { t } = useTranslation();
+  const inFlight =
+    stage === "downloading" || stage === "installing" || stage === "restarting";
+  return (
+    <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-separator-border px-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <h1 className="shrink-0 text-title-3-medium text-text-primary">{t("changelog.title")}</h1>
+        {displayVersion && (
+          <span className="shrink-0 rounded-full bg-background-tertiary-default px-2 py-0.5 text-caption-1-medium text-text-secondary">
+            v{displayVersion}
+          </span>
+        )}
+        {displayDate && (
+          <span className="shrink-0 text-caption-1-regular text-text-tertiary">{displayDate}</span>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-2">
+        {stage === "available" && (
+          <Button size="small" variant="primary" onClick={onUpdate}>
+            {t("settings.updateNow")}
+          </Button>
+        )}
+        {inFlight && (
+          <Loader2
+            className="size-4 shrink-0 animate-spin text-foreground-icon-secondary"
+            aria-hidden
+          />
+        )}
+        <Button
+          size="small"
+          variant="secondary"
+          disabled={stage === "checking" || inFlight}
+          onClick={onCheck}
+        >
+          <span className="flex items-center gap-1.5">
+            <ActionFeedbackIcon
+              icon={RefreshCcw}
+              feedback={checkFeedback}
+              spin
+              iconClassName="size-3.5"
+            />
+            {t("settings.checkUpdates")}
+          </span>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Check/download result line; 检查中转圈由按钮承担，这里只给文字结果。 */
+function ReleaseDescription({
+  description,
+  failed,
+}: {
+  description: string | undefined;
+  failed: boolean;
+}) {
+  if (!description) return null;
+  return (
+    <div
+      role={failed ? "alert" : undefined}
+      className={cx(
+        "flex shrink-0 items-start gap-2 border-b border-separator-border px-4 py-2 text-body-2-medium",
+        failed ? "text-text-error-primary" : "text-text-secondary",
+      )}
+    >
+      {failed ? (
+        <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+      ) : (
+        <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+      )}
+      <span className="min-w-0">{description}</span>
+    </div>
+  );
+}
+
+/** Release-notes body: manifest notes, bilingual local entry, or the empty
+ *  copy. */
+function ReleaseBody({
+  body,
+  parts,
+}: {
+  body: string | undefined;
+  parts: { lang: "zh" | "en"; text: string }[];
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+      <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-4">
+        {body ? (
+          <ChangelogMarkdown text={body} />
+        ) : parts.length > 0 ? (
+          parts.map((part, idx) => (
+            <div
+              key={part.lang}
+              className={cx(idx > 0 && "border-t border-separator-border pt-3")}
+            >
+              <ChangelogMarkdown text={part.text} />
+            </div>
+          ))
+        ) : (
+          <p className="text-body-regular text-text-secondary">
+            {t("settings.updateNotesEmpty")}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ReleaseNotesPane() {
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
   const stage = useUpdateStore((s) => s.stage);
   const version = useUpdateStore((s) => s.version);
   const notesRelease = useUpdateStore((s) => s.notesRelease);
@@ -117,94 +244,26 @@ export function ReleaseNotesPane() {
     latestVersion,
     latestPubDate,
   });
-  const inFlight = stage === "downloading" || stage === "installing" || stage === "restarting";
   const failed = stage === "error";
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background-primary-default">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-separator-border px-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <h1 className="shrink-0 text-title-3-medium text-text-primary">{t("changelog.title")}</h1>
-          {displayVersion && (
-            <span className="shrink-0 rounded-full bg-background-tertiary-default px-2 py-0.5 text-caption-1-medium text-text-secondary">
-              v{displayVersion}
-            </span>
-          )}
-          {displayDate && (
-            <span className="shrink-0 text-caption-1-regular text-text-tertiary">{displayDate}</span>
-          )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          {stage === "available" && (
-            <Button size="small" variant="primary" onClick={() => void startUpdate()}>
-              {t("settings.updateNow")}
-            </Button>
-          )}
-          {inFlight && (
-            <Loader2
-              className="size-4 shrink-0 animate-spin text-foreground-icon-secondary"
-              aria-hidden
-            />
-          )}
-          <Button
-            size="small"
-            variant="secondary"
-            disabled={stage === "checking" || inFlight}
-            onClick={() =>
-              void checkAction.start(
-                () => checkForUpdates({ interactive: true }),
-                // 非抛错型动作把失败写进 store（store.ts 的 error 分支）。
-                () => useUpdateStore.getState().stage === "error",
-              )
-            }
-          >
-            <span className="flex items-center gap-1.5">
-              <ActionFeedbackIcon
-                icon={RefreshCcw}
-                feedback={checkAction.feedback}
-                spin
-                iconClassName="size-3.5"
-              />
-              {t("settings.checkUpdates")}
-            </span>
-          </Button>
-        </div>
-      </div>
-
-      {/* 检查/下载的结果行：检查中转圈由按钮承担，这里只给文字结果。 */}
-      {description && (
-        <div
-          role={failed ? "alert" : undefined}
-          className={cx(
-            "flex shrink-0 items-start gap-2 border-b border-separator-border px-4 py-2 text-body-2-medium",
-            failed ? "text-text-error-primary" : "text-text-secondary",
-          )}
-        >
-          {failed ? (
-            <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-          ) : (
-            <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
-          )}
-          <span className="min-w-0">{description}</span>
-        </div>
-      )}
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-4">
-          {body ? (
-            <ChangelogMarkdown text={body} />
-          ) : parts.length > 0 ? (
-            parts.map((part, idx) => (
-              <div key={part.lang} className={cx(idx > 0 && "border-t border-separator-border pt-3")}>
-                <ChangelogMarkdown text={part.text} />
-              </div>
-            ))
-          ) : (
-            <p className="text-body-regular text-text-secondary">{t("settings.updateNotesEmpty")}</p>
-          )}
-        </div>
-      </div>
+      <ReleaseHeader
+        displayVersion={displayVersion}
+        displayDate={displayDate}
+        stage={stage}
+        checkFeedback={checkAction.feedback}
+        onUpdate={() => void startUpdate()}
+        onCheck={() =>
+          void checkAction.start(
+            () => checkForUpdates({ interactive: true }),
+            // 非抛错型动作把失败写进 store（store.ts 的 error 分支）。
+            () => useUpdateStore.getState().stage === "error",
+          )
+        }
+      />
+      <ReleaseDescription description={description} failed={failed} />
+      <ReleaseBody body={body} parts={parts} />
     </div>
   );
 }

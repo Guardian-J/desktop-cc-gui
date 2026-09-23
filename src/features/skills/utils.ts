@@ -163,6 +163,40 @@ export function hasOrphanCopy(skill: SkillRow): boolean {
   return Object.values(skill.targetStates ?? {}).some((state) => state === "orphan");
 }
 
+/** Longest matching root wins, so a nested root never shadows its parent.
+ *  Moves an absolute directory picked by the user onto a known skills root. */
+export function relativeToRoot(
+  picked: string,
+  targets: SkillTargetInfo[],
+): { directory: string; target: SkillTargetInfo } | null {
+  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = normalize(picked);
+  let best: { directory: string; target: SkillTargetInfo } | null = null;
+  for (const target of targets) {
+    const root = normalize(target.path);
+    if (!root) continue;
+    if (normalized === root) continue;
+    if (normalized.startsWith(`${root}/`)) {
+      const directory = normalized.slice(root.length + 1);
+      if (!best || root.length > normalize(best.target.path).length) {
+        best = { directory, target };
+      }
+    }
+  }
+  return best;
+}
+
+/** Pre-selected engines for the import dialog: the two CLIs the hub has always
+ *  defaulted to when they are installed, otherwise whichever installed engines
+ *  exist. */
+export function defaultTargets(offered: SkillTargetInfo[]): SkillTargetId[] {
+  const preferred = offered
+    .filter((target) => target.id === "claude" || target.id === "codex")
+    .map((target) => target.id as SkillTargetId);
+  if (preferred.length > 0) return preferred;
+  return offered.slice(0, 1).map((target) => target.id as SkillTargetId);
+}
+
 /** Compact token count for the usage table (12.3k / 1.2M). */
 export function formatTokens(value: number | null | undefined): string {
   const tokens = value ?? 0;

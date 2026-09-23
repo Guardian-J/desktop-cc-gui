@@ -13,7 +13,7 @@ import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { CenteredSpinner, EmptyState } from "@/components/base/empty-state";
 import { ModalShell } from "@/components/dialogs";
-import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
+import { ActionFeedbackIcon, useActionFeedback, type ActionFeedback } from "@/components/base/action-feedback";
 import { FeedbackLine, type Feedback } from "./components";
 import { SkillDiscoverDialog } from "./SkillDiscoverDialog";
 import { useSkillDiscovery } from "./useSkillDiscovery";
@@ -77,6 +77,191 @@ function DiscoverRow({
   );
 }
 
+/** Search input plus the search / refresh actions. */
+function DiscoverSearchBar({
+  query,
+  onQueryChange,
+  busy,
+  onSearch,
+  refreshFeedback,
+  onRefresh,
+}: {
+  query: string;
+  onQueryChange: (value: string) => void;
+  busy: boolean;
+  onSearch: () => void;
+  refreshFeedback: ActionFeedback;
+  onRefresh: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        aria-label={t("skills.discover.searchPlaceholder")}
+        placeholder={t("skills.discover.searchPlaceholder")}
+        value={query}
+        onChange={onQueryChange}
+        onKeyDown={(event) => {
+          // IME 组合中的 Enter 是在确认候选词，不能当成提交搜索。
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter") onSearch();
+        }}
+        leadingIcon={Search}
+        size="small"
+        className="flex-1"
+      />
+      <Button variant="secondary" size="small" disabled={busy} onClick={onSearch}>
+        {t("skills.discover.search")}
+      </Button>
+      <Button variant="secondary" size="small" disabled={busy} onClick={onRefresh}>
+        <ActionFeedbackIcon icon={RefreshCw} feedback={refreshFeedback} spin />
+        {t("common.refresh")}
+      </Button>
+    </div>
+  );
+}
+
+/** Popular / repos switch, repo management and the explicit repo scan. */
+function BrowseModeBar({
+  mode,
+  onModeChange,
+  onManageRepos,
+  onScan,
+  scanBusy,
+  scanFeedback,
+}: {
+  mode: BrowseMode;
+  onModeChange: (mode: BrowseMode) => void;
+  onManageRepos: () => void;
+  onScan: () => void;
+  scanBusy: boolean;
+  scanFeedback: ActionFeedback;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-1.5">
+      <Button
+        variant={mode === "popular" ? "primary" : "secondary"}
+        size="xs"
+        onClick={() => onModeChange("popular")}
+      >
+        {t("skills.discover.popular")}
+      </Button>
+      <Button
+        variant={mode === "repos" ? "primary" : "secondary"}
+        size="xs"
+        onClick={() => onModeChange("repos")}
+      >
+        {t("skills.discover.repos")}
+      </Button>
+      <span className="flex-1" />
+      <Button variant="secondary" size="xs" onClick={onManageRepos}>
+        {t("skills.discover.manageRepos")}
+      </Button>
+      {mode === "repos" ? (
+        <Button
+          variant="secondary"
+          size="xs"
+          disabled={scanBusy}
+          onClick={onScan}
+        >
+          <ActionFeedbackIcon icon={RefreshCw} feedback={scanFeedback} spin />
+          {t("skills.discover.scan")}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Search result count + "back to popular". */
+function SearchSummaryBar({
+  totalCount,
+  onClear,
+}: {
+  totalCount: number;
+  onClear: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <p className="text-caption-1-regular text-text-tertiary">
+        {t("skills.discover.resultCount", { count: totalCount })}
+      </p>
+      <Button variant="secondary" size="xs" onClick={onClear}>
+        {t("skills.discover.clearSearch")}
+      </Button>
+    </div>
+  );
+}
+
+/** Scope hint under the browse bar (popular ranking / configured repos). */
+function DiscoverHint({
+  mode,
+  repoCount,
+  cached,
+}: {
+  mode: BrowseMode;
+  repoCount: number;
+  cached: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <p className="text-caption-1-regular text-text-tertiary">
+      {mode === "popular"
+        ? t("skills.discover.popularHint")
+        : t("skills.discover.reposHint", { count: repoCount })}
+      {cached ? ` · ${t("skills.discover.cached")}` : ""}
+    </p>
+  );
+}
+
+/** List / first-load spinner / empty state for the current browse mode. */
+function DiscoverResults({
+  listed,
+  busy,
+  isSearch,
+  installingKey,
+  installedKeys,
+  onOpen,
+  onInstall,
+}: {
+  listed: DiscoveredSkill[];
+  busy: boolean;
+  isSearch: boolean;
+  installingKey: string | null;
+  installedKeys: ReadonlySet<string>;
+  onOpen: (skill: DiscoveredSkill) => void;
+  onInstall: (skill: DiscoveredSkill) => void;
+}) {
+  const { t } = useTranslation();
+  if (busy && listed.length === 0) {
+    return <CenteredSpinner className="py-10" />;
+  }
+  if (listed.length === 0) {
+    return (
+      <EmptyState className="py-10">
+        <p className="text-body-2-regular">
+          {isSearch ? t("skills.discover.noResults") : t("skills.discover.none")}
+        </p>
+      </EmptyState>
+    );
+  }
+  return (
+    <ul className="flex w-full flex-col gap-1">
+      {listed.map((skill) => (
+        <DiscoverRow
+          key={skill.key}
+          skill={skill}
+          busy={installingKey === skill.key}
+          installed={installedKeys.has(skill.key)}
+          onOpen={() => onOpen(skill)}
+          onInstall={() => onInstall(skill)}
+        />
+      ))}
+    </ul>
+  );
+}
+
 export function DiscoverPane() {
   const { t } = useTranslation();
   const discovery = useSkillDiscovery(true);
@@ -129,112 +314,65 @@ export function DiscoverPane() {
     void discovery.runSearch(trimmed);
   };
 
+  const refresh = () => {
+    if (repoRefresh.feedback === "running") return;
+    void repoRefresh
+      .start(() =>
+        isSearch
+          ? discovery.runSearch(discovery.query.trim())
+          : mode === "popular"
+            ? discovery.loadPopular(true)
+            : discovery.loadDiscover(true),
+      )
+      .catch((err: unknown) =>
+        flash({ tone: "error", text: err instanceof Error ? err.message : String(err) }, 0),
+      );
+  };
+
+  const scan = () => {
+    if (discoverRefresh.feedback === "running") return;
+    void discoverRefresh
+      .start(() => discovery.loadDiscover(true))
+      .catch((err: unknown) =>
+        flash({ tone: "error", text: err instanceof Error ? err.message : String(err) }, 0),
+      );
+  };
+
+  const clearSearch = () => {
+    discovery.setQuery("");
+    void discovery.loadPopular(false);
+  };
+
   return (
     <div className="flex w-full flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <Input
-          aria-label={t("skills.discover.searchPlaceholder")}
-          placeholder={t("skills.discover.searchPlaceholder")}
-          value={discovery.query}
-          onChange={discovery.setQuery}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") runSearch();
-          }}
-          leadingIcon={Search}
-          size="small"
-          className="flex-1"
-        />
-        <Button variant="secondary" size="small" disabled={busy} onClick={runSearch}>
-          {t("skills.discover.search")}
-        </Button>
-        <Button
-          variant="secondary"
-          size="small"
-          disabled={busy}
-          onClick={() => {
-            if (repoRefresh.feedback === "running") return;
-            void repoRefresh
-              .start(() =>
-                isSearch
-                  ? discovery.runSearch(discovery.query.trim())
-                  : mode === "popular"
-                    ? discovery.loadPopular(true)
-                    : discovery.loadDiscover(true),
-              )
-              .catch((err: unknown) =>
-                flash({ tone: "error", text: err instanceof Error ? err.message : String(err) }, 0),
-              );
-          }}
-        >
-          <ActionFeedbackIcon icon={RefreshCw} feedback={repoRefresh.feedback} spin />
-          {t("common.refresh")}
-        </Button>
-      </div>
+      <DiscoverSearchBar
+        query={discovery.query}
+        onQueryChange={discovery.setQuery}
+        busy={busy}
+        onSearch={runSearch}
+        refreshFeedback={repoRefresh.feedback}
+        onRefresh={refresh}
+      />
 
-      {!isSearch ? (
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant={mode === "popular" ? "primary" : "secondary"}
-            size="xs"
-            onClick={() => setMode("popular")}
-          >
-            {t("skills.discover.popular")}
-          </Button>
-          <Button
-            variant={mode === "repos" ? "primary" : "secondary"}
-            size="xs"
-            onClick={() => setMode("repos")}
-          >
-            {t("skills.discover.repos")}
-          </Button>
-          <span className="flex-1" />
-          <Button variant="secondary" size="xs" onClick={() => setReposOpen(true)}>
-            {t("skills.discover.manageRepos")}
-          </Button>
-          {mode === "repos" ? (
-            <Button
-              variant="secondary"
-              size="xs"
-              disabled={discovery.discoverLoading}
-              onClick={() => {
-                if (discoverRefresh.feedback === "running") return;
-                void discoverRefresh
-                  .start(() => discovery.loadDiscover(true))
-                  .catch((err: unknown) =>
-                    flash({ tone: "error", text: err instanceof Error ? err.message : String(err) }, 0),
-                  );
-              }}
-            >
-              <ActionFeedbackIcon icon={RefreshCw} feedback={discoverRefresh.feedback} spin />
-              {t("skills.discover.scan")}
-            </Button>
-          ) : null}
-        </div>
+      {isSearch ? (
+        <SearchSummaryBar totalCount={discovery.totalCount} onClear={clearSearch} />
       ) : (
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-caption-1-regular text-text-tertiary">
-            {t("skills.discover.resultCount", { count: discovery.totalCount })}
-          </p>
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={() => {
-              discovery.setQuery("");
-              void discovery.loadPopular(false);
-            }}
-          >
-            {t("skills.discover.clearSearch")}
-          </Button>
-        </div>
+        <BrowseModeBar
+          mode={mode}
+          onModeChange={setMode}
+          onManageRepos={() => setReposOpen(true)}
+          onScan={scan}
+          scanBusy={discovery.discoverLoading}
+          scanFeedback={discoverRefresh.feedback}
+        />
       )}
 
       {isSearch ? null : (
-        <p className="text-caption-1-regular text-text-tertiary">
-          {mode === "popular"
-            ? t("skills.discover.popularHint")
-            : t("skills.discover.reposHint", { count: discovery.repos.length })}
-          {!isSearch && discovery.discoverCached ? ` · ${t("skills.discover.cached")}` : ""}
-        </p>
+        <DiscoverHint
+          mode={mode}
+          repoCount={discovery.repos.length}
+          cached={discovery.discoverCached}
+        />
       )}
 
       <FeedbackLine feedback={feedback} />
@@ -244,28 +382,15 @@ export function DiscoverPane() {
         </p>
       ) : null}
 
-      {busy && listed.length === 0 ? (
-        <CenteredSpinner className="py-10" />
-      ) : listed.length === 0 ? (
-        <EmptyState className="py-10">
-          <p className="text-body-2-regular">
-            {isSearch ? t("skills.discover.noResults") : t("skills.discover.none")}
-          </p>
-        </EmptyState>
-      ) : (
-        <ul className="flex w-full flex-col gap-1">
-          {listed.map((skill) => (
-            <DiscoverRow
-              key={skill.key}
-              skill={skill}
-              busy={discovery.installingKey === skill.key}
-              installed={installedKeys.has(skill.key)}
-              onOpen={() => setDetailKey(skill.key)}
-              onInstall={() => void install(skill)}
-            />
-          ))}
-        </ul>
-      )}
+      <DiscoverResults
+        listed={listed}
+        busy={busy}
+        isSearch={isSearch}
+        installingKey={discovery.installingKey}
+        installedKeys={installedKeys}
+        onOpen={(skill) => setDetailKey(skill.key)}
+        onInstall={(skill) => void install(skill)}
+      />
 
       {detailSkill ? (
         <SkillDiscoverDialog

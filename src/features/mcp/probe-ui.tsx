@@ -4,6 +4,7 @@
  * 状态分两处表达：徽标在条目行（一眼看全），详情区给出错误原因、服务自报
  * 名称、工具清单与耗时。设置页与 `/mcp` 面板共用同一份结果（`useMcpProbeStore`）。
  */
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import Activity from "lucide-react/dist/esm/icons/activity";
 import Check from "lucide-react/dist/esm/icons/check";
@@ -111,13 +112,16 @@ export function ProbeDetail({
   const pending = useMcpProbeStore((state) => Boolean(state.pending[entry.id]));
   const probe = useMcpProbeStore((state) => state.probe);
   const state = probeStateFor(results, entry);
-  const checkedAt = state
-    ? new Intl.DateTimeFormat(i18n.language, {
+  const timeFormat = useMemo(
+    () =>
+      new Intl.DateTimeFormat(i18n.language, {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
-      }).format(new Date(state.checkedAt))
-    : null;
+      }),
+    [i18n.language],
+  );
+  const checkedAt = state ? timeFormat.format(new Date(state.checkedAt)) : null;
   return (
     <div className="flex flex-col gap-2 rounded-2lg border border-separator-border px-3 py-2">
       <div className="flex items-center gap-2">

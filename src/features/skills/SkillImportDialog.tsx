@@ -16,38 +16,7 @@ import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { ModalShell } from "@/components/dialogs";
 import { pickDirectory } from "@/lib/platform";
 import type { SkillTargetId, SkillTargetInfo } from "./types";
-
-/** Longest matching root wins, so a nested root never shadows its parent. */
-export function relativeToRoot(
-  picked: string,
-  targets: SkillTargetInfo[],
-): { directory: string; target: SkillTargetInfo } | null {
-  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "");
-  const normalized = normalize(picked);
-  let best: { directory: string; target: SkillTargetInfo } | null = null;
-  for (const target of targets) {
-    const root = normalize(target.path);
-    if (!root) continue;
-    if (normalized === root) continue;
-    if (normalized.startsWith(`${root}/`)) {
-      const directory = normalized.slice(root.length + 1);
-      if (!best || root.length > normalize(best.target.path).length) {
-        best = { directory, target };
-      }
-    }
-  }
-  return best;
-}
-
-/** Pre-selected engines: the two CLIs the hub has always defaulted to when
- *  they are installed, otherwise whichever installed engines exist. */
-export function defaultTargets(offered: SkillTargetInfo[]): SkillTargetId[] {
-  const preferred = offered
-    .filter((target) => target.id === "claude" || target.id === "codex")
-    .map((target) => target.id as SkillTargetId);
-  if (preferred.length > 0) return preferred;
-  return offered.slice(0, 1).map((target) => target.id as SkillTargetId);
-}
+import { defaultTargets, relativeToRoot } from "./utils";
 
 export function SkillImportDialog({
   targets,
@@ -71,6 +40,7 @@ export function SkillImportDialog({
   const offeredList = offered.length > 0 ? offered : targets;
   const [directory, setDirectory] = useState("");
   const [selected, setSelected] = useState<SkillTargetId[]>(() => defaultTargets(offeredList));
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
   const [pickerError, setPickerError] = useState<string | null>(null);
 
   const roots = useMemo(
@@ -134,7 +104,7 @@ export function SkillImportDialog({
         {offeredList.map((target) => (
           <Checkbox
             key={target.id}
-            isSelected={selected.includes(target.id as SkillTargetId)}
+            isSelected={selectedSet.has(target.id as SkillTargetId)}
             onChange={(next) => toggleTarget(target.id as SkillTargetId, next)}
           >
             <span className="flex items-center gap-2">

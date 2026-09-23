@@ -22,7 +22,7 @@ import { Switch } from "@/components/base/switch/switch";
 import { CenteredSpinner, EmptyState } from "@/components/base/empty-state";
 import { Chip } from "@/components/base/chips/chip";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
-import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
+import { ActionFeedbackIcon, useActionFeedback, type ActionFeedback } from "@/components/base/action-feedback";
 import { LocalOnlyNotice } from "@/components/application/settings/local-only-notice";
 import { useChatStore } from "@/features/chat/store";
 import { isWeb } from "@/lib/transport";
@@ -40,6 +40,7 @@ import type {
   McpConfigEntry,
   McpEngineId,
   McpEngineInventory,
+  McpRuntimeEntry,
   McpRuntimeSection,
   McpSourceInfo,
 } from "./types";
@@ -169,6 +170,53 @@ export function McpConfigList({
   );
 }
 
+function RuntimeEntryRow({ entry }: { entry: McpRuntimeEntry }) {
+  const { t } = useTranslation();
+  return (
+    <li className="flex items-center gap-2 rounded-2lg border border-separator-border px-3 py-2">
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate text-body-regular text-text-primary">{entry.name}</span>
+        {entry.builtin ? (
+          <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-800/60">
+            {t("mcp.builtin")}
+          </span>
+        ) : null}
+      </span>
+      <span className="shrink-0 text-caption-1-regular text-text-secondary">
+        {entry.toolNames.length > 0
+          ? t("mcp.runtime.tools", { count: entry.toolNames.length })
+          : (entry.status ?? t("mcp.runtime.statusUnknown"))}
+      </span>
+    </li>
+  );
+}
+
+function RuntimeEntryList({
+  entries,
+  searching,
+}: {
+  entries: McpRuntimeEntry[];
+  searching: boolean;
+}) {
+  const { t } = useTranslation();
+  if (entries.length === 0) {
+    return (
+      <EmptyState className="py-4">
+        <p className="text-body-2-regular">
+          {searching ? t("mcp.runtime.noMatch") : t("mcp.runtime.empty")}
+        </p>
+      </EmptyState>
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-1">
+      {entries.map((entry) => (
+        <RuntimeEntryRow key={entry.name} entry={entry} />
+      ))}
+    </ul>
+  );
+}
+
 export function RuntimeBlock({
   section,
   filter,
@@ -179,21 +227,38 @@ export function RuntimeBlock({
   query: string;
 }) {
   const { t, i18n } = useTranslation();
+  // Rendering a formatter is what is slow; the locale change is rare enough
+  // that rebuilding on it is fine.
+  const timeFormat = useMemo(
+    () =>
+      new Intl.DateTimeFormat(i18n.language, {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [i18n.language],
+  );
   if (filter === "config") return null;
   const needle = query.trim().toLowerCase();
   const entries = needle
     ? section.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
     : section.entries;
   const collected = section.collectedAt
-    ? new Intl.DateTimeFormat(i18n.language, {
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(new Date(section.collectedAt))
+    ? timeFormat.format(new Date(section.collectedAt))
     : null;
+  const ready = section.status === "ready" || section.status === "session_ended";
   return (
     <section className="flex flex-col gap-2">
       <SectionTitle>{t("mcp.runtime.title")}</SectionTitle>
-      {section.status !== "ready" && section.status !== "session_ended" ? (
+      {ready ? (
+        <>
+          <p className="text-caption-1-regular text-text-tertiary">
+            {t(`mcp.runtime.status.${section.status}`)}
+            {section.sessionId ? ` · ${t("mcp.runtime.session", { id: section.sessionId })}` : ""}
+            {collected ? ` · ${t("mcp.runtime.collectedAt", { time: collected })}` : ""}
+          </p>
+          <RuntimeEntryList entries={entries} searching={Boolean(needle)} />
+        </>
+      ) : (
         <p
           className={cx(
             "rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular",
@@ -204,46 +269,6 @@ export function RuntimeBlock({
         >
           {section.reason ?? t(`mcp.runtime.status.${section.status}`)}
         </p>
-      ) : (
-        <>
-          <p className="text-caption-1-regular text-text-tertiary">
-            {t(`mcp.runtime.status.${section.status}`)}
-            {section.sessionId ? ` · ${t("mcp.runtime.session", { id: section.sessionId })}` : ""}
-            {collected ? ` · ${t("mcp.runtime.collectedAt", { time: collected })}` : ""}
-          </p>
-          {entries.length === 0 ? (
-            <EmptyState className="py-4">
-              <p className="text-body-2-regular">
-                {needle ? t("mcp.runtime.noMatch") : t("mcp.runtime.empty")}
-              </p>
-            </EmptyState>
-          ) : (
-            <ul className="flex flex-col gap-1">
-              {entries.map((entry) => (
-                <li
-                  key={entry.name}
-                  className="flex items-center gap-2 rounded-2lg border border-separator-border px-3 py-2"
-                >
-                  <span className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="truncate text-body-regular text-text-primary">
-                      {entry.name}
-                    </span>
-                    {entry.builtin ? (
-                      <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-800/60">
-                        {t("mcp.builtin")}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 text-caption-1-regular text-text-secondary">
-                    {entry.toolNames.length > 0
-                      ? t("mcp.runtime.tools", { count: entry.toolNames.length })
-                      : (entry.status ?? t("mcp.runtime.statusUnknown"))}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
       )}
     </section>
   );
@@ -296,12 +321,283 @@ function SupportNote({ engine }: { engine: McpEngineInventory }) {
   return null;
 }
 
-export function McpSection() {
+/** Engine tab strip: every engine gets a tab, configured count or not. */
+function EngineTabs({
+  engines,
+  activeId,
+  onSelect,
+}: {
+  engines: McpEngineInventory[];
+  activeId: McpEngineId | null;
+  onSelect: (id: McpEngineId) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {engines.map((item) => (
+        <Chip
+          key={item.id}
+          selected={activeId === item.id}
+          title={
+            item.config.entries.length > 0
+              ? t("mcp.tabCount", { count: item.config.entries.length })
+              : engineLabel(item.id)
+          }
+          onClick={() => onSelect(item.id)}
+        >
+          <span className="flex items-center gap-1">
+            <EngineIcon engine={item.id} size={12} />
+            {engineLabel(item.id)}
+            {item.config.entries.length > 0 ? (
+              <span className="text-text-tertiary">{item.config.entries.length}</span>
+            ) : null}
+          </span>
+        </Chip>
+      ))}
+    </div>
+  );
+}
+
+/** Search, 「检测全部」 and refresh; the parent owns the refresh feedback cycle. */
+function McpToolbar({
+  query,
+  onQueryChange,
+  loading,
+  probingAll,
+  probeableCount,
+  onProbeAll,
+  refreshFeedback,
+  onRefresh,
+}: {
+  query: string;
+  onQueryChange: (value: string) => void;
+  loading: boolean;
+  probingAll: boolean;
+  probeableCount: number;
+  onProbeAll: () => void;
+  refreshFeedback: ActionFeedback;
+  onRefresh: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        aria-label={t("mcp.searchPlaceholder")}
+        placeholder={t("mcp.searchPlaceholder")}
+        value={query}
+        onChange={onQueryChange}
+        leadingIcon={Search}
+        size="small"
+        className="flex-1"
+      />
+      <Button
+        variant="secondary"
+        size="small"
+        title={t("mcp.probe.hint")}
+        disabled={loading || probingAll || probeableCount === 0}
+        leadingIcon={Activity}
+        onClick={onProbeAll}
+      >
+        {t("mcp.probe.checkAll")}
+      </Button>
+      <Button
+        variant="secondary"
+        size="small"
+        disabled={loading || refreshFeedback === "running"}
+        onClick={onRefresh}
+      >
+        <ActionFeedbackIcon icon={RefreshCw} feedback={refreshFeedback} spin />
+        {t("common.refresh")}
+      </Button>
+    </div>
+  );
+}
+
+/** Kind chips plus the config/runtime counts and the last probe time. */
+function KindFilterBar({
+  kind,
+  onKindChange,
+  configCount,
+  runtimeCount,
+  checkedAt,
+}: {
+  kind: KindFilter;
+  onKindChange: (kind: KindFilter) => void;
+  configCount: number;
+  runtimeCount: number;
+  checkedAt: number | null;
+}) {
   const { t, i18n } = useTranslation();
+  const timeFormat = useMemo(
+    () =>
+      new Intl.DateTimeFormat(i18n.language, {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [i18n.language],
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {(["all", "config", "runtime"] as const).map((value) => (
+        <Chip key={value} selected={kind === value} onClick={() => onKindChange(value)}>
+          {t(`mcp.filter.${value}`)}
+        </Chip>
+      ))}
+      <span className="ml-1 text-caption-1-regular text-text-tertiary">
+        {t("mcp.count", { config: configCount, runtime: runtimeCount })}
+        {checkedAt
+          ? ` · ${t("mcp.probe.lastChecked", {
+              time: timeFormat.format(new Date(checkedAt)),
+            })}`
+          : ""}
+      </span>
+    </div>
+  );
+}
+
+/** First-paint spinner and load errors; background reloads keep the list. */
+function InventoryStatus({
+  loading,
+  hasInventory,
+  error,
+  onReload,
+}: {
+  loading: boolean;
+  hasInventory: boolean;
+  error: string | { message: string } | null;
+  onReload: () => void;
+}) {
+  const { t } = useTranslation();
+  if (loading && !hasInventory) {
+    return <CenteredSpinner className="py-10" />;
+  }
+  if (typeof error === "string") {
+    return (
+      <div className="flex flex-col items-start gap-2 py-6">
+        <p role="alert" className="text-body-2-regular text-text-error-primary">
+          {error}
+        </p>
+        <Button variant="secondary" size="small" onClick={onReload}>
+          {t("common.refresh")}
+        </Button>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <p role="alert" className="text-body-2-regular text-text-error-primary">
+        {error.message}
+      </p>
+    );
+  }
+  return null;
+}
+
+/** Toggle/probe failures, shown under the inventory status block. */
+function InventoryAlerts({
+  toggleError,
+  probeError,
+}: {
+  toggleError: string | null;
+  probeError: string | null;
+}) {
+  return (
+    <>
+      {toggleError ? (
+        <p role="alert" className="text-body-2-regular text-text-error-primary">
+          {toggleError}
+        </p>
+      ) : null}
+      {probeError ? (
+        <p role="alert" className="text-body-2-regular text-text-error-primary">
+          {probeError}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/** Support statement, missing-CLI note and config parse errors. */
+function EngineNotices({ engine }: { engine: McpEngineInventory }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <SupportNote engine={engine} />
+      {engine.support !== "none" && !engine.available ? (
+        <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
+          {t("mcp.notInstalled")}
+        </p>
+      ) : null}
+      {engine.config.errors.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {engine.config.errors.map((error) => (
+            <li
+              key={`${error.source}:${error.path}`}
+              className="rounded-2lg border border-separator-border px-3 py-2 text-caption-1-regular"
+            >
+              <span className="text-text-error-primary">{error.message}</span>
+              <span className="ml-2 break-all font-mono text-text-tertiary">{error.path}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+}
+
+/** Config list + empty state + source hint for the selected engine. */
+function ConfigSection({
+  engine,
+  entries,
+  pendingId,
+  selectedId,
+  workspacePath,
+  searching,
+  noEntries,
+  onOpen,
+  onToggle,
+}: {
+  engine: McpEngineInventory;
+  entries: McpConfigEntry[];
+  pendingId: string | null;
+  selectedId: string | null;
+  workspacePath: string | null;
+  searching: boolean;
+  noEntries: boolean;
+  onOpen: (entry: McpConfigEntry) => void;
+  onToggle: (entry: McpConfigEntry, enabled: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <section className="flex flex-col gap-2">
+      <SectionTitle>{t("mcp.config.title")}</SectionTitle>
+      {entries.length === 0 ? (
+        <>
+          <EmptyState className="py-6">
+            <p className="text-body-2-regular">{t("mcp.config.empty")}</p>
+          </EmptyState>
+          {noEntries && !searching ? <McpSourceHint sources={engine.sources} /> : null}
+        </>
+      ) : (
+        <McpConfigList
+          entries={entries}
+          pendingId={pendingId}
+          selectedId={selectedId}
+          workspacePath={workspacePath}
+          onOpen={onOpen}
+          onToggle={onToggle}
+        />
+      )}
+    </section>
+  );
+}
+
+export function McpSection() {
+  const { t } = useTranslation();
   const activeWorkspace = useChatStore((state) => state.active?.workspacePath ?? null);
   const store = useMcpInventory(activeWorkspace);
   const [engineId, setEngineId] = useState<McpEngineId>(
-    (engineIdFromHash(window.location.hash) as McpEngineId | null) ?? "claude",
+    () => (engineIdFromHash(window.location.hash) as McpEngineId | null) ?? "claude",
   );
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<KindFilter>("all");
@@ -313,7 +609,10 @@ export function McpSection() {
   const probeError = useMcpProbeStore((state) => state.error);
   const probeResults = useMcpProbeStore((state) => state.results);
 
-  const engines = store.inventory?.engines ?? [];
+  // Inventory reloads replace the object; memoizing the engines array is what
+  // keeps the `engine` lookup (and everything derived from it) stable between
+  // renders that do not change the inventory.
+  const engines = useMemo(() => store.inventory?.engines ?? [], [store.inventory]);
   const engine = useMemo(
     () => engines.find((item) => item.id === engineId) ?? engines[0] ?? null,
     [engines, engineId],
@@ -348,6 +647,11 @@ export function McpSection() {
     });
   };
 
+  const handleRefresh = () => {
+    if (refreshAction.feedback === "running") return;
+    void refreshAction.start(() => store.reload()).catch(() => undefined);
+  };
+
   // Desktop-only (web dispatch excludes mcp_inventory / mcp_set_enabled).
   if (isWeb) {
     return <LocalOnlyNotice message={t("mcp.desktopOnly")} />;
@@ -355,174 +659,57 @@ export function McpSection() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {engines.map((item) => (
-          <Chip
-            key={item.id}
-            selected={engine?.id === item.id}
-            title={
-              item.config.entries.length > 0
-                ? t("mcp.tabCount", { count: item.config.entries.length })
-                : engineLabel(item.id)
-            }
-            onClick={() => {
-              setEngineId(item.id);
-              setSelected(null);
-            }}
-          >
-            <span className="flex items-center gap-1">
-              <EngineIcon engine={item.id} size={12} />
-              {engineLabel(item.id)}
-              {item.config.entries.length > 0 ? (
-                <span className="text-text-tertiary">{item.config.entries.length}</span>
-              ) : null}
-            </span>
-          </Chip>
-        ))}
-      </div>
-
-      <div className="flex items-center gap-2">
-        <Input
-          aria-label={t("mcp.searchPlaceholder")}
-          placeholder={t("mcp.searchPlaceholder")}
-          value={query}
-          onChange={setQuery}
-          leadingIcon={Search}
-          size="small"
-          className="flex-1"
-        />
-        <Button
-          variant="secondary"
-          size="small"
-          title={t("mcp.probe.hint")}
-          disabled={store.loading || probingAll || probeableCount === 0}
-          leadingIcon={Activity}
-          onClick={() =>
-            void probeAll(engine?.config.entries ?? [], activeWorkspace, {
-              force: true,
-            })
-          }
-        >
-          {t("mcp.probe.checkAll")}
-        </Button>
-        <Button
-          variant="secondary"
-          size="small"
-          disabled={store.loading || refreshAction.feedback === "running"}
-          onClick={() => {
-            if (refreshAction.feedback === "running") return;
-            void refreshAction.start(() => store.reload()).catch(() => undefined);
-          }}
-        >
-          <ActionFeedbackIcon icon={RefreshCw} feedback={refreshAction.feedback} spin />
-          {t("common.refresh")}
-        </Button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1.5">
-        {(["all", "config", "runtime"] as const).map((value) => (
-          <Chip
-            key={value}
-            selected={kind === value}
-            onClick={() => setKind(value)}
-          >
-            {t(`mcp.filter.${value}`)}
-          </Chip>
-        ))}
-        <span className="ml-1 text-caption-1-regular text-text-tertiary">
-          {t("mcp.count", {
-            config: engine?.config.entries.length ?? 0,
-            runtime: engine?.runtime.entries.length ?? 0,
-          })}
-          {checkedAt
-            ? ` · ${t("mcp.probe.lastChecked", {
-                time: new Intl.DateTimeFormat(i18n.language, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }).format(new Date(checkedAt)),
-              })}`
-            : ""}
-        </span>
-      </div>
-
-      {store.loading && !store.inventory ? (
-        <CenteredSpinner className="py-10" />
-      ) : typeof store.error === "string" ? (
-        <div className="flex flex-col items-start gap-2 py-6">
-          <p role="alert" className="text-body-2-regular text-text-error-primary">
-            {store.error}
-          </p>
-          <Button variant="secondary" size="small" onClick={() => void store.reload()}>
-            {t("common.refresh")}
-          </Button>
-        </div>
-      ) : store.error ? (
-        <p role="alert" className="text-body-2-regular text-text-error-primary">
-          {store.error.message}
-        </p>
-      ) : null}
-
-      {toggleError ? (
-        <p role="alert" className="text-body-2-regular text-text-error-primary">
-          {toggleError}
-        </p>
-      ) : null}
-
-      {probeError ? (
-        <p role="alert" className="text-body-2-regular text-text-error-primary">
-          {probeError}
-        </p>
-      ) : null}
-
-      {engine ? <SupportNote engine={engine} /> : null}
-
-      {engine && engine.support !== "none" && !engine.available ? (
-        <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
-          {t("mcp.notInstalled")}
-        </p>
-      ) : null}
-
-      {engine && engine.config.errors.length > 0 ? (
-        <ul className="flex flex-col gap-1">
-          {engine.config.errors.map((error) => (
-            <li
-              key={`${error.source}:${error.path}`}
-              className="rounded-2lg border border-separator-border px-3 py-2 text-caption-1-regular"
-            >
-              <span className="text-text-error-primary">{error.message}</span>
-              <span className="ml-2 break-all font-mono text-text-tertiary">{error.path}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
+      <EngineTabs
+        engines={engines}
+        activeId={engine?.id ?? null}
+        onSelect={(id) => {
+          setEngineId(id);
+          setSelected(null);
+        }}
+      />
+      <McpToolbar
+        query={query}
+        onQueryChange={setQuery}
+        loading={store.loading}
+        probingAll={probingAll}
+        probeableCount={probeableCount}
+        onProbeAll={() =>
+          void probeAll(engine?.config.entries ?? [], activeWorkspace, { force: true })
+        }
+        refreshFeedback={refreshAction.feedback}
+        onRefresh={handleRefresh}
+      />
+      <KindFilterBar
+        kind={kind}
+        onKindChange={setKind}
+        configCount={engine?.config.entries.length ?? 0}
+        runtimeCount={engine?.runtime.entries.length ?? 0}
+        checkedAt={checkedAt}
+      />
+      <InventoryStatus
+        loading={store.loading}
+        hasInventory={Boolean(store.inventory)}
+        error={store.error}
+        onReload={() => void store.reload()}
+      />
+      <InventoryAlerts toggleError={toggleError} probeError={probeError} />
+      {engine ? <EngineNotices engine={engine} /> : null}
       {engine && engine.support !== "none" && showConfig ? (
-        <section className="flex flex-col gap-2">
-          <SectionTitle>{t("mcp.config.title")}</SectionTitle>
-          {filteredEntries.length === 0 ? (
-            <>
-              <EmptyState className="py-6">
-                <p className="text-body-2-regular">{t("mcp.config.empty")}</p>
-              </EmptyState>
-              {noEntries && !searching ? <McpSourceHint sources={engine.sources} /> : null}
-            </>
-          ) : (
-            <McpConfigList
-              entries={filteredEntries}
-              pendingId={store.pendingId}
-              selectedId={selected?.id ?? null}
-              workspacePath={activeWorkspace}
-              onOpen={setSelected}
-              onToggle={handleToggle}
-            />
-          )}
-        </section>
+        <ConfigSection
+          engine={engine}
+          entries={filteredEntries}
+          pendingId={store.pendingId}
+          selectedId={selected?.id ?? null}
+          workspacePath={activeWorkspace}
+          searching={searching}
+          noEntries={noEntries}
+          onOpen={setSelected}
+          onToggle={handleToggle}
+        />
       ) : null}
-
       {engine && engine.support !== "none" ? (
         <RuntimeBlock section={engine.runtime} filter={kind} query={query} />
       ) : null}
-
       {selected ? (
         <McpDetailDialog
           entry={selected}

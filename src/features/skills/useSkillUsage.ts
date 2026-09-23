@@ -51,7 +51,7 @@ export function useSkillUsage(active: boolean): SkillUsageStore {
       if (!canCommit()) return;
       setUsageError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (canCommit()) setUsageLoading(false);
+      setUsageLoading((value) => (canCommit() ? false : value));
     }
     try {
       const payload = await skillsHubApi.activity(50);
@@ -61,7 +61,7 @@ export function useSkillUsage(active: boolean): SkillUsageStore {
       if (!canCommit()) return;
       setActivityError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (canCommit()) setActivityLoading(false);
+      setActivityLoading((value) => (canCommit() ? false : value));
     }
   }, []);
 

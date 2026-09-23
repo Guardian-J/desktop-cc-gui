@@ -17,6 +17,85 @@ import { exportPerformanceReport } from "@/lib/performance-export";
 import { getPerformancePreference, subscribePerformancePreference, setPerformanceEnabled, synchronizePerformancePreference } from "@/lib/performance-preference";
 import { isReactScanEnabled, setReactScanEnabled } from "@/lib/react-scan";
 
+function DiagnosticsHeader({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center justify-between border-b border-separator-border px-4 py-3">
+      <h3 className="text-title-3-semibold text-text-primary">{t("diagnostics.title")}</h3>
+      <Button
+        size="small"
+        variant="ghost"
+        leadingIcon={X}
+        aria-label={t("common.close")}
+        onClick={onClose}
+      />
+    </div>
+  );
+}
+
+/** Preference / save result lines, right under the toggle. */
+function DiagnosticsPreferenceMessages({
+  enabled,
+  saveFailed,
+}: {
+  enabled: boolean | null;
+  saveFailed: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {enabled === null && <p role="status">{t("diagnostics.preferenceUnavailable")}</p>}
+      {enabled === false && <p role="status">{t("diagnostics.disabled")}</p>}
+      {saveFailed && <p role="alert">{t("diagnostics.saveFailed")}</p>}
+    </>
+  );
+}
+
+/** Footer buttons: export the report and copy the summary. */
+function DiagnosticsActions({
+  hasReport,
+  hasText,
+  busy,
+  exporting,
+  copying,
+  copied,
+  onExport,
+  onCopy,
+}: {
+  hasReport: boolean;
+  hasText: boolean;
+  busy: boolean;
+  exporting: boolean;
+  copying: boolean;
+  copied: boolean;
+  onExport: () => void;
+  onCopy: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      <Button
+        size="small"
+        variant="secondary"
+        leadingIcon={Download}
+        disabled={!hasReport || exporting || busy}
+        onClick={onExport}
+      >
+        {t("diagnostics.export")}
+      </Button>
+      <Button
+        size="small"
+        variant="secondary"
+        leadingIcon={copied ? Check : Copy}
+        disabled={!hasText || copying}
+        onClick={onCopy}
+      >
+        {copied ? t("common.copied") : t("diagnostics.copy")}
+      </Button>
+    </div>
+  );
+}
+
 export function PerformanceDiagnosticsDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
@@ -69,7 +148,7 @@ export function PerformanceDiagnosticsDialog({ onClose }: { onClose: () => void 
     setSaveFailed(false);
     try { await setPerformanceEnabled(next); }
     catch { if (mounted.current) setSaveFailed(true); }
-    finally { if (mounted.current) setSaving(false); }
+    finally { setSaving((value) => (mounted.current ? false : value)); }
   };
 
   const exportFile = async () => {
@@ -111,23 +190,28 @@ export function PerformanceDiagnosticsDialog({ onClose }: { onClose: () => void 
       className="flex max-h-[calc(100dvh-64px)] w-[640px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl p-0"
       dialogClassName="flex min-h-0 flex-col"
     >
-      <div className="flex items-center justify-between border-b border-separator-border px-4 py-3">
-        <h3 className="text-title-3-semibold text-text-primary">{t("diagnostics.title")}</h3>
-        <Button size="small" variant="ghost" leadingIcon={X} aria-label={t("common.close")} onClick={onClose} />
-      </div>
+      <DiagnosticsHeader onClose={onClose} />
       <div className="flex min-h-0 flex-col gap-3 overflow-y-auto p-4">
         <p className="text-body-regular text-text-secondary">{t("diagnostics.description")}</p>
         <div className="flex items-center justify-between gap-3">
           <span className="text-body-regular text-text-primary">{t("diagnostics.enabled")}</span>
-          <Switch size="sm" aria-label={t("diagnostics.enabled")} isSelected={enabled === true} isDisabled={enabled === null || saving || exporting || copying} onChange={(next) => void toggle(next)} />
+          <Switch
+            size="sm"
+            aria-label={t("diagnostics.enabled")}
+            isSelected={enabled === true}
+            isDisabled={enabled === null || saving || exporting || copying}
+            onChange={(next) => void toggle(next)}
+          />
         </div>
         <p className="text-caption-1-regular text-text-tertiary">{t("diagnostics.toggleHint")}</p>
-        {enabled === null && <p role="status">{t("diagnostics.preferenceUnavailable")}</p>}
-        {enabled === false && <p role="status">{t("diagnostics.disabled")}</p>}
-        {saveFailed && <p role="alert">{t("diagnostics.saveFailed")}</p>}
+        <DiagnosticsPreferenceMessages enabled={enabled} saveFailed={saveFailed} />
         <p className="text-caption-1-regular text-text-tertiary">{t("diagnostics.privacy")}</p>
         <p className="text-caption-1-regular text-text-tertiary">{t("diagnostics.limits")}</p>
-        {partial && <p role="status" className="text-body-regular text-text-secondary">{t("diagnostics.partial")}</p>}
+        {partial && (
+          <p role="status" className="text-body-regular text-text-secondary">
+            {t("diagnostics.partial")}
+          </p>
+        )}
         <textarea
           aria-label={t("diagnostics.report")}
           readOnly
@@ -136,16 +220,26 @@ export function PerformanceDiagnosticsDialog({ onClose }: { onClose: () => void 
           spellCheck={false}
           className="h-52 min-h-32 w-full shrink-0 resize-y rounded-lg border border-separator-border bg-background-secondary-default p-3 font-mono text-[11px] text-text-secondary outline-none focus:border-border-focus-ring"
         />
-        {copyFailed && <p role="alert" className="text-body-regular text-text-secondary">{t("diagnostics.copyFailed")}</p>}
-        {exportResult && <p role={exportResult === "failed" ? "alert" : "status"}>{t(`diagnostics.${exportResult}`)}</p>}
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button size="small" variant="secondary" leadingIcon={Download} disabled={!report || exporting || saving} onClick={() => void exportFile()}>
-            {t("diagnostics.export")}
-          </Button>
-          <Button size="small" variant="secondary" leadingIcon={copied ? Check : Copy} disabled={!text || copying} onClick={() => void copy()}>
-            {copied ? t("common.copied") : t("diagnostics.copy")}
-          </Button>
-        </div>
+        {copyFailed && (
+          <p role="alert" className="text-body-regular text-text-secondary">
+            {t("diagnostics.copyFailed")}
+          </p>
+        )}
+        {exportResult && (
+          <p role={exportResult === "failed" ? "alert" : "status"}>
+            {t(`diagnostics.${exportResult}`)}
+          </p>
+        )}
+        <DiagnosticsActions
+          hasReport={report !== null}
+          hasText={text.length > 0}
+          busy={saving}
+          exporting={exporting}
+          copying={copying}
+          copied={copied}
+          onExport={() => void exportFile()}
+          onCopy={() => void copy()}
+        />
       </div>
     </ModalShell>
   );

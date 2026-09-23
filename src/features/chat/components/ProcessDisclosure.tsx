@@ -292,6 +292,23 @@ function useProcessExpansion(
   return { expanded, toggleExpanded };
 }
 
+/** Count the first `limit` tool calls the entrance animation has not played for
+ *  yet; a bounded scan keeps large processes cheap. */
+function countUnseenTools(
+  items: ProcessItem[],
+  processId: number,
+  seenTools: Set<string>,
+  limit = 2,
+): number {
+  let count = 0;
+  for (let index = 0; index < items.length && count < limit; index++) {
+    if (items[index].type === "tool" && !seenTools.has(toolEntranceKey(processId, index))) {
+      count++;
+    }
+  }
+  return count;
+}
+
 /** Collapsed summary line: a lone thinking block is titled by the header
  * itself; mixed runs read "思考 N 次 工具调用 M 次". */
 function processSummaryLabel(
@@ -344,10 +361,10 @@ function ProcessDisclosureBody({
     () => groupProcessSections(items.slice(start, end), start),
     [items, start, end],
   );
-  const searchItemIndex = searchTarget?.itemIndex;
+  const searchItemIndex = searchTarget?.itemIndex ?? null;
   const searchRequestKey = searchTarget?.requestKey;
   useEffect(() => {
-    if (!expanded || searchItemIndex === undefined || Math.floor(searchItemIndex / PROCESS_PAGE_SIZE) !== page) return;
+    if (!expanded || searchItemIndex === null || Math.floor(searchItemIndex / PROCESS_PAGE_SIZE) !== page) return;
     const frame = requestAnimationFrame(() => {
       const marker = bodyRef.current?.querySelector<HTMLElement>(`[data-process-item-index="${searchItemIndex}"]`);
       const target = marker?.closest("li") ?? marker;
@@ -448,10 +465,9 @@ export const ProcessDisclosure = memo(function ProcessDisclosure({
   const { expanded, toggleExpanded } = useProcessExpansion(autoExpand, turnLive, hasLiveThinking, thinkingAutoCollapse, searchTarget?.requestKey);
   const reduceMotion = useReducedMotion() ?? false;
   const largeProcess = items.length > PROCESS_PAGE_SIZE;
-  let unseenToolCount = 0;
-  for (let index = 0; !largeProcess && index < items.length && unseenToolCount < 2; index++) {
-    if (items[index].type === "tool" && !seenTools.has(toolEntranceKey(processId, index))) unseenToolCount++;
-  }
+  const unseenToolCount = largeProcess
+    ? 0
+    : countUnseenTools(items, processId, seenTools);
   const skipProcessAnimation = reduceMotion || largeProcess || unseenToolCount > 1;
   // Mark after paint, not at animation complete: a virtualizer remount
   // mid-entrance must skip the replay. New keys still play on this first

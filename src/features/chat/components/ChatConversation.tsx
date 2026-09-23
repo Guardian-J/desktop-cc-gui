@@ -67,6 +67,41 @@ const SessionTimeline = memo(function SessionTimeline({
 });
 
 
+/** Timeline (with the session error banner) for an open session, or the
+ *  no-session placeholder. */
+function ConversationBody({
+  active,
+  hasSession,
+  sessionError,
+  sessionKey: key,
+  onDismissError,
+  onLoadEarlier,
+}: {
+  active: ActiveSession | null;
+  hasSession: boolean;
+  sessionError: string | null;
+  sessionKey: string;
+  onDismissError: () => void;
+  onLoadEarlier: () => void;
+}) {
+  const { t } = useTranslation();
+  if (!active || !hasSession) {
+    return <EmptyState className="text-body-medium">{t("chat.selectSession")}</EmptyState>;
+  }
+  return (
+    <>
+      {sessionError && (
+        <ErrorBanner className="mx-4 mt-3" message={sessionError} onDismiss={onDismissError} />
+      )}
+      <SessionTimeline
+        sessionKey={key}
+        workspacePath={active.workspacePath}
+        onLoadEarlier={onLoadEarlier}
+      />
+    </>
+  );
+}
+
 /** Composer menu slots (add / CLI / permission) plus the all-engines-disabled
  * state, memoized so per-keystroke draft updates don't rebuild the menus. */
 function useConversationMenus({
@@ -444,26 +479,14 @@ export const ChatConversation = memo(function ChatConversation({
 
   return (
     <>
-      {active && hasSession ? (
-        <>
-          {sessionError && (
-            <ErrorBanner
-              className="mx-4 mt-3"
-              message={sessionError}
-              onDismiss={() => dismissSessionError(key)}
-            />
-          )}
-          <SessionTimeline
-            sessionKey={key}
-            workspacePath={active.workspacePath}
-            onLoadEarlier={handleLoadEarlier}
-          />
-        </>
-      ) : (
-        <EmptyState className="text-body-medium">
-          {t("chat.selectSession")}
-        </EmptyState>
-      )}
+      <ConversationBody
+        active={active}
+        hasSession={hasSession}
+        sessionError={sessionError}
+        sessionKey={key}
+        onDismissError={() => dismissSessionError(key)}
+        onLoadEarlier={handleLoadEarlier}
+      />
 
       <ConversationFooter
         active={active}

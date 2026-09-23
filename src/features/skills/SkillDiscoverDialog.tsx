@@ -21,6 +21,75 @@ interface LoadedContent extends SkillRemoteContent {
   code?: string;
 }
 
+/** SKILL.md body states: loading, loaded (with truncation note), or failed
+ *  with retry + repo fallback. */
+function DiscoverContent({
+  loading,
+  content,
+  error,
+  notFound,
+  repoUrl,
+  onRetry,
+}: {
+  loading: boolean;
+  content: LoadedContent | null;
+  error: { code?: string; message: string } | null;
+  notFound: boolean;
+  repoUrl: string;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  if (loading) {
+    return (
+      <p className="flex items-center gap-2 text-body-2-regular text-text-secondary">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        {t("skills.discover.contentLoading")}
+      </p>
+    );
+  }
+  if (content) {
+    return (
+      <div className="text-body-2-regular">
+        <MarkdownPreview path={content.path} draft={content.markdown} />
+        {content.truncated ? (
+          <p className="mt-2 text-caption-1-regular text-text-tertiary">
+            {t("skills.detail.contentTruncated")}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <p role="alert" className="text-body-2-regular text-text-error-primary">
+        {notFound
+          ? t("skills.discover.contentMissing")
+          : t("skills.discover.contentFailed")}
+      </p>
+      {/* 后端原文（含具体目录名 / 限额原因）比本地文案更可诊断；
+          not_found 已经由上面的说明覆盖，不再重复英文。 */}
+      {error && !notFound ? (
+        <p className="break-all font-mono text-caption-1-regular text-text-tertiary">
+          {error.message}
+        </p>
+      ) : null}
+      <div className="flex gap-2">
+        <Button variant="secondary" size="small" onClick={onRetry}>
+          {t("skills.discover.retry")}
+        </Button>
+        <Button
+          variant="secondary"
+          size="small"
+          leadingIcon={ExternalLink}
+          onClick={() => void openExternal(repoUrl)}
+        >
+          {t("skills.discover.openRepo")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function SkillDiscoverDialog({
   skill,
   installed,
@@ -110,49 +179,14 @@ export function SkillDiscoverDialog({
         ) : null}
 
         <div className="min-h-[8rem] rounded-2lg border border-separator-border p-3">
-          {loading ? (
-            <p className="flex items-center gap-2 text-body-2-regular text-text-secondary">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              {t("skills.discover.contentLoading")}
-            </p>
-          ) : content ? (
-            <div className="text-body-2-regular">
-              <MarkdownPreview path={content.path} draft={content.markdown} />
-              {content.truncated ? (
-                <p className="mt-2 text-caption-1-regular text-text-tertiary">
-                  {t("skills.detail.contentTruncated")}
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            <div className="flex flex-col items-start gap-2">
-              <p role="alert" className="text-body-2-regular text-text-error-primary">
-                {notFound
-                  ? t("skills.discover.contentMissing")
-                  : t("skills.discover.contentFailed")}
-              </p>
-              {/* 后端原文（含具体目录名 / 限额原因）比本地文案更可诊断；
-                  not_found 已经由上面的说明覆盖，不再重复英文。 */}
-              {error && !notFound ? (
-                <p className="break-all font-mono text-caption-1-regular text-text-tertiary">
-                  {error.message}
-                </p>
-              ) : null}
-              <div className="flex gap-2">
-                <Button variant="secondary" size="small" onClick={() => void load()}>
-                  {t("skills.discover.retry")}
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="small"
-                  leadingIcon={ExternalLink}
-                  onClick={() => void openExternal(repoUrl)}
-                >
-                  {t("skills.discover.openRepo")}
-                </Button>
-              </div>
-            </div>
-          )}
+          <DiscoverContent
+            loading={loading}
+            content={content}
+            error={error}
+            notFound={notFound}
+            repoUrl={repoUrl}
+            onRetry={() => void load()}
+          />
         </div>
       </div>
 

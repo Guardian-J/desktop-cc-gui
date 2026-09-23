@@ -125,7 +125,7 @@ describe("ordered tool batches", () => {
     const row: Message = { seq: 1, role: "tool", text: "Read", ts: null, args: {}, result };
     const { store, deps, changed } = setup([row]);
     const before = store.getState();
-    handleEngineEvents([tool("Read", { patch: true, result: JSON.parse(JSON.stringify(result)) })], deps);
+    handleEngineEvents([tool("Read", { patch: true, result: structuredClone(result) })], deps);
     expect(store.getState()).toBe(before);
     expect(changed).not.toHaveBeenCalled();
     handleEngineEvents([tool("Read", { patch: true, result: { ...result, content: [{ type: "text", text: "changed" }] } })], deps);

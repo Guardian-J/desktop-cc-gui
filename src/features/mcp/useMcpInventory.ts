@@ -51,7 +51,8 @@ export function useMcpInventory(workspacePath: string | null): McpInventoryStore
       if (!canCommit()) return;
       setError(loadError instanceof McpHubError ? loadError : String(loadError));
     } finally {
-      if (canCommit()) setLoading(false);
+      // 只清自己这一次的加载态；功能函数可看到最新序号，避免旧请求提前收尾。
+      setLoading((value) => (canCommit() ? false : value));
     }
   }, [workspacePath]);
 

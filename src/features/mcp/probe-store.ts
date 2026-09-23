@@ -109,15 +109,15 @@ export const useMcpProbeStore = create<McpProbeStore>((set, get) => ({
     try {
       // 有限并行：逐个 shift 取任务，谁先空谁退出。
       const queue = [...targets];
-      const workers = Array.from(
-        { length: Math.min(PROBE_CONCURRENCY, queue.length) },
-        async () => {
-          for (let next = queue.shift(); next; next = queue.shift()) {
-            await get().probe(next, workspace);
-          }
-        },
+      const worker = async (): Promise<void> => {
+        const next = queue.shift();
+        if (!next) return;
+        await get().probe(next, workspace);
+        await worker();
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(PROBE_CONCURRENCY, queue.length) }, worker),
       );
-      await Promise.all(workers);
     } finally {
       set({ runningAll: false });
     }
