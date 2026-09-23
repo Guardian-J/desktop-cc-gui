@@ -7,6 +7,12 @@ import { applyTheme, THEME_STORAGE_KEY } from "./features/settings/theme";
 import { hydrateBetaFeatures } from "./features/settings/beta-features";
 import { initializePerformancePreference } from "./lib/performance-preference";
 import { sessionKey, useChatStore } from "./features/chat/store";
+import { getAppVersion } from "./lib/platform";
+import {
+  installGlobalCrashHandlers,
+  setCrashAppVersion,
+} from "./lib/crash";
+import { AppCrashBoundary } from "./components/crash/AppCrashBoundary";
 
 /**
  * Mount the app. Loaded from ./main only after the react-scan overlay (when
@@ -38,6 +44,11 @@ export function startApp() {
   });
   if (import.meta.hot) import.meta.hot.dispose(stopPerformanceMonitor);
 
+  // Capture uncaught errors / rejections and tag crash reports with the
+  // running version. The boundary below renders what these record.
+  installGlobalCrashHandlers();
+  void getAppVersion().then(setCrashAppVersion);
+
   // Apply the locally cached theme synchronously, before first paint, so the
   // window never flashes the wrong color scheme while settings load.
   const cachedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -62,7 +73,9 @@ export function startApp() {
 
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      <App />
+      <AppCrashBoundary>
+        <App />
+      </AppCrashBoundary>
     </React.StrictMode>,
   );
   // Analytics stays off the cold-start critical path: install after first paint

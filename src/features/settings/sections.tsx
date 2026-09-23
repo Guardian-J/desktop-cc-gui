@@ -14,6 +14,7 @@ import Smartphone from "lucide-react/dist/esm/icons/smartphone";
 import ChartColumn from "lucide-react/dist/esm/icons/chart-column";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import Plug from "lucide-react/dist/esm/icons/plug";
+import MousePointer2 from "lucide-react/dist/esm/icons/mouse-pointer-2";
 import i18n from "@/lib/i18n";
 import type { SettingsNavItem } from "@/components/application/settings/settings-shell";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
@@ -166,6 +167,11 @@ const LazyMcpSection = lazySection(() =>
     default: module.McpSection,
   })),
 );
+const LazyComputerUseSection = lazySection(() =>
+  import("./ComputerUseSection").then((module) => ({
+    default: module.ComputerUseSection,
+  })),
+);
 
 settingsRegistry.register({
   id: "skills",
@@ -184,6 +190,15 @@ settingsRegistry.register({
   group: "capabilities",
   order: 1,
   component: LazyMcpSection,
+});
+settingsRegistry.register({
+  id: "computerUse",
+  key: "computerUse",
+  label: () => i18n.t("settings.computerUse"),
+  icon: MousePointer2,
+  group: "capabilities",
+  order: 2,
+  component: LazyComputerUseSection,
 });
 settingsRegistry.register({
   id: "update",

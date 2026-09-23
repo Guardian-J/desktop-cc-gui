@@ -266,6 +266,8 @@ export function SidebarContextMenus({
   onCloseBlankMenu,
   onWorkspaceAlias,
   onSetWorkspaceArchived,
+  onNewWorktree,
+  onDeleteWorktree,
   onCreateGroup,
   onThreadAction,
   onCopyThreadId,
@@ -278,6 +280,10 @@ export function SidebarContextMenus({
   onCloseBlankMenu: () => void;
   onWorkspaceAlias?: (id: string) => void;
   onSetWorkspaceArchived?: (id: string, archived: boolean) => void;
+  /** 工作区菜单「新建 Worktree…」：目标行是普通工作区或 worktree 子行均可。 */
+  onNewWorktree?: (workspaceId: string) => void;
+  /** worktree 子行菜单「删除 Worktree…」。 */
+  onDeleteWorktree?: (workspaceId: string) => void;
   onCreateGroup?: () => void;
   onThreadAction?: (id: string, action: ThreadAction) => void;
   onCopyThreadId?: (id: string) => void;
@@ -290,6 +296,8 @@ export function SidebarContextMenus({
           onClose={onCloseWorkspaceMenu}
           onSetAlias={onWorkspaceAlias}
           onSetArchived={onSetWorkspaceArchived}
+          onNewWorktree={onNewWorktree}
+          onDeleteWorktree={onDeleteWorktree}
         />
       )}
       {blankMenu && onCreateGroup && (

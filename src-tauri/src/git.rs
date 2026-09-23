@@ -322,7 +322,7 @@ pub async fn git_tree_status(levels: Vec<GitTreeLevel>) -> Result<GitTreeStatus,
     .map_err(|error| error.to_string())
 }
 
-fn open_repo(path: &str) -> Result<Repository, String> {
+pub(crate) fn open_repo(path: &str) -> Result<Repository, String> {
     Repository::discover(path).map_err(|_| "NOT_A_REPO".to_string())
 }
 

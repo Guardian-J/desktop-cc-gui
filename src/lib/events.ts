@@ -150,3 +150,13 @@ export function listenCliUpdateProgress(
 ): Promise<UnlistenFn> {
   return listen<CliUpdateProgress[]>("cli://update-progress", (e) => cb(e.payload));
 }
+
+/**
+ * The global Esc fired while a computer-use run was armed (the backend
+ * registers that hotkey for the duration of a run only, see
+ * computer_use::computer_use_set_active). The payload is empty: the
+ * frontend's job is to stop the run it is driving.
+ */
+export function listenComputerUseEscape(cb: () => void): Promise<UnlistenFn> {
+  return listen<null>("computeruse://escape", () => cb());
+}

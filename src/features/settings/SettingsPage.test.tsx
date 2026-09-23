@@ -435,10 +435,12 @@ describe("SettingsPage capabilities rail", () => {
     expect(capabilitiesAt).toBeGreaterThan(cliAt);
     expect(workspaceAt).toBeGreaterThan(capabilitiesAt);
 
-    // Skills leads, MCP follows — both in the same static group.
+    // Skills leads, MCP follows, 电脑操控 closes the group — all in the
+    // same static group.
     expect(itemsUnder("settings.groupCapabilities")).toEqual([
       i18n.t("settings.skills"),
       i18n.t("settings.mcp"),
+      i18n.t("settings.computerUse"),
     ]);
     // The new group is static (no fold toggle) like 系统/工作区.
     const capabilityHeading = [...document.querySelectorAll("nav span")].find(

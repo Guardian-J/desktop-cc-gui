@@ -7,7 +7,7 @@ import { useMissionStore } from "@/features/mission/store";
 import { usePluginHubStore } from "@/features/plugins/hub/store";
 import type { AiChatRepo, AiChatRepoSection, ThreadAction } from "@/components/application/ai-chat/ai-chat-sidebar";
 import { ARCHIVED_SECTION_ID } from "@/components/application/ai-chat/use-sidebar-state";
-import type { SessionMeta } from "@/lib/ipc";
+import { worktreeMetaOf, type SessionMeta, type Workspace } from "@/lib/ipc";
 import { isWeb, pickDirectory } from "@/lib/platform";
 import { recentPointerAnchor } from "@/lib/pointer-anchor";
 import { parseDraftSessionKey, sessionKey, useChatStore, sortedWorkspaceGroups } from "./store";
@@ -74,6 +74,23 @@ export function useChatSidebar({
     () => workspaces.filter((w) => !archivedIds.has(w.id)),
     [workspaces, archivedIds],
   );
+  // Worktree 子工作区：父行在可见集里就挂到父行下，父不可见（已归档/
+  // 被移除后残留）时降级为普通顶层行，不丢入口。
+  const { parentWorkspaces, childrenByParent } = useMemo(() => {
+    const visibleIds = new Set(visibleWorkspaces.map((w) => w.id));
+    const parents: Workspace[] = [];
+    const children = new Map<string, Workspace[]>();
+    for (const w of visibleWorkspaces) {
+      if (w.parentId && visibleIds.has(w.parentId)) {
+        const list = children.get(w.parentId) ?? [];
+        list.push(w);
+        children.set(w.parentId, list);
+      } else {
+        parents.push(w);
+      }
+    }
+    return { parentWorkspaces: parents, childrenByParent: children };
+  }, [visibleWorkspaces]);
 
   const repos: AiChatRepo[] = useMemo(() => {
     const sorted = [...sessions].sort((a, b) => {
@@ -84,18 +101,24 @@ export function useChatSidebar({
     sessions.forEach((s, i) => {
       if (threadStreaming[i]) streamingById.set(`${s.engine}/${s.sessionId}`, true);
     });
-    return visibleWorkspaces.map((w, index) => {
+    const buildRepo = (w: Workspace, defaultOpen: boolean): AiChatRepo => {
       // Sidebar alias: a user-set name replaces the folder name in the
       // sidebar only; the original stays on the row tooltip.
       const alias = workspaceAliases[w.id]?.trim();
       const suffix = workspaceLabelSuffix(w.path);
+      const meta = worktreeMetaOf(w);
+      const children = childrenByParent.get(w.id);
       return {
         id: w.id,
-        label: alias || w.name,
-        originalLabel: alias ? w.name : undefined,
+        path: w.path,
+        // Worktree 子行的主名是分支名（mockup 场景 1），目录名进 tooltip。
+        label: alias || (meta?.branch ?? w.name),
+        originalLabel: alias || meta ? w.name : undefined,
         labelSuffix: suffix ?? undefined,
-        defaultOpen: index === 0,
+        defaultOpen,
         threadLimit,
+        worktree: meta ? { branch: meta.branch, prNumber: meta.prNumber ?? undefined } : undefined,
+        worktrees: children?.map((c) => buildRepo(c, false)),
         threads: [
           ...openTabs.flatMap((tab) => {
             if (tab.sessionId !== null || tab.workspacePath !== w.path) return [];
@@ -125,8 +148,9 @@ export function useChatSidebar({
           }),
         ],
       };
-    });
-  }, [visibleWorkspaces, workspaceAliases, sessions, openTabs, threadLimit, threadStreaming, unseen, i18n.language, uiHooks, t]);
+    };
+    return parentWorkspaces.map((w, index) => buildRepo(w, index === 0));
+  }, [parentWorkspaces, childrenByParent, workspaceAliases, sessions, openTabs, threadLimit, threadStreaming, unseen, i18n.language, uiHooks, t]);
   // 工作区二级分类: bucket repos by their workspace's group assignment.
   // Ungrouped repos come first (no header), then groups in settings order.
   // Empty groups stay in the tree — the sidebar renders them like populated
@@ -137,7 +161,7 @@ export function useChatSidebar({
     const groupIds = new Set(groups.map((g) => g.id));
     const ungrouped: AiChatRepo[] = [];
     const byGroup = new Map<string, AiChatRepo[]>();
-    visibleWorkspaces.forEach((w, index) => {
+    parentWorkspaces.forEach((w, index) => {
       const repo = repos[index];
       if (!repo) return;
       const groupId = w.groupId;
@@ -155,7 +179,7 @@ export function useChatSidebar({
       result.push({ id: group.id, name: group.name, repos: byGroup.get(group.id) ?? [] });
     });
     return result.some((s) => s.id !== null) ? result : undefined;
-  }, [repos, visibleWorkspaces, workspaceGroups]);
+  }, [repos, parentWorkspaces, workspaceGroups]);
 
   // 已归档 section: archived workspaces in sidebar order, labels resolved
   // with the same alias rule as the main tree. Threads stay hidden — the
@@ -251,9 +275,34 @@ export function useChatSidebar({
   );
   const handleSetWorkspaceArchived = useCallback(
     (workspaceId: string, archived: boolean) => {
+      // 归档带 worktree 子项的父行 → 级联确认（一并归档/仅父行由用户选）；
+      // 取消归档或无子项时直接执行。
+      if (
+        archived &&
+        workspaces.some((w) => w.parentId === workspaceId)
+      ) {
+        setDialog({ kind: "archiveWorkspace", workspaceId });
+        return;
+      }
       void setWorkspaceArchived(workspaceId, archived);
     },
-    [setWorkspaceArchived],
+    [workspaces, setWorkspaceArchived, setDialog],
+  );
+  // 右键菜单/WORKTREES 分组 ＋：打开创建对话框（目标是该工作区所在仓库——
+  // worktree 行上触发时落到它的父工作区）。
+  const handleNewWorktree = useCallback(
+    (workspaceId: string) => {
+      const workspace = workspaces.find((w) => w.id === workspaceId);
+      const parentId = workspace?.parentId ?? workspaceId;
+      setDialog({ kind: "createWorktree", workspaceId: parentId });
+    },
+    [workspaces, setDialog],
+  );
+  const handleDeleteWorktree = useCallback(
+    (workspaceId: string) => {
+      setDialog({ kind: "deleteWorktree", workspaceId });
+    },
+    [setDialog],
   );
 
   // Sidebar 新建会话 nav entry: new chat in the active workspace (fallback:
@@ -368,5 +417,7 @@ export function useChatSidebar({
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
     handleCreateGroup,
+    handleNewWorktree,
+    handleDeleteWorktree,
   };
 }

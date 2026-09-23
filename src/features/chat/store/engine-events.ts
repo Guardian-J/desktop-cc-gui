@@ -1216,6 +1216,10 @@ export function handleEngineEvents(
       if (settledRuns.size > MAX_SETTLED_RUNS) {
         settledRuns.delete(settledRuns.keys().next().value!);
       }
+      // Every turn funnels through here: drop the computer-use global
+      // Esc-to-stop so a system-wide hotkey never outlives its run. Arming
+      // is per computer-use send (messaging.ts); the call is idempotent.
+      void ipc.computerUseSetActive?.(false)?.catch(() => {});
     }
     if (state.bySession[key]?.settledRunIds?.includes(event.runId)) {
       // A usage report trailing the terminal event carries the turn's final

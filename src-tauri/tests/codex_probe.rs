@@ -143,6 +143,7 @@ fn build_state(home: &std::path::Path) -> (AppState, Arc<Capture>) {
         opencode_server: std::sync::Arc::new(
             ccgui_next_lib::engine::opencode_server::OpencodeServerState::default(),
         ),
+        worktree_creations: ccgui_next_lib::git_worktree::CreationRegistry::default(),
     };
     (state, capture)
 }

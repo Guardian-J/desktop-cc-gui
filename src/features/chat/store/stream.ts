@@ -11,6 +11,9 @@ export interface QueuedMessage {
   text: string;
   images: string[];
   queuedAt: number;
+  /** Computer-use send: the flag rides the queue so the drained turn still
+   *  mounts the driver instead of silently running text-only. */
+  computerUse?: boolean;
 }
 
 export interface SessionState {
@@ -28,6 +31,9 @@ export interface SessionState {
   activeEffort?: string | null;
   /** In-app channel this session runs; spawn injects its env. */
   activeProvider?: string | null;
+  /** Whether the turn currently running was sent with 电脑操控; read by
+   *  resendLastUser so a retry repeats the same kind of turn. */
+  activeComputerUse?: boolean;
   /** Newest single report: the context meter reads occupancy from it. */
   usage: unknown;
   /** Running total of the reply in flight (sum of its reports), so the tail

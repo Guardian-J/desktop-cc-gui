@@ -24,6 +24,7 @@ vi.mock("@/lib/ipc", () => ({
 vi.mock("@/lib/events", () => ({
   listenEngineEvents: vi.fn(async () => () => {}),
   listenSessionsChanged: vi.fn(async () => () => {}),
+  listenComputerUseEscape: vi.fn(async () => () => {}),
 }));
 // Desktop branch: jsdom has no __TAURI_INTERNALS__ (isWeb true by default),
 // so pin the desktop value the allow-button assertions below expect. The web

@@ -1,10 +1,12 @@
 "use client";
 
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
 import FolderOpen from "lucide-react/dist/esm/icons/folder-open";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
+import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import Menu from "lucide-react/dist/esm/icons/menu";
 import Pencil from "lucide-react/dist/esm/icons/pencil";
 import Pin from "lucide-react/dist/esm/icons/pin";
@@ -13,6 +15,10 @@ import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import X from "lucide-react/dist/esm/icons/x";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { paginateThreads } from "@/components/application/ai-chat/repo-pagination";
+import { useGitStore } from "@/features/git/store";
+import { ipc } from "@/lib/ipc";
+import { useWorktreeStore } from "@/features/worktree/store";
+import { WorktreeProgressRow } from "@/features/worktree/WorktreeProgressRow";
 import type { AiChatRepo, AiChatThread, ThreadAction } from "@/components/application/ai-chat/sidebar-types";
 import { cx } from "@/utils/cx";
 
@@ -334,6 +340,241 @@ function RepoHeaderRow({
   );
 }
 
+/** A worktree child row: branch icon + branch label + optional PR badge +
+ *  dirty-file count; click toggles its own thread list, right-click opens
+ *  the workspace menu (which renders worktree entries for it). */
+function WorktreeChildRow({
+  repo,
+  expanded,
+  active,
+  onToggleOpen,
+  onNewSession,
+  onContextMenu,
+}: {
+  repo: AiChatRepo;
+  expanded: boolean;
+  /** This worktree owns the active session. */
+  active: boolean;
+  onToggleOpen: () => void;
+  /** Per-row + button: start a new chat in this worktree workspace. */
+  onNewSession?: (workspaceId: string) => void;
+  onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+}) {
+  const { t } = useTranslation();
+  // git store 的 status 缓存按工作区路径键控；计数 = 暂存+未暂存+未跟踪。
+  const dirtyCount = useGitStore((s) => {
+    const status = repo.path ? s.statusByWorkspace[repo.path] : undefined;
+    return status ? status.staged.length + status.unstaged.length + status.untracked.length : 0;
+  });
+  const missing = useWorktreeStore((s) =>
+    repo.path ? s.missingPaths[repo.path] === true : false,
+  );
+  return (
+    <div
+      onContextMenu={onContextMenu}
+      className={cx(
+        "group flex w-full cursor-pointer items-center gap-1 rounded-2lg py-[5px] pr-2 pl-4 transition-colors duration-150 ease",
+        active ? "bg-background-secondary-hover" : "hover:bg-background-secondary-hover",
+      )}
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-label={repo.worktree?.branch}
+        title={repo.originalLabel}
+        onClick={onToggleOpen}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+      >
+        <ChevronRight
+          aria-hidden
+          className={cx(
+            "size-3.5 shrink-0 text-foreground-icon-secondary transition-transform duration-150",
+            expanded && "rotate-90",
+          )}
+        />
+        <GitBranch aria-hidden className="size-3.5 shrink-0 text-foreground-icon-tertiary" />
+        <span className="min-w-0 flex-1 truncate text-body-2-medium text-text-secondary">
+          {repo.label}
+        </span>
+        {repo.worktree?.prNumber != null && (
+          <span className="shrink-0 rounded-sm bg-status-purple-background px-1 py-px text-caption-2-medium text-status-purple-text">
+            {t("worktree.prBadge", { number: repo.worktree.prNumber })}
+          </span>
+        )}
+        {missing && (
+          <span
+            className="shrink-0 rounded-sm bg-status-rose-background px-1 py-px text-caption-2-medium text-status-rose-text"
+            title={t("worktree.missingDirectoryHint")}
+          >
+            {t("worktree.missingDirectory")}
+          </span>
+        )}
+        {!missing && dirtyCount > 0 && (
+          <span
+            className="shrink-0 text-caption-2-medium text-text-warning-primary"
+            title={t("worktree.dirtyBadge", { count: dirtyCount })}
+          >
+            {t("worktree.dirtyBadge", { count: dirtyCount })}
+          </span>
+        )}
+      </button>
+      {repo.id && onNewSession && (
+        <button
+          type="button"
+          aria-label={t("chat.newSession")}
+          title={t("chat.newSession")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onNewSession(repo.id!);
+          }}
+          className="hidden shrink-0 cursor-pointer items-center text-foreground-icon-secondary group-hover:inline-flex hover:text-foreground-icon-primary"
+        >
+          <Plus className="size-4" aria-hidden />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** 「WORKTREES · n」分组：父工作区展开区内的子工作区列表 + 进行中的创建
+ *  进度行。组折叠态与各子行展开态都可持久化（后者复用侧栏的展开集）。
+ *  没有 worktree 也没有进行中创建时不渲染——首个创建入口在右键菜单。 */
+function WorktreeGroup({
+  parent,
+  activeThreadId,
+  isRepoExpanded,
+  onToggleRepo,
+  onThreadSelect,
+  onThreadAction,
+  onThreadContextMenu,
+  onRepoContextMenu,
+  onNewWorktree,
+  onNewSession,
+}: {
+  parent: AiChatRepo;
+  activeThreadId?: string;
+  isRepoExpanded: (repo: AiChatRepo) => boolean;
+  onToggleRepo: (repo: AiChatRepo) => void;
+  onThreadSelect?: (id: string) => void;
+  onThreadAction?: (id: string, action: ThreadAction) => void;
+  onThreadContextMenu?: (event: ReactMouseEvent<HTMLElement>, id: string) => void;
+  onRepoContextMenu?: (event: ReactMouseEvent<HTMLElement>, workspaceId: string) => void;
+  onNewWorktree?: (workspaceId: string) => void;
+  /** Per-worktree + button: start a new chat in that worktree workspace. */
+  onNewSession?: (workspaceId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const children = parent.worktrees ?? [];
+  const parentId = parent.id;
+  // 选原始数组（引用稳定），filter 放 useMemo：selector 返回新建数组会让
+  // zustand 的 getSnapshot 缓存检查报无限循环。
+  const allPending = useWorktreeStore((s) => s.pending);
+  const pending = useMemo(
+    () => allPending.filter((p) => p.parentWorkspaceId === parentId),
+    [allPending, parentId],
+  );
+  const collapsed = useWorktreeStore((s) => (parentId ? s.collapsedGroups[parentId] === true : false));
+  const toggleGroupCollapsed = useWorktreeStore((s) => s.toggleGroupCollapsed);
+
+  // 行内 ●n 徽标的 git 状态：30s TTL + 去重都在 store 里，展开时刷一次即可；
+  // 同时采一次 worktree 列表拿 locked 状态（右键菜单禁用删除用）。
+  const childPathsKey = children.map((c) => c.path ?? "").join("|");
+  useEffect(() => {
+    if (collapsed) return;
+    for (const child of children) {
+      if (child.path) void useGitStore.getState().refresh(child.path);
+    }
+    if (parent.path) {
+      void ipc
+        .gitWorktreeList(parent.path)
+        .then((list) => {
+          const locked: Record<string, string> = {};
+          const missing: Record<string, true> = {};
+          for (const w of list) {
+            if (w.locked) locked[w.path] = w.lockReason ?? "";
+            if (w.prunable && !w.isMain) missing[w.path] = true;
+          }
+          useWorktreeStore.getState().setGitStates(locked, missing);
+        })
+        .catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 用路径串代替数组引用
+  }, [childPathsKey, collapsed, parent.path]);
+
+  if (children.length === 0 && pending.length === 0) return null;
+  return (
+    <div className="flex w-full flex-col gap-0.5 pt-0.5">
+      <div className="group flex w-full items-center gap-1 rounded-2lg py-[5px] pr-2 pl-2">
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          onClick={() => parentId && toggleGroupCollapsed(parentId)}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
+        >
+          <ChevronRight
+            aria-hidden
+            className={cx(
+              "size-3 shrink-0 text-foreground-icon-secondary transition-transform duration-150",
+              !collapsed && "rotate-90",
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate text-caption-1-medium text-text-tertiary">
+            {t("worktree.groupLabel", { count: children.length })}
+          </span>
+        </button>
+        {parentId && onNewWorktree && (
+          <button
+            type="button"
+            aria-label={t("worktree.newWorktree")}
+            title={t("worktree.newWorktree")}
+            onClick={() => onNewWorktree(parentId)}
+            className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-foreground-icon-secondary transition-colors duration-150 hover:bg-background-tertiary-hover/55 hover:text-foreground-icon-primary"
+          >
+            <Plus aria-hidden className="size-3.5" />
+          </button>
+        )}
+      </div>
+      {!collapsed && (
+        <div className="flex w-full flex-col gap-0.5">
+          {pending.map((p) => (
+            <WorktreeProgressRow key={p.creationId} pending={p} />
+          ))}
+          {children.map((child) => {
+            const expanded = isRepoExpanded(child);
+            return (
+              <div key={child.id ?? child.label} className="flex w-full flex-col">
+                <WorktreeChildRow
+                  repo={child}
+                  expanded={expanded}
+                  active={child.threads.some((th) => th.id === activeThreadId)}
+                  onToggleOpen={() => onToggleRepo(child)}
+                  onNewSession={onNewSession}
+                  onContextMenu={
+                    onRepoContextMenu && child.id
+                      ? (event) => onRepoContextMenu(event, child.id!)
+                      : undefined
+                  }
+                />
+                <div className="ml-4">
+                  <RepoThreadList
+                    expanded={expanded}
+                    threads={child.threads}
+                    threadLimit={child.threadLimit}
+                    activeThreadId={activeThreadId}
+                    onThreadSelect={onThreadSelect}
+                    onThreadAction={onThreadAction}
+                    onThreadContextMenu={onThreadContextMenu}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Keep the list mounted through the close animation, then drop it so the
  *  next expand remounts at page 0. Instant unmount + opacity fade left a
  *  compositor ghost over the workspace rows below. */
@@ -356,6 +597,7 @@ function RepoThreadList({
   onThreadSelect,
   onThreadAction,
   onThreadContextMenu,
+  trailing,
 }: {
   expanded: boolean;
   threads: AiChatThread[];
@@ -364,6 +606,9 @@ function RepoThreadList({
   onThreadSelect?: (id: string) => void;
   onThreadAction?: (id: string, action: ThreadAction) => void;
   onThreadContextMenu?: (event: ReactMouseEvent<HTMLElement>, id: string) => void;
+  /** Rendered after the thread rows inside the same collapse animation (the
+   *  parent repo's WORKTREES group), so it folds away with the threads. */
+  trailing?: ReactNode;
 }) {
   const [mounted, setMounted] = useState(expanded);
   useLayoutEffect(() => {
@@ -390,15 +635,18 @@ function RepoThreadList({
     >
       <div className="min-h-0 overflow-hidden">
         {mounted ? (
-          <PagedThreadList
-            key={expanded ? "expanded" : "collapsed"}
-            threads={threads}
-            threadLimit={threadLimit}
-            activeThreadId={activeThreadId}
-            onThreadSelect={onThreadSelect}
-            onThreadAction={onThreadAction}
-            onThreadContextMenu={onThreadContextMenu}
-          />
+          <>
+            <PagedThreadList
+              key={expanded ? "expanded" : "collapsed"}
+              threads={threads}
+              threadLimit={threadLimit}
+              activeThreadId={activeThreadId}
+              onThreadSelect={onThreadSelect}
+              onThreadAction={onThreadAction}
+              onThreadContextMenu={onThreadContextMenu}
+            />
+            {trailing}
+          </>
         ) : null}
       </div>
     </div>
@@ -479,6 +727,10 @@ export function RepoItem({
   onRemove,
   onNewSession,
   onContextMenu,
+  onRepoContextMenu,
+  onNewWorktree,
+  isRepoExpanded,
+  onToggleRepo,
   isDragging = false,
   dragHandleProps = null,
 }: {
@@ -496,6 +748,13 @@ export function RepoItem({
   onNewSession?: (id: string) => void;
   /** Right-click on the repo header row: opens the workspace menu. */
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  /** Right-click on a worktree child row: same menu, worktree entries. */
+  onRepoContextMenu?: (event: ReactMouseEvent<HTMLElement>, workspaceId: string) => void;
+  /** WORKTREES group ＋ button: open the create dialog for this repo. */
+  onNewWorktree?: (workspaceId: string) => void;
+  /** Expansion state accessors for worktree child rows (sidebar-owned). */
+  isRepoExpanded?: (repo: AiChatRepo) => boolean;
+  onToggleRepo?: (repo: AiChatRepo) => void;
   /** Drag-handle reorder in progress for this row. */
   isDragging?: boolean;
   /** Immediate drag entry attached to the row's grip handle. */
@@ -530,6 +789,22 @@ export function RepoItem({
         onThreadSelect={onThreadSelect}
         onThreadAction={onThreadAction}
         onThreadContextMenu={onThreadContextMenu}
+        trailing={
+          isRepoExpanded && onToggleRepo ? (
+            <WorktreeGroup
+              parent={repo}
+              activeThreadId={activeThreadId}
+              isRepoExpanded={isRepoExpanded}
+              onToggleRepo={onToggleRepo}
+              onThreadSelect={onThreadSelect}
+              onThreadAction={onThreadAction}
+              onThreadContextMenu={onThreadContextMenu}
+              onRepoContextMenu={onRepoContextMenu}
+              onNewWorktree={onNewWorktree}
+              onNewSession={onNewSession}
+            />
+          ) : undefined
+        }
       />
     </div>
   );

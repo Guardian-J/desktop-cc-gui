@@ -15,6 +15,7 @@ pub mod engine;
 pub mod event_sink;
 pub mod files;
 pub mod git;
+pub mod git_worktree;
 pub mod history;
 pub mod mcp;
 pub mod metrics;
@@ -58,6 +59,9 @@ pub struct AppState {
     pub relay: relay::RelayState,
     pub dsh_host: std::sync::Arc<dsh_host::DshHostState>,
     pub opencode_server: std::sync::Arc<engine::opencode_server::OpencodeServerState>,
+    /// In-flight worktree creations (git_worktree_create) by creationId —
+    /// the cancel command signals through this registry.
+    pub worktree_creations: git_worktree::CreationRegistry,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -164,6 +168,7 @@ pub fn run() {
                 opencode_server: std::sync::Arc::new(
                     engine::opencode_server::OpencodeServerState::default(),
                 ),
+                worktree_creations: git_worktree::CreationRegistry::default(),
             };
             // Clone what the initial scan needs before state moves into manage.
             let scan_db = Arc::clone(&state.db);
@@ -453,6 +458,12 @@ pub fn run() {
             git::git_branches,
             git::git_checkout,
             git::git_create_branch,
+            git_worktree::git_worktree_list,
+            git_worktree::git_worktree_create,
+            git_worktree::git_worktree_create_cancel,
+            git_worktree::git_worktree_remove,
+            git_worktree::git_branch_merged,
+            git_worktree::git_resolve_pr,
             // open-app
             open_app::open_workspace_in,
             open_app::open_custom_program,

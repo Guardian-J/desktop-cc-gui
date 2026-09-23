@@ -1547,6 +1547,26 @@ mod permission_tests {
     }
 
     #[test]
+    fn engine_info_exposes_computer_use_support_under_its_camel_case_key() {
+        // The composer's /ccgui-cua gate reads `supportsComputerUse` off
+        // list_engines; a rename (or a lost rename_all) would make the field
+        // read undefined and refuse every engine. Pin the wire name.
+        let info = EngineInfo {
+            id: "claude".into(),
+            available: true,
+            enabled: true,
+            supports_images: true,
+            supports_computer_use: true,
+            supports_effort: true,
+            supports_tool_constraints: false,
+            permissions: vec!["auto".into()],
+        };
+        let json = serde_json::to_value(&info).expect("EngineInfo serializes");
+        assert_eq!(json["supportsComputerUse"], serde_json::json!(true));
+        assert!(json.get("supports_computer_use").is_none());
+    }
+
+    #[test]
     fn pi_prompt_rides_the_rpc_prompt_command() {
         // pi 也走 rpc 模式(提问桥扩展需要):prompt 是 stdin NDJSON 命令的
         // message 字段,多行文本不再被 Windows 的 cmd.exe shim 截断。

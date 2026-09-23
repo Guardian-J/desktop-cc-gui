@@ -1305,7 +1305,11 @@ pub mod mcp {
                  previous step's visual result — stop the batch there and look at the returned \
                  screenshot first. \
                  If a tool reports a missing OS permission, stop and tell the user to grant it \
-                 in CC GUI → Settings → Computer Use."
+                 in CC GUI → Settings → Computer Use. \
+                 A visible pointer follows every action target on screen: it is drawn by CC GUI \
+                 itself, is always on while these tools run, and cannot be hidden or disabled \
+                 through the tool surface. Do not call attention to it or treat it as page content; \
+                 never try to click it, move it away, or work around it."
                     .into(),
             );
             info

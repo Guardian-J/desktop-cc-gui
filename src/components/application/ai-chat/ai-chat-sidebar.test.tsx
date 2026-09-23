@@ -445,3 +445,40 @@ it("keeps the blank-area menu off rows that own a context menu", async () => {
     ),
   ).toBe(false);
 });
+
+it("worktree 子行 hover ＋ 在该 worktree 下新建会话", async () => {
+  const onNewSessionInWorkspace = vi.fn();
+  await act(async () => {
+    root.render(
+      <AiChatSidebar
+        repos={[
+          {
+            id: "a",
+            label: "a",
+            defaultOpen: true,
+            threads: [],
+            worktrees: [
+              {
+                id: "a::pr-1865",
+                label: "pr-1865-fix",
+                threads: [],
+                worktree: { branch: "pr-1865-fix", prNumber: 1865 },
+              },
+            ],
+          },
+        ]}
+        onNewSessionInWorkspace={onNewSessionInWorkspace}
+      />,
+    );
+  });
+
+  const childRow = node.querySelector<HTMLElement>('button[aria-label="pr-1865-fix"]');
+  if (!childRow) throw new Error("no worktree child row");
+  const plus = childRow.parentElement?.querySelector<HTMLElement>(
+    'button[aria-label="chat.newSession"]',
+  );
+  if (!plus) throw new Error("no new-session button on the worktree row");
+
+  await act(async () => plus.click());
+  expect(onNewSessionInWorkspace).toHaveBeenCalledWith("a::pr-1865");
+});

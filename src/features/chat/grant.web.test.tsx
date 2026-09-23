@@ -17,6 +17,7 @@ vi.mock("@/lib/ipc", () => ({
 vi.mock("@/lib/events", () => ({
   listenEngineEvents: vi.fn(async () => () => {}),
   listenSessionsChanged: vi.fn(async () => () => {}),
+  listenComputerUseEscape: vi.fn(async () => () => {}),
 }));
 // Web/remote branch: jsdom has no __TAURI_INTERNALS__ (isWeb true by default),
 // pinned explicitly so the intent survives future setup changes.
