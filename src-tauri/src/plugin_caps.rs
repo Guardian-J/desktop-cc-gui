@@ -46,7 +46,7 @@ use tauri::Manager;
 
 use parking_lot::Mutex;
 
-use crate::engine::resolve::{command_for_binary, find_cli_binary};
+use crate::engine::resolve::{cli_search_path, command_for_binary, find_cli_binary};
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -617,6 +617,9 @@ pub(crate) async fn plugin_exec_run(
     if let Some(env) = env {
         command.envs(env);
     }
+    // After plugin env: shebang shims (`#!/usr/bin/env node`) need the same
+    // search PATH find_cli_binary used, not a stale launchd PATH.
+    command.env("PATH", cli_search_path());
     // Own process group (unix) so the timeout sweep below can take the
     // whole tree, not just the direct child.
     #[cfg(unix)]
@@ -709,6 +712,7 @@ pub(crate) async fn plugin_exec_spawn(
             if let Some(env) = env {
                 command.envs(env);
             }
+            command.env("PATH", cli_search_path());
             #[cfg(windows)]
             crate::engine::hide_console(&mut command);
             command
@@ -727,6 +731,7 @@ pub(crate) async fn plugin_exec_spawn(
             if let Some(env) = env {
                 command.envs(env);
             }
+            command.env("PATH", cli_search_path());
             #[cfg(windows)]
             crate::engine::hide_console(&mut command);
             let child = command
