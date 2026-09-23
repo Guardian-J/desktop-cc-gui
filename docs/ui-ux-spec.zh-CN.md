@@ -176,6 +176,7 @@ const feedback = useRunningFeedback(store.loading);
 - 进度类反馈（安装、更新、同步）用 `Loader2` / 文字百分比表达过程，与 [§4.1](#41-刷新--重新加载转圈--对号) 的刷新反馈互不替代。
 - **Worktree 创建进度行三态**：创建对话框即交即走，进度在侧栏「WORKTREES」分组顶部的进度行表达（`WorktreeProgressRow.tsx`，事件 `worktree://create-progress` 驱动）——进行中：`Loader2` + 阶段文案（校验 / fetch / 创建 / 注册，逐段替换）+ ✕ 取消（取消杀进程组、半成品 worktree 清理、已建分支保留）；成功：行消失、worktree 子行出现（勾选了「创建后打开新会话」则先清场再在该目录开新会话）；失败/已取消：行保留为 `role="alert"`（失败原因按后端 `errorKind` 本地化分类：网络/fetch 失败给重试，分支或目录冲突给改名指引，非 git 仓库/PR 不存在给说明），行内「重试 / 关闭」。三态行高一致，状态切换不推动其他行。
 - **崩溃绝不留白屏**：应用崩溃时必须显示可读原因，而不是纯白窗口。三层兜底：`index.html` 的启动占位 + 8s watchdog（bundle 加载失败或 React 挂载前崩溃时显示失败面板与重载，原因读 `localStorage` 的 `ccgui:last-crash`）；`src/lib/crash.ts` 的 `error` / `unhandledrejection` 全局捕获；`src/components/crash/AppCrashBoundary.tsx` 顶层 React 错误边界。渲染崩溃页（`CrashScreen`）必须给出**具体错误原因**、可展开的技术详情、`重新加载` / `复制错误信息` / `退出应用`（Web 不渲染退出）；非渲染的全局错误允许「继续使用」后关闭。崩溃报告仅本地留存（内存环形 + `localStorage` 最近一条），不自动上传。
+- **启动层资源必须是外部文件，`index.html` 里不得写内联 `<style>` / `<script>`**：打包链会给 `index.html` 里的每个内联标签打上 `__TAURI_*_NONCE__`，运行时把 nonce 追加进 `style-src` / `script-src`（`tauri-codegen` 的 `inject_nonce_token` + `tauri replace_csp_nonce`）；同一指令一旦出现 nonce，`'unsafe-inline'` 即被忽略，浏览器会拒绝**所有运行时创建的样式表**——插件的 `styles.css` 与 `ctx.theme.injectCss` 正是这样注入的，于是 v1.0.9 打包版静默丢掉全部插件样式，插件继续运行、无报错、不隔离（`plugin_list` 里 `lastError` 仍为 null），只有开发版看不出来（`pnpm dev` 的 HTML 不含 token，CSP 里没有 nonce）。样式在 `public/boot.css`、脚本在 `public/boot-watchdog.js`，两者都由 `style-src 'self'` / `script-src 'self'` 放行；回归：`tests/platform-build.test.ts`。
 
 ## 6. 破坏性操作
 
@@ -226,6 +227,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.48 | 2026-09-23 | 修复打包版插件样式全丢：启动占位样式从 `index.html` 内联 `<style>` 移入 `public/boot.css` 外部文件（Tauri 会给内联标签加 nonce，nonce 让 `'unsafe-inline'` 失效，运行时注入的插件样式表全被拒）；`tests/platform-build.test.ts` 增加守卫（index.html 无内联 style/script + style-src 保留 'unsafe-inline'）；§5 补充规则 |
 | v0.47 | 2026-09-23 | Git worktree 子工作区全链路：workspaces 表恢复 kind/parentId 先例并迁移旧版导入；侧栏「WORKTREES · n」分组挂载子行（分支名 + PR 徽标 + 脏文件数，locked/prunable 明说）；三来源创建对话框（从 PR / 新分支 / 已有分支，PR 解析走 `pull/N/head` 不依赖 GitHub 登录，gh CLI 仅增强）即交即走 + 进度行三态可取消可重试；删除分级确认（未提交/未推送/未合入预检、默认保留分支、后台直接删）与父行移除/归档级联提示；§3、§5、§6、§7 同步 |
 | v0.46 | 2026-09-23 | 崩溃不再白屏：新增三层兜底（启动 watchdog + 全局 error/unhandledrejection 捕获 + 顶层 ErrorBoundary）与 `CrashScreen` 全屏错误页，显示具体原因、可展开技术详情与重新加载/复制/退出动作；崩溃报告本地留存供反馈；§5 补充规则 |
 | v0.45 | 2026-09-23 | 新增设置「电脑操控」页与 `/ccgui-cua <任务>` 指令（内置指令组）：指令只为该次发送挂载截图/输入驱动，引擎不支持时明确拒绝而非静默降级；权限行读真实系统状态并给拖拽授权入口；虚拟光标由 App 全程强制显示，模型无法关闭；全局 Esc 急停仅在电脑操控回合期间武装；§3 补四条规则 |
