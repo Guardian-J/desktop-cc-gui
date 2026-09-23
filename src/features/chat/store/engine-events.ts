@@ -1,10 +1,10 @@
-import { ipc, type Message, type QuestionSpec, type SessionMeta, type TodosPayload } from "@/lib/ipc";
+import { ipc, type Message, type QuestionSpec, type SessionMeta } from "@/lib/ipc";
 import type { EngineEventPayload } from "@/lib/events";
 import { errorText } from "@/lib/errors";
 import { dedupeTabs, persistTabs, sessionKey } from "./persistence";
 import {
   EMPTY_SESSION,
-  appendToolMessage,
+  appendToolMessages,
   applyStreamParts,
   bufferStreamPart,
   drainPending,
@@ -22,6 +22,7 @@ import {
   touchRun,
   untrackRun,
   updatePendingStreamModel,
+  type ToolMessageInput,
 } from "./stream";
 import type { ChatStore } from "../store";
 import {
@@ -244,26 +245,7 @@ function onMessage(
   const data = event.data as {
     role: string;
     text: string;
-    path?: string | null;
-    todos?: TodosPayload;
-    args?: unknown;
-    result?: unknown;
-    patch?: boolean;
   };
-  if (data.role === "tool" || data.role === "tool_result") {
-    appendToolMessage(
-      deps.set,
-      key,
-      data.text,
-      stampedModel(deps, event.engine, key),
-      data.path ?? null,
-      data.todos ?? null,
-      data.args,
-      data.patch === true,
-      data.result,
-    );
-    return;
-  }
   if (data.role !== "assistant") return;
   // Full-snapshot assistant lines (kimi/codex non-delta) append as settled
   // messages; any live row above is finished growing.
@@ -1178,7 +1160,26 @@ export function handleEngineEvents(
   events: EngineEventPayload[],
   deps: EngineEventDeps,
 ) {
+  let toolBatch: { event: EngineEventPayload; key: string; tools: ToolMessageInput[] } | undefined;
+  const flushTools = () => {
+    if (!toolBatch) return;
+    const { event, key, tools } = toolBatch;
+    toolBatch = undefined;
+    appendToolMessages(deps.set, key, tools, stampedModel(deps, event.engine, key));
+  };
   for (const event of events) {
+    const data = event.kind === "message"
+      ? event.data as ToolMessageInput & { role: string }
+      : undefined;
+    const isTool = data?.role === "tool" || data?.role === "tool_result";
+    if (toolBatch && (
+      !isTool ||
+      event.runId !== toolBatch.event.runId ||
+      event.engine !== toolBatch.event.engine ||
+      event.sessionId !== toolBatch.event.sessionId
+    )) {
+      flushTools();
+    }
     const settled = settledRuns.get(event.runId);
     // EOF stderr/failure can follow Done, and the turn's final usage report
     // can trail either terminal event. Keep those, but never adopt the run
@@ -1252,7 +1253,13 @@ export function handleEngineEvents(
         onThinking(event, key, deps);
         break;
       case "message":
-        onMessage(event, key, deps);
+        if (isTool && data) {
+          if (retryingKeys.has(key)) clearRetry(key, deps);
+          toolBatch ??= { event, key, tools: [] };
+          toolBatch.tools.push({ ...data, patch: data.patch === true });
+        } else {
+          onMessage(event, key, deps);
+        }
         break;
       case "session":
         onSession(event, key, deps);
@@ -1293,4 +1300,5 @@ export function handleEngineEvents(
         break;
     }
   }
+  flushTools();
 }

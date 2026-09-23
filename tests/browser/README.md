@@ -1,5 +1,20 @@
 # Chat streaming regression
 
+Open `/tests/browser/process-disclosure-bounded.html` for large process groups.
+The production disclosure renders 120 or 500 synthetic tools with at most 40
+items per page. Previous/next/latest preserve access to every item; append while
+reading an earlier page must not switch it. Arguments and results remain lazy.
+This is a DOM-bound check, not a native CPU benchmark.
+
+Open `/tests/browser/performance-diagnostics.html` for the real diagnostic dialog
+with synthetic native data and the real renderer monitor. The selectable JSON
+summary must be bounded to 12,000 UTF-8 bytes; full export keeps all samples in a
+separate JSON file. Check the five-minute/60-sample explanation and default-on
+toggle: disabling clears the preview, enabling starts a new recording window.
+Clipboard refusal retains the summary for manual copy; save cancellation must
+not show success. This fixture mocks preference persistence and native samples,
+so it does not verify production CPU, restart persistence or cross-window IPC.
+
 With the Vite development server running, open
 `http://localhost:1420/tests/browser/stream-throttle.html`.
 The page reports `PASS` after exercising actual React StrictMode commits:

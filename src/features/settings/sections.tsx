@@ -6,6 +6,7 @@ import Globe from "lucide-react/dist/esm/icons/globe";
 import FolderSymlink from "lucide-react/dist/esm/icons/folder-symlink";
 import Archive from "lucide-react/dist/esm/icons/archive";
 import Info from "lucide-react/dist/esm/icons/info";
+import Activity from "lucide-react/dist/esm/icons/activity";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Bot from "lucide-react/dist/esm/icons/bot";
@@ -26,6 +27,7 @@ import { ArchivedSessionsSection } from "./ArchivedSessionsSection";
 import { AgentsPromptsSection } from "./agents-prompts/AgentsPromptsSection";
 import { CliConfigSection } from "./CliConfigSection";
 import { AboutSection } from "./AboutSection";
+import { PerformanceDiagnosticsSection } from "./PerformanceDiagnostics";
 import { BetaFeaturesSection } from "./BetaFeaturesSection";
 import { UpdateSection } from "./UpdateSection";
 import { WebAccessSection } from "./WebAccessSection";
@@ -200,6 +202,15 @@ settingsRegistry.register({
   group: "misc",
   order: 2,
   component: AboutSection,
+});
+settingsRegistry.register({
+  id: "diagnostics",
+  key: "diagnostics",
+  label: () => i18n.t("diagnostics.title"),
+  icon: Activity,
+  group: "misc",
+  order: 3,
+  component: PerformanceDiagnosticsSection,
 });
 settingsRegistry.register({
   id: "betaFeatures",

@@ -16,6 +16,7 @@ import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
 import { ChangelogDialog } from "@/features/settings/ChangelogDialog";
 import { CHANGELOG_DATA, GITHUB_REPO_URL } from "@/version/changelog";
 import { registerShortcutHandler } from "@/features/shortcuts/runtime";
+import { PerformanceDiagnosticsDialog } from "@/features/settings/PerformanceDiagnostics";
 
 const ZOOM_KEY = "ccgui-next.zoom:v1";
 const ZOOM_MIN = 50;
@@ -54,6 +55,7 @@ export function AppStatusBar() {
   const [sync, setSync] = useState<ScanProgress | null>(null);
   const [version, setVersion] = useState<string | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const pluginItems = useRegistry(statusBarRegistry);
   // zone (SDK 0.3.8): "start" chips render left-aligned ahead of the
   // builtin cluster; everything else keeps the legacy right-side slot.
@@ -91,16 +93,19 @@ export function AppStatusBar() {
 
   useEffect(() => {
     let cancelled = false;
+    let polling = false;
     const poll = () => {
       // Skip ticks while the window is hidden (background tab / minimized):
       // the numbers are invisible anyway, so polling then is pure waste.
-      if (document.hidden) return;
+      if (document.hidden || polling) return;
+      polling = true;
       ipc
         .appMetrics()
         .then((m) => {
           if (!cancelled) setMetrics(m);
         })
-        .catch(() => {});
+        .catch(() => { if (!cancelled) setMetrics(null); })
+        .finally(() => { polling = false; });
     };
     void poll();
     const timer = setInterval(poll, METRICS_POLL_MS);
@@ -144,8 +149,11 @@ export function AppStatusBar() {
         </div>
       )}
       <div className="flex min-w-0 items-center gap-3">
-        <span
-          className="flex items-center gap-1"
+        <button
+          type="button"
+          onClick={() => setShowDiagnostics(true)}
+          aria-label={t("diagnostics.open")}
+          className="flex cursor-pointer items-center gap-1 rounded transition-colors hover:bg-background-tertiary-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-border-focus-ring"
           title={
             metrics
               ? t("statusbar.perfDetail", {
@@ -160,7 +168,7 @@ export function AppStatusBar() {
             {t("statusbar.performance")}
             {metrics ? ` ${formatMb(metrics.memoryBytes)} MB` : ""}
           </span>
-        </span>
+        </button>
 
         <span className="text-text-disabled">·</span>
 
@@ -273,6 +281,7 @@ export function AppStatusBar() {
             onClose={() => setShowChangelog(false)}
           />
         )}
+        {showDiagnostics && <PerformanceDiagnosticsDialog onClose={() => setShowDiagnostics(false)} />}
       </div>
     </div>
   );

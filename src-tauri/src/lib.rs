@@ -180,7 +180,7 @@ pub fn run() {
             if let Err(error) = cu_overlay::init(app.handle()) {
                 eprintln!("[cu-overlay] init failed (overlay disabled): {error}");
             }
-            app.manage(metrics::MetricsState::new());
+            app.manage(metrics::MetricsState::load().map_err(std::io::Error::other)?);
             app.manage(baidu_tongji::BaiduTongjiState::load());
             // Keep the pairing key from lingering: while the switch is on, a
             // fresh code is minted every ten minutes and broadcast.
@@ -462,6 +462,9 @@ pub fn run() {
             terminal::terminal_close,
             // metrics
             metrics::app_metrics,
+            metrics::performance_diagnostics,
+            metrics::performance_diagnostics_enabled,
+            metrics::performance_diagnostics_set_enabled,
             // plugin capability egress (network:/exec: manifest grants)
             plugin_caps::plugin_http_request,
             plugin_caps::plugin_add_workspace,
@@ -503,8 +506,15 @@ pub fn run() {
             baidu_tongji::load_baidu_tongji_script,
             baidu_tongji::send_baidu_tongji_beacon,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(metrics) = app.try_state::<metrics::MetricsState>() {
+                    metrics.stop();
+                }
+            }
+        });
 }
 /// Probe the user's login+interactive shell for its PATH and install it into
 /// this process. `-l` sources .zprofile (homebrew), `-i` sources .zshrc

@@ -1,6 +1,30 @@
 import type { Messages } from "./zh";
 
 export const en: Messages = {
+  diagnostics: {
+    title: "Performance diagnostics",
+    open: "View performance diagnostics",
+    description: "The last five minutes of performance metrics are recorded by default. Copy a short summary after a slowdown, or export the complete JSON file for deeper investigation.",
+    privacy: "Numeric metrics and process roles stay local. No conversations, code, file paths, command arguments or credentials are recorded. Nothing is uploaded automatically.",
+    limits: "Renderer and native history each keep up to 60 samples from the last 5 minutes and clear on restart. Summaries stay within 12 KB. Process CPU uses one core as 100%; system CPU uses the whole machine as 100%. WebKit candidates may belong to other apps and are not GPU utilization.",
+    report: "Performance diagnostic summary",
+    collecting: "Collecting diagnostic history…",
+    partial: "Native samples are unavailable. This report contains renderer diagnostics only and can still be shared.",
+    copy: "Copy diagnostic summary",
+    export: "Export full diagnostic file",
+    saved: "Full diagnostic file saved.",
+    downloaded: "Download requested. Check your browser downloads to confirm.",
+    failed: "Export failed. Retry or copy the diagnostic summary instead.",
+    enabled: "Automatic performance diagnostics",
+    toggleHint: "Enabled by default; your preference is saved. Turning off stops renderer and native sampling and clears history. Export first if you need to preserve evidence.",
+    disabled: "Diagnostics are off and history is cleared. Turning on starts a new recording window.",
+    saveFailed: "Could not save the setting. The previous state is unchanged; please retry.",
+    preferenceUnavailable: "Checking the diagnostic preference. If temporarily unavailable, close and reopen this panel to retry.",
+    copyFailed: "Copy failed. Select and copy the report text manually.",
+    renderPanelTitle: "Render performance panel (react-scan)",
+    renderPanelDescription: "Overlays highlights on the UI to mark the components re-rendering right now, with render counts, to help locate conversation jank. Takes effect immediately.",
+    renderPanelDetail: "Developer-level tool for local diagnostics only. Note: packaged (production) builds only show re-render highlights and counts, not per-render timings — use a development build (pnpm dev) for timings.",
+  },
   common: {
     confirm: "Confirm",
     showPassword: "Show password",
@@ -19,6 +43,11 @@ export const en: Messages = {
       "Quit CC GUI? All running sessions and terminals will be terminated.",
   },
   chat: {
+    processHistoryPages: "Process history pages",
+    processPreviousPage: "Previous page",
+    processNextPage: "Next page",
+    processLatestPage: "Back to latest",
+    processPageRange: "{{start}}–{{end}} of {{total}} items",
     ompFastToggle: "Fast mode",
     ompFastEnable: "Enable Fast",
     ompFastDisable: "Disable Fast",

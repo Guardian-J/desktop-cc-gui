@@ -379,35 +379,59 @@ fn diff_line_counts(diff: &mut git2::Diff) -> HashMap<String, (usize, usize)> {
     counts.into_inner()
 }
 
-/// (+lines, 0) for an untracked file. Chunked reads, capped at 100k lines:
-/// the count only feeds a stats badge, so a huge file must not be slurped.
+const MAX_UNTRACKED_BYTES: usize = 1024 * 1024;
+const MAX_UNTRACKED_LINES: usize = 100_000;
+
+/// Exact (+lines, 0) for regular untracked text within 1 MiB and 100k lines.
+/// Unsupported files and exceeded budgets leave the optional stats unknown.
 fn count_untracked_lines(repo: &Repository, file: &str) -> Option<(usize, usize)> {
-    use std::io::Read;
-    const MAX_COUNTED: usize = 100_000;
     let full = repo.workdir()?.join(file);
-    let mut reader = std::io::BufReader::new(std::fs::File::open(full).ok()?);
+    let metadata = std::fs::symlink_metadata(&full).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_UNTRACKED_BYTES as u64 {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let reader = options.open(full).ok()?;
+    let metadata = reader.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_UNTRACKED_BYTES as u64 {
+        return None;
+    }
+    count_untracked_reader(reader)
+}
+
+fn count_untracked_reader(mut reader: impl std::io::Read) -> Option<(usize, usize)> {
+    let mut bytes_read = 0usize;
     let mut lines = 0usize;
     let mut last_byte: Option<u8> = None;
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        match reader.read(&mut chunk) {
+        let read_limit = chunk.len().min(MAX_UNTRACKED_BYTES + 1 - bytes_read);
+        match reader.read(&mut chunk[..read_limit]) {
             Ok(0) => break,
             Ok(n) => {
+                bytes_read += n;
+                if bytes_read > MAX_UNTRACKED_BYTES || chunk[..n].contains(&0) {
+                    return None;
+                }
                 lines += chunk[..n].iter().filter(|b| **b == b'\n').count();
-                last_byte = chunk.get(n.wrapping_sub(1)).copied();
-                if lines >= MAX_COUNTED {
-                    lines = MAX_COUNTED;
-                    break;
+                last_byte = Some(chunk[n - 1]);
+                if lines > MAX_UNTRACKED_LINES {
+                    return None;
                 }
             }
             Err(_) => return None,
         }
     }
-    // BufRead::lines also yields a final line without a trailing newline.
-    if lines < MAX_COUNTED && last_byte.is_some_and(|b| b != b'\n') {
+    if last_byte.is_some_and(|b| b != b'\n') {
         lines += 1;
     }
-    Some((lines, 0))
+    (lines <= MAX_UNTRACKED_LINES).then_some((lines, 0))
 }
 
 /// Bucket status entries into staged/unstaged/untracked file lists.
@@ -1028,6 +1052,155 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn untracked_line_count_rejects_over_budget_single_line() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        std::fs::write(scratch.0.join("long.txt"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "long.txt"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_accepts_exact_byte_budget() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let mut content = vec![b'x'; 1024 * 1024];
+        std::fs::write(scratch.0.join("exact.txt"), &content).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "exact.txt"), Some((1, 0)));
+        *content.last_mut().unwrap() = b'\n';
+        std::fs::write(scratch.0.join("exact.txt"), content).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "exact.txt"), Some((1, 0)));
+    }
+
+    #[test]
+    fn untracked_line_count_preserves_text_and_newline_semantics() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        for (content, expected) in [
+            ("", 0),
+            ("中文🙂", 1),
+            ("第一行\n第二行", 2),
+            ("第一行\n第二行\n", 2),
+            ("\n", 1),
+            ("\n\n", 2),
+            ("one\r\ntwo\r\n", 2),
+        ] {
+            std::fs::write(scratch.0.join("text.txt"), content).unwrap();
+            assert_eq!(
+                count_untracked_lines(&repo, "text.txt"),
+                Some((expected, 0)),
+                "{content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untracked_line_count_rejects_binary_even_after_first_chunk() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let mut content = vec![b'x'; 20 * 1024];
+        content.push(0);
+        std::fs::write(scratch.0.join("binary.dat"), content).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "binary.dat"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_does_not_report_a_truncated_line_total() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        for (content, expected) in [
+            ("\n".repeat(100_000), Some((100_000, 0))),
+            ("\n".repeat(100_001), None),
+            (format!("{}tail", "\n".repeat(100_000)), None),
+        ] {
+            std::fs::write(scratch.0.join("lines.txt"), content).unwrap();
+            assert_eq!(count_untracked_lines(&repo, "lines.txt"), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_line_count_rejects_non_regular_targets() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        std::os::unix::fs::symlink("/dev/null", scratch.0.join("device")).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "device"), None);
+        std::fs::create_dir(scratch.0.join("directory")).unwrap();
+        assert_eq!(count_untracked_lines(&repo, "directory"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_stops_when_file_grows_during_read() {
+        use std::io::{Read, Write};
+
+        struct GrowingFile {
+            reader: std::fs::File,
+            writer: Option<std::fs::File>,
+            bytes_read: usize,
+        }
+
+        impl Read for GrowingFile {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.reader.read(buffer)?;
+                self.bytes_read += read;
+                if let Some(mut writer) = self.writer.take() {
+                    writer.write_all(&vec![b'x'; 1024 * 1024])?;
+                }
+                Ok(read)
+            }
+        }
+
+        let scratch = Scratch::new();
+        let path = scratch.0.join("growing.txt");
+        std::fs::write(&path, vec![b'x'; 16 * 1024]).unwrap();
+        let mut reader = GrowingFile {
+            reader: std::fs::File::open(&path).unwrap(),
+            writer: Some(std::fs::OpenOptions::new().append(true).open(&path).unwrap()),
+            bytes_read: 0,
+        };
+        assert_eq!(reader.reader.metadata().unwrap().len(), 16 * 1024);
+        assert_eq!(
+            count_untracked_reader(&mut reader),
+            None,
+            "read {} bytes",
+            reader.bytes_read
+        );
+        assert_eq!(reader.bytes_read, 1024 * 1024 + 1);
+        assert!(std::fs::metadata(path).unwrap().len() > 1024 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_line_count_rejects_fifo_without_opening_it() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        let path = std::ffi::CString::new(scratch.0.join("pipe").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert_eq!(count_untracked_lines(&repo, "pipe"), None);
+    }
+
+    #[test]
+    fn untracked_line_count_leaves_optional_stats_unknown_when_skipped() {
+        let scratch = Scratch::new();
+        Repository::init(&scratch.0).unwrap();
+        std::fs::write(scratch.0.join("large.txt"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        std::fs::write(scratch.0.join("binary.dat"), b"binary\0data").unwrap();
+        std::fs::write(scratch.0.join("empty.txt"), b"").unwrap();
+        let status = git_status_blocking(scratch.0.to_str().unwrap()).unwrap();
+        assert_eq!(status.untracked.len(), 3);
+        for entry in status.untracked {
+            let expected = if entry.path == "empty.txt" {
+                Some(0)
+            } else {
+                None
+            };
+            assert_eq!(entry.additions, expected, "{}", entry.path);
+            assert_eq!(entry.deletions, expected, "{}", entry.path);
         }
     }
 

@@ -4,6 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/lib/i18n";
 import { ProcessDisclosure } from "./ProcessDisclosure";
 import type { ProcessItem } from "./timeline-rows";
+import { StepRow } from "@/components/application/task-list/task-list";
+import { findTimelineMatches } from "./timeline-search";
+
+vi.mock("@/components/application/task-list/task-list", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/application/task-list/task-list")>();
+  return { ...actual, StepRow: vi.fn(actual.StepRow) };
+});
 
 // jsdom reports a reduced-motion preference, which would make every reveal
 // publish its text immediately and hide the pacing under test.
@@ -17,12 +24,15 @@ actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let root: Root;
+let seenTools: Set<string>;
 
 beforeEach(async () => {
   await i18n.changeLanguage("zh");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  seenTools = new Set();
+  vi.mocked(StepRow).mockClear();
 });
 
 afterEach(async () => {
@@ -54,7 +64,7 @@ async function render(
         turnLive={props.turnLive}
         thinkingAutoCollapse={props.thinkingAutoCollapse}
         processId={1}
-        seenTools={new Set()}
+        seenTools={seenTools}
       />,
     );
   });
@@ -63,6 +73,144 @@ async function render(
 function headerExpanded(): boolean {
   return container.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded") === "true";
 }
+
+function tools(count: number): ProcessItem[] {
+  return Array.from({ length: count }, (_, index) => ({
+    type: "tool",
+    text: `工具 ${index} 中文 👨‍👩‍👧‍👦`,
+    args: { command: `读取 ${index} 🙂` },
+    result: `结果 ${index} ✅`,
+  }));
+}
+
+async function clickButton(label: string) {
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((element) =>
+    element.textContent === label || element.getAttribute("aria-label") === label,
+  );
+  expect(button, label).toBeTruthy();
+  await act(async () => button!.click());
+}
+
+describe("ProcessDisclosure bounded history", () => {
+  it.each([120, 500])("mounts at most 40 of %i tools and visits every history page", async (count) => {
+    const items = tools(count);
+    await render(items);
+    expect(vi.mocked(StepRow).mock.calls.length).toBeLessThanOrEqual(40);
+    expect(container.querySelectorAll("li").length).toBeLessThanOrEqual(40);
+    expect(container.textContent).toContain(items[count - 1].text);
+    const visited = new Set<string>();
+    for (let page = Math.ceil(count / 40) - 1; page >= 0; page--) {
+      expect(container.querySelectorAll("li").length).toBeLessThanOrEqual(40);
+      for (const item of items) {
+        if (container.textContent!.includes(item.text)) visited.add(item.text);
+      }
+      if (page > 0) await clickButton(i18n.t("chat.processPreviousPage"));
+    }
+    expect(visited.size).toBe(count);
+    await clickButton("展开工具参数");
+    expect(container.textContent).toContain("读取 0 🙂");
+    expect(container.textContent).toContain("结果 0 ✅");
+    await clickButton(i18n.t("chat.processNextPage"));
+    expect(container.textContent).toContain(items[40].text);
+    expect(container.textContent).not.toContain("读取 0 🙂");
+    await clickButton(i18n.t("chat.processLatestPage"));
+    expect(container.textContent).toContain(items[count - 1].text);
+    expect(vi.mocked(StepRow).mock.calls.every(([props]) => props.reduce)).toBe(true);
+  });
+
+  it("bounds mixed thinking/tool sections across the whole disclosure", async () => {
+    const items = tools(120).flatMap((tool, index): ProcessItem[] => [
+      { type: "thinking", text: `完整思考 ${index} 中文🙂` }, tool,
+    ]);
+    await render(items);
+    expect(container.querySelectorAll("li").length).toBe(20);
+    expect(container.querySelectorAll(".whitespace-pre-wrap").length).toBe(20);
+    expect(container.textContent).toContain("完整思考 119 中文🙂");
+  });
+
+  it("keeps whole-group search matches while only the selected page has DOM text", async () => {
+    const items = tools(120);
+    await render(items);
+    expect(findTimelineMatches([{ kind: "process", firstSeq: 1, items }], "中文")).toHaveLength(120);
+    expect(findTimelineMatches([{ kind: "process", firstSeq: 1, items }], items[0].text)).toEqual([{ rowIndex: 0 }]);
+    expect(container.textContent).not.toContain(items[0].text);
+    await clickButton(i18n.t("chat.processPreviousPage"));
+    await clickButton(i18n.t("chat.processPreviousPage"));
+    expect(container.textContent).toContain(items[0].text);
+  });
+
+  it("keeps historical pages stable during arrivals and resumes latest explicitly", async () => {
+    await render(tools(120));
+    await clickButton(i18n.t("chat.processPreviousPage"));
+    const row = container.querySelector("li");
+    await clickButton("展开工具参数");
+    await render(tools(500));
+    expect(container.querySelector("li")).toBe(row);
+    expect(container.textContent).toContain("读取 40 🙂");
+    expect(container.textContent).not.toContain("工具 499 中文");
+    await clickButton(i18n.t("chat.processLatestPage"));
+    await render(tools(501));
+    expect(container.textContent).toContain("工具 500 中文 👨‍👩‍👧‍👦");
+    expect(container.querySelectorAll("li").length).toBeLessThanOrEqual(40);
+  });
+
+  it("suppresses bulk entrances but keeps a single new tool entrance", async () => {
+    const items = tools(5);
+    await render(items.slice(0, 1));
+    expect(vi.mocked(StepRow).mock.calls.at(-1)![0].reduce).toBe(false);
+    vi.mocked(StepRow).mockClear();
+    await render(items.slice(0, 4));
+    const arrivals = vi.mocked(StepRow).mock.calls.filter(([props]) => props.step.label !== items[0].text);
+    expect(arrivals).toHaveLength(3);
+    expect(arrivals.every(([props]) => props.reduce)).toBe(true);
+    expect(container.querySelector(".grid")!.className).not.toContain("transition-[grid-template-rows]");
+    vi.mocked(StepRow).mockClear();
+    await render(items);
+    expect(vi.mocked(StepRow).mock.calls.at(-1)![0].reduce).toBe(false);
+  });
+
+  it("unmounts large histories on collapse and keeps reopening bounded", async () => {
+    await render(tools(500), { autoExpand: false });
+    expect(container.querySelectorAll("li")).toHaveLength(0);
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(container.querySelectorAll("li").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll("li").length).toBeLessThanOrEqual(40);
+    expect(container.querySelector(".grid")!.className).not.toContain("transition-[grid-template-rows]");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(container.querySelectorAll("li")).toHaveLength(0);
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(container.querySelectorAll("li").length).toBeLessThanOrEqual(40);
+  });
+
+  it("follows page boundaries without replaying original-index tool entrances", async () => {
+    const items = tools(121);
+    await render(items.slice(0, 120));
+    expect(seenTools.size).toBe(120);
+    expect(seenTools.has("1:119")).toBe(true);
+    await render(items);
+    expect(container.querySelectorAll("li")).toHaveLength(1);
+    expect(container.textContent).toContain(items[120].text);
+    await clickButton(i18n.t("chat.processPreviousPage"));
+    expect(container.querySelectorAll("li")).toHaveLength(40);
+    expect(container.textContent).toContain(items[80].text);
+    expect(vi.mocked(StepRow).mock.calls.every(([props]) => props.reduce)).toBe(true);
+  });
+
+  it("preserves large-group thinking auto-collapse and a manual override", async () => {
+    const items = tools(120);
+    const text = "中文与 emoji 👨‍👩‍👧‍👦\n".repeat(300);
+    await render([...items, { type: "thinking", text, live: true }], { turnLive: true });
+    expect(container.querySelector(".whitespace-pre-wrap")!.textContent).toBe(text);
+    await render([...items, { type: "thinking", text }], { turnLive: true });
+    expect(headerExpanded()).toBe(false);
+    expect(container.querySelector(".whitespace-pre-wrap")).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(container.querySelector(".whitespace-pre-wrap")!.textContent).toBe(text);
+    await render([...items, { type: "thinking", text, live: true }], { turnLive: true });
+    await render([...items, { type: "thinking", text }], { turnLive: true });
+    expect(headerExpanded()).toBe(true);
+  });
+});
 
 describe("ProcessDisclosure tool args", () => {
   it("hides args until the tool row is expanded", async () => {

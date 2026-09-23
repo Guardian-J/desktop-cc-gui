@@ -33,6 +33,11 @@ struct DeviceIdArgs {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct DiagnosticsEnabledArgs {
+    enabled: bool,
+}
+
 fn parse_args<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, String> {
     serde_json::from_value(raw.clone()).map_err(|e| format!("invalid args: {e}"))
 }
@@ -1014,6 +1019,18 @@ pub(super) async fn dispatch(app: &tauri::AppHandle, cmd: &str, raw: Value) -> R
         }
         // metrics
         "app_metrics" => ser(crate::metrics::app_metrics(app.state())),
+        "performance_diagnostics" => ser(crate::metrics::performance_diagnostics(app.state())),
+        "performance_diagnostics_enabled" => {
+            ser(crate::metrics::performance_diagnostics_enabled(app.state()))
+        }
+        "performance_diagnostics_set_enabled" => {
+            let args: DiagnosticsEnabledArgs = parse_args(&raw)?;
+            ser(crate::metrics::performance_diagnostics_set_enabled(
+                args.enabled,
+                app.state(),
+                app.state(),
+            ))
+        }
         // web access: phones may read status; start/stop stay desktop-only.
         "web_access_status" => ser(Ok(web_access_status(app.clone()))),
         // The relay has no bootstrap problem (unlike the bridge, which cannot
