@@ -200,16 +200,22 @@ function buttonExact(text: string, scope: ParentNode = document.body): HTMLButto
 }
 
 describe("InstalledPane", () => {
-  it("lists skills with source badges and filters by source", async () => {
+  it("lists skills with source badges and filters by engine", async () => {
     await renderPane();
     expect(document.body.textContent).toContain("alpha");
     expect(document.body.textContent).toContain("beta");
 
+    // alpha 只同步了 Claude，beta 在 Codex 有一份副本：按 Codex 过滤只剩 beta。
     await act(async () => {
-      buttonExact("本地").click();
+      buttonExact("Codex").click();
     });
-    expect(document.body.textContent).toContain("beta");
     expect(document.body.textContent).not.toContain("managed skill");
+    expect(document.body.textContent).toContain("beta");
+
+    await act(async () => {
+      buttonExact("全部引擎").click();
+    });
+    expect(document.body.textContent).toContain("managed skill");
   });
 
   it("opens the detail dialog and syncs a second engine", async () => {
@@ -452,7 +458,7 @@ describe("InstalledPane", () => {
     expect(api.restore).toHaveBeenCalledWith("anthropics/skills:alpha");
   });
 
-  it("disables a row while its own mutation is pending, leaving others clickable", async () => {
+  it("keeps 纳管 out of the row and disables it while it runs in the detail panel", async () => {
     let release: (value: SkillMutationResult) => void = () => undefined;
     api.importLocal.mockImplementation(
       () =>
@@ -465,11 +471,17 @@ describe("InstalledPane", () => {
       [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
         (button) => button.textContent?.trim() === "纳管",
       );
+    // 行内不再挂「纳管」：本地技能要在详情面板里纳管（或勾选「同步到」的引擎）。
+    expect(adoptButtons()).toHaveLength(0);
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-label="查看 beta 详情"]')?.click();
+    });
     expect(adoptButtons()).toHaveLength(1);
     await act(async () => {
       adoptButtons()[0].click();
     });
-    // Only the pending row disables; the managed row's detail button stays live.
+    // Only the pending entry disables; the managed row's own buttons stay live.
     expect(adoptButtons()[0].disabled).toBe(true);
     expect(
       [...document.querySelectorAll<HTMLButtonElement>("button")].some(

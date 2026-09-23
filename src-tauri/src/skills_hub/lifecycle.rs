@@ -97,30 +97,17 @@ pub(super) async fn install_skill(
 
     let client = http_client()?;
     let (branch, tree) = get_repo_tree(&client, &repo_owner, &repo_name, &repo_branch).await?;
-    let prefix = format!("{source_dir}/");
-    let files: Vec<&Value> = tree
-        .iter()
-        .filter(|entry| {
-            entry.get("type").and_then(Value::as_str) == Some("blob")
-                && entry
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .map(|path| path == source_dir || path.starts_with(&prefix))
-                    .unwrap_or(false)
-        })
-        .collect();
-    if !files.iter().any(|entry| {
-        entry
-            .get("path")
-            .and_then(Value::as_str)
-            .map(is_skill_md_path)
-            .unwrap_or(false)
-    }) {
+    // skills.sh 的 id 未必等于仓库里的目录名（`vercel-react-best-practices`
+    // 在 vercel-labs/agent-skills 里是 `skills/react-best-practices`）：给定
+    // 目录没有 SKILL.md 时按同一套对齐规则再解析一次，别让安装死在一个
+    // 目录名上（详情面板的远端 SKILL.md 读的是同一份树）。
+    let Some(source_dir) = resolve_existing_skill_dir(&tree, &source_dir) else {
         return Err(SkillError::coded(
             "invalid_input",
             "SKILL.md not found in selected directory",
         ));
-    }
+    };
+    let files = skill_dir_files(&tree, &source_dir);
 
     let dest = managed_skill_path(&install_name)?;
     // 本地修改保护：托管副本的磁盘哈希与注册表记录不一致时拒绝覆盖，

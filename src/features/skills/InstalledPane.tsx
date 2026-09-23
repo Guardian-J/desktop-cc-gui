@@ -4,7 +4,9 @@
  *
  * A row is a button that opens the detail panel; the engine icons next to it
  * are separate buttons, so opening the panel can never toggle a target by
- * accident and toggling one engine never opens the panel.
+ * accident and toggling one engine never opens the panel. 纳管 (adopt a local
+ * skill) is deliberately not a row action: it lives in the detail panel and in
+ * the target checkboxes, so the list keeps one action per row at most.
  */
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -30,24 +32,14 @@ import { SkillDetailDialog } from "./SkillDetailDialog";
 import { SkillImportDialog } from "./SkillImportDialog";
 import { useInstalledSkills } from "./useInstalledSkills";
 import { useSkillUsage } from "./useSkillUsage";
-import type { SkillRow, SkillSourceKind, SkillTargetId } from "./types";
+import type { SkillRow, SkillTargetId } from "./types";
 import {
   filterSkills,
   nextTargets,
-  sourceKindOf,
   summarizeTargetResults,
   usageForSkill,
   visibleEngines,
 } from "./utils";
-
-const SOURCE_FILTERS: (SkillSourceKind | "")[] = [
-  "",
-  "managed",
-  "local",
-  "builtin",
-  "system",
-  "plugin",
-];
 
 /** The update map is keyed by skill id; local entries (unmanaged) never have
  *  upstream updates. */
@@ -57,7 +49,6 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
   const { t } = useTranslation();
   const store = useInstalledSkills(true);
   const [query, setQuery] = useState("");
-  const [source, setSource] = useState<SkillSourceKind | "">("");
   const [engine, setEngine] = useState<SkillTargetId | "">("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyTarget, setBusyTarget] = useState<{ skillId: string; targetId: string } | null>(null);
@@ -93,8 +84,8 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
     store.targets.find((target) => target.id === targetId)?.label ?? targetId;
 
   const filtered = useMemo(
-    () => filterSkills(store.skills, { query, source, target: engine }),
-    [store.skills, query, source, engine],
+    () => filterSkills(store.skills, { query, target: engine }),
+    [store.skills, query, engine],
   );
 
   const updateCount = useMemo(
@@ -310,12 +301,6 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
-        {SOURCE_FILTERS.map((kind) => (
-          <Chip key={kind || "all"} selected={source === kind} onClick={() => setSource(kind)}>
-            {kind ? t(`skills.source.${kind}`) : t("skills.filter.allSources")}
-          </Chip>
-        ))}
-        <span className="mx-1 h-4 w-px bg-separator-border" aria-hidden />
         <Chip selected={engine === ""} onClick={() => setEngine("")}>
           {t("skills.filter.allEngines")}
         </Chip>
@@ -421,16 +406,6 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
                       onClick={() => void runUpdate(skill, false)}
                     >
                       {t("skills.actions.update")}
-                    </Button>
-                  ) : null}
-                  {!skill.managed && sourceKindOf(skill) === "local" ? (
-                    <Button
-                      variant="secondary"
-                      size="xs"
-                      disabled={pending}
-                      onClick={() => void onImport(skill)}
-                    >
-                      {t("skills.actions.import")}
                     </Button>
                   ) : null}
                 </div>

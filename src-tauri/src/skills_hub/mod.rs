@@ -146,6 +146,23 @@ pub(crate) async fn skills_hub_query(mode: String, params: Value) -> Result<Valu
                 .map_err(HubError::from)?;
             Ok(payload)
         }
+        // skills.sh 只给 name / repo / installs：详情回仓库读 SKILL.md。
+        "remote_skill_content" => {
+            let owner = js_string(params.get("owner"));
+            let name = js_string(params.get("name"));
+            let branch = {
+                let branch = js_string(params.get("branch"));
+                if branch.is_empty() {
+                    "main".to_string()
+                } else {
+                    branch
+                }
+            };
+            let directory = js_string(params.get("directory"));
+            remote_skill_content(&owner, &name, &branch, &directory)
+                .await
+                .map_err(HubError::from)
+        }
         "skill_usage" => {
             let force = param_force(&params);
             let payload = tokio::task::spawn_blocking(move || skill_usage_query(force))

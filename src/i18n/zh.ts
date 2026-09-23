@@ -1450,7 +1450,6 @@ export const zh = {
     count: "{{count}} / {{total}} 个技能",
     updatesAvailable: "{{count}} 个技能有更新",
     filter: {
-      allSources: "全部来源",
       allEngines: "全部引擎",
     },
     empty: {
@@ -1541,6 +1540,15 @@ export const zh = {
       installs: "{{count}} 次安装",
       noResults: "没有找到匹配的技能。",
       none: "暂时没有可展示的技能。",
+      open: "查看 {{name}} 详情",
+      detailTitle: "{{name}} 详情",
+      contentLoading: "正在读取仓库里的 SKILL.md…",
+      contentMissing:
+        "仓库里没有找到这个技能的 SKILL.md（上游可能已改名或删除），可以打开仓库确认。",
+      contentFailed: "读取 SKILL.md 失败（可能是 GitHub 限流或网络问题）。",
+      openRepo: "打开仓库",
+      retry: "重试",
+      installTargets: "安装会写入 Claude 与 Codex 的技能目录。",
     },
     repos: {
       title: "技能来源仓库",

@@ -26,6 +26,7 @@ use super::http::*;
 use super::registry::*;
 use super::repos::*;
 use super::scan::*;
+use super::target_sync::SKILL_CONTENT_MAX_BYTES;
 // ===== discover / updates / search / popular（缓存 + 网络） =====
 
 /// upstream 的 `/(^|\/)SKILL\.md$/i` 判定（大小写不敏感）。
@@ -253,4 +254,175 @@ pub(super) async fn discover_skills(force: bool) -> SkillResult<Value> {
     }
     write_discover_cache(&fingerprint, &merged)?;
     Ok(json!({"skills": merged, "cached": false, "generatedAt": now_ms()}))
+}
+
+// ===== skills.sh 详情：仓库里找 SKILL.md 并读回正文 =====
+
+/// skills.sh 的 skill id 归一化：小写、`:` → `-`（网站上的
+/// `react:components` 在仓库里是 `react-components`）。
+pub(super) fn normalize_skill_id(value: &str) -> String {
+    value.trim().to_lowercase().replace(':', "-")
+}
+
+/// 目录名与 skill id 的对齐分：3 = 完全相同；2 = 一方是另一方去掉仓库前缀后的
+/// 名字（`vercel-react-best-practices` ↔ `react-best-practices`）；0 = 不对齐。
+fn skill_dir_score(folder: &str, wanted: &str) -> u8 {
+    let folder = normalize_skill_id(folder);
+    if folder.is_empty() {
+        return 0;
+    }
+    if folder == wanted {
+        return 3;
+    }
+    if wanted.ends_with(&format!("-{folder}")) || folder.ends_with(&format!("-{wanted}")) {
+        return 2;
+    }
+    0
+}
+
+/// 在仓库 tree 里按目录名给 skills.sh 的 skill id 找 `SKILL.md` 所在目录
+/// （返回不带 `/SKILL.md` 的目录路径；根目录 SKILL.md 返回空串——skills.sh
+/// 只在 id 等于仓库名时才会指到它）。
+///
+/// 对齐规则只认「同名 / 去掉仓库前缀 / `:` 换 `-`」三种，命中多个取最浅的，
+/// 认不出来返回 None：宁可报 not_found 让人去 GitHub 看，也不拿另一个技能的
+/// 正文冒充。
+pub(super) fn resolve_skill_dir_in_tree(tree: &[Value], skill_id: &str) -> Option<String> {
+    let wanted = normalize_skill_id(skill_id);
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u8, usize, String)> = None;
+    for entry in tree {
+        if entry.get("type").and_then(Value::as_str) != Some("blob") {
+            continue;
+        }
+        let Some(path) = entry.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        if !is_skill_md_path(path) {
+            continue;
+        }
+        let dir = strip_skill_md_suffix(path).trim_end_matches('/');
+        let folder = dir.rsplit('/').next().unwrap_or("");
+        let score = skill_dir_score(folder, &wanted);
+        if score == 0 {
+            continue;
+        }
+        let depth = dir.matches('/').count();
+        let better = match &best {
+            None => true,
+            Some((best_score, best_depth, best_dir)) => {
+                score > *best_score
+                    || (score == *best_score
+                        && (depth < *best_depth
+                            || (depth == *best_depth && dir < best_dir.as_str())))
+            }
+        };
+        if better {
+            best = Some((score, depth, dir.to_string()));
+        }
+    }
+    best.map(|(_, _, dir)| dir)
+}
+
+/// 同一目录下的所有 blob（安装按目录下载文件时用同一份判定）。
+pub(super) fn skill_dir_files<'a>(tree: &'a [Value], dir: &str) -> Vec<&'a Value> {
+    let prefix = format!("{dir}/");
+    tree.iter()
+        .filter(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("blob")
+                && entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(|path| path == dir || path.starts_with(&prefix))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// 目录里有没有 `SKILL.md`（大写优先，其次 `skill.md`）。
+pub(super) fn dir_has_skill_md(tree: &[Value], dir: &str) -> bool {
+    skill_dir_files(tree, dir).iter().any(|entry| {
+        entry
+            .get("path")
+            .and_then(Value::as_str)
+            .map(is_skill_md_path)
+            .unwrap_or(false)
+    })
+}
+
+/// 给定目录没有 SKILL.md 时，按 skills.sh 的 id 规则在 tree 里再解析一次
+/// （`vercel-react-best-practices` → `skills/react-best-practices`）。
+pub(super) fn resolve_existing_skill_dir(tree: &[Value], requested: &str) -> Option<String> {
+    if dir_has_skill_md(tree, requested) {
+        return Some(requested.to_string());
+    }
+    let skill_id = requested.rsplit('/').next().unwrap_or(requested);
+    let resolved = resolve_skill_dir_in_tree(tree, skill_id)?;
+    if resolved.is_empty() || !dir_has_skill_md(tree, &resolved) {
+        return None;
+    }
+    Some(resolved)
+}
+
+/// skills.sh 的搜索/热门只给 name / repo / installs——「这个技能是干什么的」
+/// 得回仓库读 `SKILL.md`（详情面板按需调用，不做列表级预取）。
+pub(super) async fn remote_skill_content(
+    owner: &str,
+    name: &str,
+    branch: &str,
+    skill_id: &str,
+) -> SkillResult<Value> {
+    let owner = owner.trim();
+    let name = name.trim();
+    let wanted = normalize_skill_id(skill_id);
+    if owner.is_empty() || name.is_empty() || wanted.is_empty() {
+        return Err(SkillError::coded(
+            "invalid_input",
+            "Missing skill or repository information",
+        ));
+    }
+    let client = http_client()?;
+    let (branch, tree) = get_repo_tree(&client, owner, name, branch).await?;
+    let doc_path = match resolve_skill_dir_in_tree(&tree, &wanted) {
+        Some(dir) => format!("{dir}/SKILL.md"),
+        // 整个仓库只有一个根目录 SKILL.md：skills.sh 的 id 常等于仓库名。
+        None => {
+            let all: Vec<&str> = tree
+                .iter()
+                .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("blob"))
+                .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+                .filter(|path| is_skill_md_path(path))
+                .collect();
+            if all.len() == 1 && strip_skill_md_suffix(all[0]).is_empty() {
+                all[0].to_string()
+            } else {
+                return Err(SkillError::coded(
+                    "not_found",
+                    format!("No SKILL.md for \"{wanted}\" in {owner}/{name}"),
+                ));
+            }
+        }
+    };
+    let markdown = fetch_text(&client, &github_raw_url(owner, name, &branch, &doc_path)).await?;
+    let metadata = read_skill_metadata(&markdown, &wanted);
+    let bytes = markdown.as_bytes();
+    let truncated = bytes.len() > SKILL_CONTENT_MAX_BYTES;
+    let slice = if truncated {
+        &bytes[..SKILL_CONTENT_MAX_BYTES]
+    } else {
+        &bytes[..]
+    };
+    Ok(json!({
+        "name": metadata.name,
+        "description": metadata.description,
+        "directory": strip_skill_md_suffix(&doc_path).trim_end_matches('/'),
+        "path": doc_path,
+        "url": github_doc_url(owner, name, &branch, &doc_path),
+        "repoUrl": format!("https://github.com/{owner}/{name}"),
+        "markdown": String::from_utf8_lossy(slice).into_owned(),
+        "truncated": truncated,
+        "branch": branch,
+    }))
 }

@@ -17,6 +17,8 @@ import type {
   SkillSearchResult,
   SkillTargetId,
   SkillsInstalledResult,
+  SkillsMutation,
+  SkillRemoteContent,
   SkillUpdateResult,
   SkillUsageResult,
 } from "./types";
@@ -55,11 +57,14 @@ async function query<T>(mode: string, params: Record<string, unknown> = {}): Pro
   }
 }
 
-async function mutate<T = SkillMutationResult>(
-  payload: Record<string, unknown>,
-): Promise<T> {
+async function mutate<T = SkillMutationResult>(mutation: SkillsMutation): Promise<T> {
+  // `skills_hub_mutate` takes two params — the action plus that action's own
+  // payload. The call sites above pass one bag keyed by `action`, so split it
+  // here: shipping the bag flat made every mutation fail with
+  // 「invalid args `payload` … missing required key payload」.
+  const { action, ...payload } = mutation;
   try {
-    const result = await invoke<T>("skills_hub_mutate", payload);
+    const result = await invoke<T>("skills_hub_mutate", { action, payload });
     // The composer's `/` catalog is cached per workspace root; a successful
     // mutation changed what the CLI would discover there. Invalidate instead
     // of claiming the running session reloaded its skills.
@@ -93,6 +98,14 @@ export const skillsHubApi = {
     query<SkillUsageResult>("skill_usage", forceParam(force)),
   content: (directory: string) =>
     query<SkillContentResult>("skill_content", { directory }),
+  /** 发现页的详情：skills.sh 不给描述与正文，回仓库读 SKILL.md。 */
+  remoteContent: (skill: DiscoveredSkill) =>
+    query<SkillRemoteContent>("remote_skill_content", {
+      owner: skill.repoOwner,
+      name: skill.repoName,
+      branch: skill.repoBranch || "main",
+      directory: skill.directory,
+    }),
 
   install: (skill: DiscoveredSkill, targets: SkillTargetId[], force = false) =>
     mutate({

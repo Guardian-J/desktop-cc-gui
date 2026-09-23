@@ -1485,7 +1485,6 @@ export const en: Messages = {
     count: "{{count}} / {{total}} skills",
     updatesAvailable: "{{count}} skills have updates",
     filter: {
-      allSources: "All sources",
       allEngines: "All engines",
     },
     empty: {
@@ -1576,6 +1575,15 @@ export const en: Messages = {
       installs: "{{count}} installs",
       noResults: "No matching skill found.",
       none: "Nothing to show yet.",
+      open: "View details for {{name}}",
+      detailTitle: "{{name}} details",
+      contentLoading: "Reading SKILL.md from the repository…",
+      contentMissing:
+        "This repository has no SKILL.md for this skill (it may have been renamed or removed upstream). Open the repo to check.",
+      contentFailed: "Could not read SKILL.md (GitHub rate limit or network problem).",
+      openRepo: "Open repository",
+      retry: "Retry",
+      installTargets: "Installing copies the skill into the Claude and Codex skill folders.",
     },
     repos: {
       title: "Skill source repositories",

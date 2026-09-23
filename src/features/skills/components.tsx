@@ -38,7 +38,12 @@ export function SourceBadge({ skill }: { skill: SkillRow }) {
  *  re-syncs it). Clicking a synced icon removes that engine's copy (a local
  *  skill's own directory is adopted first instead, and cannot be removed).
  *  These buttons are siblings of the row button, so opening the detail panel
- *  stays a separate gesture. */
+ *  stays a separate gesture.
+ *
+ *  A locked copy (a local skill's own directory) is disabled without dimming:
+ *  the icon still means "a copy lives here", and a half-transparent mark reads
+ *  as missing/broken instead. The cursor and `title` carry the "can't toggle"
+ *  part; opacity is reserved for in-flight work. */
 function TargetEngineButton({
   skill,
   target,
@@ -68,7 +73,7 @@ function TargetEngineButton({
       data-target-state={state}
       disabled={disabled || busy || locked || !onToggleTarget}
       onClick={() => onToggleTarget?.(skill, target.id as SkillTargetId, state !== "synced")}
-      className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-background-tertiary-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-background-tertiary-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring disabled:cursor-not-allowed disabled:hover:bg-transparent"
     >
       {busy ? (
         <Loader2 className="size-3.5 animate-spin" aria-hidden />

@@ -2,7 +2,7 @@
  * 发现: repo discovery (explicit scan), skills.sh search, popular list and
  * repo management. Online calls only happen from user actions on this pane.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Download from "lucide-react/dist/esm/icons/download";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
@@ -15,6 +15,7 @@ import { CenteredSpinner, EmptyState } from "@/components/base/empty-state";
 import { ModalShell } from "@/components/dialogs";
 import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
 import { FeedbackLine, type Feedback } from "./components";
+import { SkillDiscoverDialog } from "./SkillDiscoverDialog";
 import { useSkillDiscovery } from "./useSkillDiscovery";
 import type { DiscoveredSkill } from "./types";
 
@@ -24,28 +25,41 @@ function DiscoverRow({
   skill,
   busy,
   installed,
+  onOpen,
   onInstall,
 }: {
   skill: DiscoveredSkill;
   busy: boolean;
   installed: boolean;
+  onOpen: () => void;
   onInstall: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <li className="flex items-center gap-2 rounded-2lg border border-separator-border px-3 py-2">
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-body-regular text-text-primary" title={skill.name}>
+      {/* 行主体点开详情：skills.sh 只有 name / repo / installs，描述与正文
+          都在仓库的 SKILL.md 里，不点进去就只能猜。安装按钮是兄弟节点。 */}
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={t("skills.discover.open", { name: skill.name })}
+        className="flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+      >
+        <span className="w-full truncate text-body-regular text-text-primary" title={skill.name}>
           {skill.name}
         </span>
-        <span className="truncate text-caption-1-regular text-text-secondary">
-          {skill.description || `${skill.repoOwner}/${skill.repoName}`}
-        </span>
-        <span className="truncate text-caption-1-regular text-text-tertiary">
+        {skill.description ? (
+          <span className="w-full truncate text-caption-1-regular text-text-secondary">
+            {skill.description}
+          </span>
+        ) : null}
+        <span className="w-full truncate text-caption-1-regular text-text-tertiary">
           {skill.repoOwner}/{skill.repoName}
-          {typeof skill.installs === "number" ? ` · ${t("skills.discover.installs", { count: skill.installs })}` : ""}
+          {typeof skill.installs === "number"
+            ? ` · ${t("skills.discover.installs", { count: skill.installs })}`
+            : ""}
         </span>
-      </div>
+      </button>
       <Button
         variant="secondary"
         size="xs"
@@ -71,6 +85,8 @@ export function DiscoverPane() {
    *  instead of inviting a second install. A full list refresh happens in
    *  the 我的 Skills tab. */
   const [installedKeys, setInstalledKeys] = useState<ReadonlySet<string>>(new Set());
+  /** 详情弹窗选中的条目：从当前列表派生，列表换了（搜索 / 切模式）自动关。 */
+  const [detailKey, setDetailKey] = useState<string | null>(null);
   const [reposOpen, setReposOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const repoRefresh = useActionFeedback({ spin: true });
@@ -99,6 +115,10 @@ export function DiscoverPane() {
   const isSearch = discovery.searchResults !== null;
   const busy = discovery.searchLoading || discovery.discoverLoading;
   const error = isSearch ? discovery.searchError : discovery.discoverError;
+  const detailSkill = useMemo(
+    () => listed.find((skill) => skill.key === detailKey) ?? null,
+    [listed, detailKey],
+  );
 
   const runSearch = () => {
     const trimmed = discovery.query.trim();
@@ -240,11 +260,22 @@ export function DiscoverPane() {
               skill={skill}
               busy={discovery.installingKey === skill.key}
               installed={installedKeys.has(skill.key)}
+              onOpen={() => setDetailKey(skill.key)}
               onInstall={() => void install(skill)}
             />
           ))}
         </ul>
       )}
+
+      {detailSkill ? (
+        <SkillDiscoverDialog
+          skill={detailSkill}
+          installed={installedKeys.has(detailSkill.key)}
+          busy={discovery.installingKey === detailSkill.key}
+          onInstall={() => void install(detailSkill)}
+          onClose={() => setDetailKey(null)}
+        />
+      ) : null}
 
       {reposOpen ? (
         <RepoDialog

@@ -51,7 +51,7 @@ describe("skills utils", () => {
     );
   });
 
-  it("filters by query, source and target state", () => {
+  it("filters by query and target state", () => {
     const rows = [
       skill({ id: "a", name: "Alpha", sourceKind: "managed", managed: true }),
       skill({ id: "b", name: "Beta", sourceKind: "local" }),
@@ -63,12 +63,9 @@ describe("skills utils", () => {
         targetStates: { claude: "off", codex: "off" },
       }),
     ];
-    expect(filterSkills(rows, { query: "bet", source: "", target: "" })).toHaveLength(1);
-    expect(filterSkills(rows, { query: "", source: "builtin", target: "" })).toHaveLength(1);
-    expect(filterSkills(rows, { query: "", source: "", target: "claude" })).toHaveLength(2);
-    expect(
-      filterSkills(rows, { query: "gamma", source: "", target: "claude" }),
-    ).toHaveLength(0);
+    expect(filterSkills(rows, { query: "bet", target: "" })).toHaveLength(1);
+    expect(filterSkills(rows, { query: "", target: "claude" })).toHaveLength(2);
+    expect(filterSkills(rows, { query: "gamma", target: "claude" })).toHaveLength(0);
   });
 
   it("sorts managed first, then by name", () => {

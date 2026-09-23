@@ -22,8 +22,6 @@ export function sourceKindOf(skill: Pick<SkillRow, "managed" | "sourceKind">): S
 
 export interface SkillFilter {
   query: string;
-  /** "" = all sources. */
-  source: SkillSourceKind | "";
   /** "" = all engines. */
   target: SkillTargetId | "";
 }
@@ -31,7 +29,6 @@ export interface SkillFilter {
 export function filterSkills(skills: SkillRow[], filter: SkillFilter): SkillRow[] {
   const needle = filter.query.trim().toLowerCase();
   return skills.filter((skill) => {
-    if (filter.source && sourceKindOf(skill) !== filter.source) return false;
     if (filter.target) {
       const state = skill.targetStates?.[filter.target] ?? "off";
       if (state === "off") return false;

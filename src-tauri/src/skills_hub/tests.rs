@@ -1013,3 +1013,96 @@ fn usage_missing_transcripts_reports_zero_not_fabricated() {
         .unwrap_or(false));
     let _ = &sandbox;
 }
+
+/// skills.sh 的 id 与仓库目录名对齐：同名 / 去掉仓库前缀 / `:` 换 `-`；
+/// 对不上返回 None（宁可报 not_found，也不拿别的技能正文冒充）。
+#[test]
+fn resolve_skill_dir_in_tree_matches_skills_sh_ids() {
+    let tree = vec![
+        json!({"type": "blob", "path": "skills/web-design-guidelines/SKILL.md"}),
+        json!({"type": "blob", "path": "skills/react-best-practices/SKILL.md"}),
+        json!({"type": "blob", "path": "deep/nested/react-best-practices/SKILL.md"}),
+        json!({"type": "blob", "path": "plugins/stitch-build/skills/react-components/SKILL.md"}),
+        json!({"type": "blob", "path": "skills/react-best-practices/references/notes.md"}),
+        json!({"type": "tree", "path": "skills/react-best-practices"}),
+        json!({"type": "blob", "path": "README.md"}),
+    ];
+    let dir_for = |id: &str| resolve_skill_dir_in_tree(&tree, id).unwrap_or_default();
+
+    assert_eq!(
+        dir_for("web-design-guidelines"),
+        "skills/web-design-guidelines"
+    );
+    // 同名目录多处时取最浅的那个。
+    assert_eq!(
+        dir_for("react-best-practices"),
+        "skills/react-best-practices"
+    );
+    // skills.sh 的 id 带仓库前缀（vercel-labs/agent-skills 的实际情况）。
+    assert_eq!(
+        dir_for("vercel-react-best-practices"),
+        "skills/react-best-practices"
+    );
+    // `react:components` 在仓库里是 `react-components`。
+    assert_eq!(
+        dir_for("react:components"),
+        "plugins/stitch-build/skills/react-components"
+    );
+    assert_eq!(dir_for("no-such-skill"), "");
+    // 根目录 SKILL.md 不是目录对齐的责任。
+    assert_eq!(dir_for("skills"), "");
+
+    // 安装路径：给定目录可用时原样返回，不可用时回落到对齐结果。
+    assert_eq!(
+        resolve_existing_skill_dir(&tree, "skills/react-best-practices").unwrap_or_default(),
+        "skills/react-best-practices"
+    );
+    assert_eq!(
+        resolve_existing_skill_dir(&tree, "vercel-react-best-practices").unwrap_or_default(),
+        "skills/react-best-practices"
+    );
+    assert_eq!(resolve_existing_skill_dir(&tree, "nope"), None);
+    assert!(dir_has_skill_md(&tree, "skills/web-design-guidelines"));
+    // 目录集合按前缀取（上游同款）：目录下没有 SKILL.md 就不算可安装目录。
+    assert!(!dir_has_skill_md(
+        &tree,
+        "skills/react-best-practices/references"
+    ));
+}
+
+/// 联网冒烟（默认 ignore，手动跑）：
+/// `cargo test --lib remote_skill_content_live -- --ignored --nocapture`
+/// 覆盖 skills.sh 的真实形态：id 带仓库前缀（`vercel-react-best-practices`）
+/// 也要能解析到 `skills/react-best-practices/SKILL.md` 并读回 frontmatter。
+#[ignore = "network: hits api.github.com and raw.githubusercontent.com"]
+#[tokio::test]
+async fn remote_skill_content_live_reads_the_repo_file() {
+    let payload = remote_skill_content(
+        "vercel-labs",
+        "agent-skills",
+        "main",
+        "vercel-react-best-practices",
+    )
+    .await
+    .expect("remote content");
+    assert_eq!(
+        js_string(payload.get("path")),
+        "skills/react-best-practices/SKILL.md"
+    );
+    assert!(
+        payload
+            .get("markdown")
+            .and_then(Value::as_str)
+            .map(|text| text.contains("name:"))
+            .unwrap_or(false),
+        "{payload:?}"
+    );
+    assert!(!js_string(payload.get("description")).is_empty(), "{payload:?}");
+
+    // 仓库里确实没有的技能要报 not_found，而不是随便挑一个 SKILL.md。
+    let missing = remote_skill_content("github", "awesome-copilot", "main", "gh-cli").await;
+    match missing.expect_err("must be not_found") {
+        SkillError::Coded(code, _) => assert_eq!(code, "not_found"),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}

@@ -179,6 +179,22 @@ export interface SkillContentResult {
   truncated: boolean;
 }
 
+/** skills.sh 条目本身只有 name / repo / installs；详情是回仓库读的 SKILL.md。 */
+export interface SkillRemoteContent {
+  name: string;
+  description: string;
+  /** 仓库里的目录（`skills/react-best-practices`）。 */
+  directory: string;
+  /** 仓库里的文件路径（`skills/react-best-practices/SKILL.md`）。 */
+  path: string;
+  /** 该文件在 GitHub 上的可读地址。 */
+  url: string;
+  repoUrl: string;
+  markdown: string;
+  truncated: boolean;
+  branch: string;
+}
+
 /** Query modes of `skills_hub_query`. */
 export type SkillsQuery =
   | { mode: "installed" }
@@ -189,12 +205,23 @@ export type SkillsQuery =
   | { mode: "updates"; force?: boolean }
   | { mode: "activity"; limit?: number }
   | { mode: "skill_usage"; force?: boolean }
-  | { mode: "skill_content"; directory: string };
+  | { mode: "skill_content"; directory: string }
+  | {
+      mode: "remote_skill_content";
+      owner: string;
+      name: string;
+      branch: string;
+      directory: string;
+    };
 
-/** Mutation actions of `skills_hub_mutate`. */
+/** Mutation actions of `skills_hub_mutate`: the action plus everything the
+ *  backend reads out of the `payload` it receives. `mutate()` in `api.ts`
+ *  splits the two. */
 export type SkillsMutation =
   | {
       action: "install";
+      /** Acknowledges overwriting a locally modified managed copy (updates). */
+      force?: boolean;
       skill: {
         name: string;
         description: string;
