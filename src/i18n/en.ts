@@ -795,6 +795,7 @@ export const en: Messages = {
     piAuthOauthDescRadius: "Radius account authorization",
     piAuthOauthDescKimi: "Kimi Code subscription",
     piAuthOauthDescZai: "Z.AI GLM Coding Plan subscription",
+    piAuthOauthDescAntigravity: "Google Antigravity authorization (Gemini 3 / Claude)",
     piAuthOauthDescGeminiCli: "Google Code Assist authorization",
     piAuthApiKeyTitle: "API Key",
     piAuthApiKeyHint:
