@@ -69,6 +69,7 @@ fn build_app(
         opencode_server: std::sync::Arc::new(
             ccgui_next_lib::engine::opencode_server::OpencodeServerState::default(),
         ),
+        worktree_creations: ccgui_next_lib::git_worktree::CreationRegistry::default(),
     };
     app.manage(state);
     app.manage(ConfigStore::default());
@@ -313,6 +314,7 @@ fn ipc_send_message_accepts_camel_case_args() {
         opencode_server: std::sync::Arc::new(
             ccgui_next_lib::engine::opencode_server::OpencodeServerState::default(),
         ),
+        worktree_creations: ccgui_next_lib::git_worktree::CreationRegistry::default(),
     });
     app.manage(ConfigStore::default());
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())

@@ -1,5 +1,6 @@
 // Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
 import { invoke } from "./transport";
+import type { NativePerformanceDiagnostics } from "./performance-types";
 import { withGrantRetry } from "./grant";
 
 // ==================== Shared types (mirror Rust serde camelCase) ====================
@@ -120,10 +121,113 @@ export interface Workspace {
   sortOrder: number | null;
   /** Sidebar group id (工作区分组); null = ungrouped. */
   groupId: string | null;
+  /** "worktree" = git worktree child under its parent workspace row;
+   *  undefined = ordinary workspace. */
+  kind?: "worktree";
+  /** Parent workspace id; only set when kind="worktree". */
+  parentId?: string;
   /** Opaque per-workspace metadata written by host-capability callers
    *  (e.g. { wsl: { hostId, distro } } from the wsl plugin); absent for
    *  ordinary directories. */
   meta?: Record<string, unknown>;
+}
+
+/** meta.worktree：worktree 子工作区的自描述（分支/来源 PR），由宿主在
+ *  创建时写入，侧栏徽标与删除流程读取。 */
+export interface WorktreeMeta {
+  branch: string;
+  baseRef?: string;
+  prNumber?: number;
+  prTitle?: string;
+  prUrl?: string;
+}
+
+/** Reads meta.worktree with a shape check; null for ordinary workspaces or
+ *  foreign/malformed meta (plugin-owned shapes are not our business). */
+export function worktreeMetaOf(workspace: Workspace): WorktreeMeta | null {
+  const raw = workspace.meta?.worktree;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const branch = (raw as Record<string, unknown>).branch;
+  if (typeof branch !== "string" || branch.trim() === "") return null;
+  return raw as unknown as WorktreeMeta;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  head: string;
+  isMain: boolean;
+  locked: boolean;
+  lockReason?: string;
+  /** git 判定目录已丢失（porcelain 的 prunable 属性）。 */
+  prunable: boolean;
+}
+
+export interface WorktreeCreateArgs {
+  repoPath: string;
+  parentWorkspaceId: string;
+  branch: string;
+  worktreePath: string;
+  baseRef: string | null;
+  prNumber: number | null;
+  prTitle: string | null;
+  prUrl: string | null;
+  existingBranch: boolean;
+}
+
+/** git_worktree_create 的阶段事件载荷（"worktree://create-progress"）。 */
+export type WorktreeCreateStage =
+  | "validate"
+  | "fetch"
+  | "add"
+  | "register"
+  | "done"
+  | "failed"
+  | "canceled";
+
+export type WorktreeErrorKind =
+  | "not_a_repo"
+  | "invalid_branch"
+  | "branch_not_found"
+  | "branch_exists"
+  | "branch_checked_out"
+  | "dir_exists"
+  | "pr_not_found"
+  | "fetch_failed"
+  | "base_not_found"
+  | "add_failed"
+  | "register_failed"
+  | "sparse_checkout_empty"
+  | "invalid_args"
+  | "unknown";
+
+export interface WorktreeCreateProgress {
+  creationId: string;
+  stage: WorktreeCreateStage;
+  message?: string;
+  errorKind?: WorktreeErrorKind;
+  error?: string;
+}
+
+export interface WorktreeRemoveResult {
+  orphanDirectory: boolean;
+  branchDeleted: boolean;
+  branchKeptReason?: "checked_out_elsewhere" | "unknown";
+}
+
+export interface PrPreview {
+  number: number;
+  /** "owner/repo" on GitHub. */
+  repo: string;
+  /** true = gh CLI 不可用/失败，仅 PR 号可确认。 */
+  degraded: boolean;
+  title?: string;
+  author?: string;
+  additions?: number;
+  deletions?: number;
+  state?: string;
+  branchConflict: boolean;
+  dirConflict: boolean;
 }
 
 export interface EngineInfo {
@@ -134,6 +238,10 @@ export interface EngineInfo {
   enabled: boolean;
   supportsImages: boolean;
   supportsEffort?: boolean;
+  /** Whether the engine can mount the app's computer-use driver (an MCP
+   *  server it accepts at launch). The composer's `/ccgui-cua` refuses on
+   *  engines that answer false instead of sending a text-only turn. */
+  supportsComputerUse?: boolean;
   /** Permission modes the engine honors at spawn ("auto" | "manual" |
    * "plan" | "bypass"); the composer picker greys out the rest. */
   permissions: string[];
@@ -141,6 +249,21 @@ export interface EngineInfo {
    *  不支持的引擎会被工作台阻止运行只读节点。 */
   supportsToolConstraints?: boolean;
 }
+export interface ComputerUsePermissionStatus {
+  accessibility: boolean;
+  screenRecording: boolean;
+  /** False on platforms with no OS-level grant flow (Windows/Linux): the UI
+   *  shows "no permission needed" instead of un-granted rows. */
+  osPermissionsRequired: boolean;
+}
+
+/** Drag source for the macOS grant flow: Settings panes only accept a real
+ *  app drag, so the UI offers the bundle (and its icon) to drag. */
+export interface ComputerUseDragSource {
+  path: string;
+  icon: string;
+}
+
 /** One entry of an engine's model catalog (`--list-models` probe). */
 export interface EngineModel {
   /** Selector passed to `--model` ("provider/model"). */
@@ -523,6 +646,9 @@ export interface GitTreeStatus {
 
 export interface BranchInfo {
   name: string;
+  /** Remote-tracking branch (`origin/x`): checking it out materializes (or
+   *  switches to) the local branch of the same short name. */
+  isRemote: boolean;
 }
 export interface AppMetrics {
   /** Resident memory of the app process, bytes. */
@@ -877,9 +1003,26 @@ export const ipc = {
     effort: string | null;
     permission: string | null;
     providerId: string | null;
+    /** 电脑操控: hand the agent the app's screenshot/input driver for this
+     *  turn (see features/chat/computer-use.ts). */
+    computerUse?: boolean;
   }) => invoke<SendResult>("send_message", args),
   interruptSession: (sessionId: string) =>
     invoke<boolean>("interrupt_session", { sessionId }),
+  // 电脑操控 (computer use)
+  /** macOS TCC probe. `osPermissionsRequired` is false on Windows/Linux,
+   *  where the driver needs no OS grant. */
+  computerUsePermissionStatus: () =>
+    invoke<ComputerUsePermissionStatus>("computer_use_permission_status"),
+  /** Deep-link the matching System Settings pane (macOS). */
+  computerUseOpenPermissionSettings: (kind: "accessibility" | "screenRecording") =>
+    invoke<void>("computer_use_open_permission_settings", { kind }),
+  /** The app bundle to drag into System Settings, plus its icon. */
+  computerUseDragSource: () =>
+    invoke<ComputerUseDragSource>("computer_use_drag_source"),
+  /** Arm/disarm the global Esc-to-stop while a computer-use run is active. */
+  computerUseSetActive: (active: boolean) =>
+    invoke<void>("computer_use_set_active", { active }),
   /** 任务工作台 agent 节点：原生桥（事件走 mission-agent://event）。 */
   missionAgentStart: (args: {
     /** 前端预生成的 runId（mission- 前缀）；先注册监听再 invoke。 */
@@ -976,6 +1119,15 @@ export const ipc = {
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   addWorkspace: (path: string, meta?: Record<string, unknown>) =>
     invoke<Workspace>("add_workspace", { path, meta: meta ?? null }),
+  /** Register a git worktree as a child workspace of `parentId`. The Rust
+   *  side validates the parent row exists. */
+  addWorktreeWorkspace: (path: string, parentId: string, meta?: Record<string, unknown>) =>
+    invoke<Workspace>("add_workspace", {
+      path,
+      meta: meta ?? null,
+      kind: "worktree",
+      parentId,
+    }),
   /** Plugin-scoped workspace registration: the Rust side re-checks the
    *  plugin's manifest grants (host:workspace; meta.wsl additionally needs
    *  host:workspace:remote) — the server-side counterpart of the JS gate in
@@ -1122,6 +1274,43 @@ export const ipc = {
     invoke<void>("git_checkout", { path, branch }),
   gitCreateBranch: (path: string, name: string) =>
     invoke<void>("git_create_branch", { path, name }),
+  // git worktree (子工作区)
+  gitWorktreeList: (repoPath: string) =>
+    invoke<WorktreeInfo[]>("git_worktree_list", { repoPath }),
+  /** Starts a background worktree creation; progress arrives on
+   *  "worktree://create-progress" events keyed by creationId. The invoke
+   *  promise resolves when the pipeline settles (failure also arrives as a
+   *  failed-stage event). */
+  gitWorktreeCreate: (creationId: string, args: WorktreeCreateArgs) =>
+    invoke<void>("git_worktree_create", { creationId, args }),
+  gitWorktreeCreateCancel: (creationId: string) =>
+    invoke<boolean>("git_worktree_create_cancel", { creationId }),
+  gitWorktreeRemove: (
+    repoPath: string,
+    worktreePath: string,
+    branch: string | null,
+    deleteBranch: boolean,
+  ) =>
+    invoke<WorktreeRemoveResult>("git_worktree_remove", {
+      repoPath,
+      worktreePath,
+      branch,
+      deleteBranch,
+    }),
+  gitBranchMerged: (repoPath: string, branch: string, base: string) =>
+    invoke<boolean>("git_branch_merged", { repoPath, branch, base }),
+  gitResolvePr: (
+    repoPath: string,
+    input: string,
+    suggestedBranch: string,
+    worktreePath: string,
+  ) =>
+    invoke<PrPreview>("git_resolve_pr", {
+      repoPath,
+      input,
+      suggestedBranch,
+      worktreePath,
+    }),
   // open-app
   openWorkspaceIn: (path: string, options: { appName: string; args?: string[] }) =>
     invoke<void>("open_workspace_in", { path, app: options.appName, args: options.args ?? [] }),
@@ -1135,6 +1324,9 @@ export const ipc = {
     invoke<void>("reveal_in_file_manager", { path }),
   // metrics
   appMetrics: () => invoke<AppMetrics>("app_metrics"),
+  performanceDiagnostics: () => invoke<NativePerformanceDiagnostics>("performance_diagnostics"),
+  performanceDiagnosticsEnabled: () => invoke<boolean>("performance_diagnostics_enabled"),
+  performanceDiagnosticsSetEnabled: (enabled: boolean) => invoke<boolean>("performance_diagnostics_set_enabled", { enabled }),
   // plugins
   pluginList: () => invoke<PluginInfo[]>("plugin_list"),
   pluginInstallFromPath: (path: string) =>

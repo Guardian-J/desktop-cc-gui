@@ -22,6 +22,23 @@ export interface ExternalSessionRow {
   remotePath?: string;
 }
 
+export type PluginConversationProps = {
+  conversationId: string;
+  workspacePath: string;
+  language: string;
+  onExit: () => void;
+  setExitBlocked?: (blocked: boolean) => void;
+};
+
+export interface PluginAgentCatalogEntry {
+  engine: string;
+  label: string;
+  available: boolean;
+  readOnly: boolean;
+  providers: { id: string; label: string }[];
+  models: { id: string; label: string }[];
+}
+
 export interface PluginContext {
   pluginId: string;
   version: string;
@@ -31,6 +48,11 @@ export interface PluginContext {
    *  ctx.react 容器（双段挂载模式，import-map 共享是 P0-3 后续）。 */
   react: typeof React;
   ui: {
+    registerConversationMode(def: {
+      key?: string;
+      label: () => string;
+      component: ComponentType<PluginConversationProps>;
+    }): Disposer;
     registerSettingsSection(def: {
       /** Optional sub-key; the settings page key becomes
        *  `plugin:<id>` or `plugin:<id>:<key>`. */
@@ -217,6 +239,7 @@ export interface PluginContext {
    *  delta | tool | usage | done | error …）。桌面专属（isWeb 下不可用的
    *  插件要自呈现）。 */
   agent: {
+    catalog(workspacePath: string): Promise<PluginAgentCatalogEntry[]>;
     /** 启动一个 agent 轮次；返回的 runId 用于事件过滤与 interrupt。 */
     start(def: {
       engine: string;
@@ -228,9 +251,11 @@ export interface PluginContext {
       providerId?: string;
       /** 引擎相关的会话续接 id（如 pi 的 --session-id）：同一 id 续上轮。 */
       sessionId?: string;
+      readOnly?: boolean;
+      requestId?: string;
     }): Promise<{ runId: string; sessionId: string | null }>;
     /** 中断本插件启动的 run（run id 属主前缀由宿主强制）。 */
-    interrupt(runId: string): Promise<void>;
+    interrupt(runId: string): Promise<boolean>;
   };
   /** 通用能力出口（0.3.0 起；旧的 `cmd:<command>` 逐命令授权机制已删除）。
    *  仅下列命令，`pluginId` 由宿主自动注入（插件无需也不能传）：

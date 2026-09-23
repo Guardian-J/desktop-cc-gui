@@ -55,6 +55,8 @@ export function AiChatSidebar({
   onRemoveWorkspace,
   onWorkspaceAlias,
   onSetWorkspaceArchived,
+  onNewWorktree,
+  onDeleteWorktree,
   onDropWorkspaceToSection,
   onCreateGroup,
   onOpenSettings,
@@ -82,6 +84,10 @@ export function AiChatSidebar({
   onWorkspaceAlias?: (id: string) => void;
   /** Workspace context-menu action: move the row into / out of 已归档. */
   onSetWorkspaceArchived?: (id: string, archived: boolean) => void;
+  /** Workspace context-menu / WORKTREES ＋: open the worktree create dialog. */
+  onNewWorktree?: (id: string) => void;
+  /** Worktree child-row menu「删除 Worktree…」: open the delete dialog. */
+  onDeleteWorktree?: (id: string) => void;
   /** Per-row + button: start a new chat in that workspace. */
   onNewSessionInWorkspace?: (id: string) => void;
   /** Commit of a drag-handle reorder (ordered workspace ids). */
@@ -107,10 +113,11 @@ export function AiChatSidebar({
   const { t } = useTranslation();
   const { searchOpen, openSearch, closeSearch } = useSearchPalette();
   const { collapsedGroups, toggleGroup } = useCollapsedGroups();
-  const allRepos = useMemo(
-    () => (sections ? sections.flatMap((section) => section.repos) : repos),
-    [sections, repos],
-  );
+  // Worktree 子行也进展开集/搜索面板的数据源：跟着父行扁平化。
+  const allRepos = useMemo(() => {
+    const topLevel = sections ? sections.flatMap((section) => section.repos) : repos;
+    return topLevel.flatMap((repo) => [repo, ...(repo.worktrees ?? [])]);
+  }, [sections, repos]);
   const { isRepoExpanded, toggleRepoExpanded } = useExpandedWorkspaces(allRepos, activeThreadId);
   const { workspaceMenu, closeWorkspaceMenu, openWorkspaceMenu, openArchivedMenu } =
     useWorkspaceMenu(onWorkspaceAlias, onSetWorkspaceArchived);
@@ -184,6 +191,7 @@ export function AiChatSidebar({
             onAddWorkspace={onAddWorkspace}
             onRemoveWorkspace={onRemoveWorkspace}
             onNewSessionInWorkspace={onNewSessionInWorkspace}
+            onNewWorktree={onNewWorktree}
             onReorderWorkspaces={onReorderWorkspaces}
             onToggleGroup={toggleGroup}
             onRepoContextMenu={openWorkspaceMenu}
@@ -226,6 +234,8 @@ export function AiChatSidebar({
         onCreateGroup={onCreateGroup ? () => setCreatingGroup(true) : undefined}
         onWorkspaceAlias={onWorkspaceAlias}
         onSetWorkspaceArchived={onSetWorkspaceArchived}
+        onNewWorktree={onNewWorktree}
+        onDeleteWorktree={onDeleteWorktree}
         onThreadAction={onThreadAction}
         onCopyThreadId={onCopyThreadId}
       />

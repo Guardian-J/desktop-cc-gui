@@ -37,12 +37,12 @@
 //! (lib.rs window-destroyed hook).
 
 use serde::Serialize;
-use tauri::Manager;
 use std::collections::HashMap;
 #[cfg(windows)]
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
+use tauri::Manager;
 
 use parking_lot::Mutex;
 
@@ -184,7 +184,8 @@ fn require_network_grant(
     } else {
         Err(format!(
             "{plugin_id}: missing network grant for {host}:{}",
-            port.map(|p| p.to_string()).unwrap_or_else(|| "*".to_string())
+            port.map(|p| p.to_string())
+                .unwrap_or_else(|| "*".to_string())
         ))
     }
 }
@@ -210,6 +211,19 @@ fn plugin_owns_run_id(plugin_id: &str, run_id: &str) -> bool {
     run_id.starts_with(&format!("pa-{plugin_id}-"))
 }
 
+fn plugin_agent_run_id(plugin_id: &str, request_id: Option<&str>) -> Result<String, String> {
+    let request_id = match request_id {
+        Some(value) if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+            value.to_string()
+        }
+        Some(_) => {
+            return Err("requestId must contain exactly 32 ASCII hexadecimal characters".into())
+        }
+        None => uuid::Uuid::new_v4().simple().to_string(),
+    };
+    Ok(format!("pa-{plugin_id}-{request_id}"))
+}
+
 /// 插件 agent 轮次（manifest 权限 `agent`）：经宿主引擎管线拉起一个 agent
 /// 进程——渠道注入、事件流、进程注册与聊天发送完全同构。事件走独立的
 /// `plugin-agent://event` 流；桌面专属，与 exec 系列一样不进 web dispatch。
@@ -223,13 +237,15 @@ pub(crate) async fn plugin_agent_start(
     model: Option<String>,
     provider_id: Option<String>,
     session_id: Option<String>,
+    read_only: Option<bool>,
+    request_id: Option<String>,
 ) -> Result<crate::engine::SendResult, String> {
     let grants = load_grants(&plugin_id)?;
     require_agent_grant(&grants, &plugin_id)?;
     let state = app.state::<crate::AppState>();
     // run id 内嵌插件 id（pa-<id>-<32hex>）：前端按此前缀把事件路由回
     // 属主插件；字符集 [A-Za-z0-9-_]、长度 ≤128 由插件 id 自身约束保证。
-    let run_id = format!("pa-{plugin_id}-{}", uuid::Uuid::new_v4().simple());
+    let run_id = plugin_agent_run_id(&plugin_id, request_id.as_deref())?;
     crate::engine::plugin_agent_send(
         state.inner(),
         engine,
@@ -239,6 +255,7 @@ pub(crate) async fn plugin_agent_start(
         model,
         provider_id,
         run_id,
+        read_only,
     )
     .await
 }
@@ -252,7 +269,9 @@ pub(crate) async fn plugin_agent_interrupt(
     let grants = load_grants(&plugin_id)?;
     require_agent_grant(&grants, &plugin_id)?;
     if !plugin_owns_run_id(&plugin_id, &run_id) {
-        return Err(format!("{plugin_id}: run id {run_id:?} not owned by this plugin"));
+        return Err(format!(
+            "{plugin_id}: run id {run_id:?} not owned by this plugin"
+        ));
     }
     let state = app.state::<crate::AppState>();
     let registry = std::sync::Arc::clone(&state.processes);
@@ -365,8 +384,7 @@ pub(crate) fn kill_tracked_children(plugin_id: &str) -> usize {
 /// window-destroyed hook so `lifecycle: "plugin"` services don't outlive
 /// the host.
 pub(crate) fn kill_all_tracked_children() {
-    let mut registry = tracked_children()
-        .lock();
+    let mut registry = tracked_children().lock();
     for (_, children) in registry.drain() {
         for mut entry in children {
             let _ = entry.child.start_kill();
@@ -458,9 +476,7 @@ async fn read_body_capped(mut response: reqwest::Response) -> Result<String, Str
 /// MAX_OUTPUT_BYTES + 1 bytes, then drain (discard) the rest so the child
 /// never blocks on a full pipe. wait_with_output buffered unboundedly, so a
 /// chatty process could OOM the host before truncate_output ever ran.
-async fn read_stream_capped(
-    pipe: impl tokio::io::AsyncRead + Unpin,
-) -> std::io::Result<Vec<u8>> {
+async fn read_stream_capped(pipe: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
     let mut taken = pipe.take((MAX_OUTPUT_BYTES + 1) as u64);
     let mut buf = Vec::new();
@@ -569,7 +585,9 @@ pub(crate) async fn plugin_add_workspace(
 ) -> Result<crate::history::reader::Workspace, String> {
     let grants = load_grants(&plugin_id)?;
     require_workspace_grants(&grants, &plugin_id, meta.as_ref())?;
-    crate::history::reader::add_workspace_inner(&state, &path, meta)
+    // Plugins register ordinary (or remote-meta) workspaces only; the
+    // worktree kind is host-UI territory and needs no plugin grant.
+    crate::history::reader::add_workspace_inner(&state, &path, meta, None, None)
 }
 
 /// Run a granted binary to completion, capturing stdout/stderr (64KB each).
@@ -631,20 +649,21 @@ pub(crate) async fn plugin_exec_run(
         let status = child.wait().await;
         (stdout, stderr, status)
     };
-    let (stdout, stderr, status) = match tokio::time::timeout(Duration::from_millis(timeout_ms), run).await {
-        Ok(result) => result,
-        Err(_) => {
-            // The dropped run future kill_on_drop-kills the direct child;
-            // sweep the tree it may have orphaned before dying.
-            #[cfg(unix)]
-            if let Some(pid) = child_pid.filter(|p| *p != 0) {
-                crate::engine::kill_process_group(pid);
+    let (stdout, stderr, status) =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), run).await {
+            Ok(result) => result,
+            Err(_) => {
+                // The dropped run future kill_on_drop-kills the direct child;
+                // sweep the tree it may have orphaned before dying.
+                #[cfg(unix)]
+                if let Some(pid) = child_pid.filter(|p| *p != 0) {
+                    crate::engine::kill_process_group(pid);
+                }
+                #[cfg(windows)]
+                drop(tree_guard);
+                return Err(format!("{plugin_id}: {bin} timed out after {timeout_ms}ms"));
             }
-            #[cfg(windows)]
-            drop(tree_guard);
-            return Err(format!("{plugin_id}: {bin} timed out after {timeout_ms}ms"));
-        }
-    };
+        };
     // Settle sweep (unix): the group is empty on a clean exit (ESRCH no-op);
     // anything left is an orphaned grandchild of the finished process.
     #[cfg(unix)]
@@ -655,8 +674,7 @@ pub(crate) async fn plugin_exec_run(
         stdout.map_err(|error| format!("{plugin_id}: failed to read {bin} stdout: {error}"))?;
     let stderr =
         stderr.map_err(|error| format!("{plugin_id}: failed to read {bin} stderr: {error}"))?;
-    let status =
-        status.map_err(|error| format!("{plugin_id}: failed to run {bin}: {error}"))?;
+    let status = status.map_err(|error| format!("{plugin_id}: failed to run {bin}: {error}"))?;
 
     Ok(PluginExecRunResult {
         code: status.code(),
@@ -745,8 +763,7 @@ mod tests {
     /// packages/plugin-sdk/spec/permissions.json — the single source of
     /// truth shared with the SDK and the template's validate-manifest.mjs;
     /// all three run the same vectors so drift fails here.
-    const PERMISSIONS_SPEC: &str =
-        include_str!("../../packages/plugin-sdk/spec/permissions.json");
+    const PERMISSIONS_SPEC: &str = include_str!("../../packages/plugin-sdk/spec/permissions.json");
 
     fn spec() -> serde_json::Value {
         serde_json::from_str(PERMISSIONS_SPEC).expect("permissions spec JSON is valid")
@@ -776,11 +793,17 @@ mod tests {
         let shapes = &spec["networkGrantShapes"];
         for valid in shapes["valid"].as_array().unwrap() {
             let permission = valid.as_str().unwrap();
-            assert!(is_valid_network_grant(permission), "spec-valid: {permission}");
+            assert!(
+                is_valid_network_grant(permission),
+                "spec-valid: {permission}"
+            );
         }
         for invalid in shapes["invalid"].as_array().unwrap() {
             let permission = invalid.as_str().unwrap();
-            assert!(!is_valid_network_grant(permission), "spec-invalid: {permission}");
+            assert!(
+                !is_valid_network_grant(permission),
+                "spec-invalid: {permission}"
+            );
         }
     }
 
@@ -821,7 +844,10 @@ mod tests {
         }
         for invalid in shapes["invalid"].as_array().unwrap() {
             let permission = invalid.as_str().unwrap();
-            assert!(!is_valid_exec_grant(permission), "spec-invalid: {permission}");
+            assert!(
+                !is_valid_exec_grant(permission),
+                "spec-invalid: {permission}"
+            );
         }
     }
 
@@ -922,8 +948,14 @@ mod tests {
 
     #[test]
     fn exec_grant_shape_validation() {
-        assert!(plugin_owns_run_id("release-poster", "pa-release-poster-abc123"));
-        assert!(!plugin_owns_run_id("release-poster", "pa-other-plugin-abc123"));
+        assert!(plugin_owns_run_id(
+            "release-poster",
+            "pa-release-poster-abc123"
+        ));
+        assert!(!plugin_owns_run_id(
+            "release-poster",
+            "pa-other-plugin-abc123"
+        ));
         assert!(!plugin_owns_run_id("release-poster", "run-abc123"));
         assert!(is_valid_exec_grant("exec:npm"));
         assert!(is_valid_exec_grant("exec:tokentracker-cli"));
@@ -934,6 +966,34 @@ mod tests {
         assert!(!is_valid_exec_grant("exec:a b"));
         assert!(!is_valid_exec_grant("exec:C:\\tool"));
         assert!(!is_valid_exec_grant("npm")); // missing prefix
+    }
+
+    #[test]
+    fn agent_request_id_is_exact_ascii_hex_and_preserves_caller_identity() {
+        let request = "0123456789abcdefABCDEF0123456789";
+        assert_eq!(
+            plugin_agent_run_id("relay", Some(request)).unwrap(),
+            format!("pa-relay-{request}")
+        );
+        for invalid in [
+            "".to_string(),
+            "a".repeat(31),
+            "a".repeat(33),
+            "g".repeat(32),
+            "é".repeat(16),
+            format!(" {}", "a".repeat(31)),
+            format!("{}-", "a".repeat(31)),
+        ] {
+            assert!(
+                plugin_agent_run_id("relay", Some(&invalid)).is_err(),
+                "{invalid:?}"
+            );
+        }
+        let generated = plugin_agent_run_id("relay", None).unwrap();
+        let suffix = generated.strip_prefix("pa-relay-").unwrap();
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(generated, plugin_agent_run_id("relay", None).unwrap());
     }
 
     #[test]

@@ -146,13 +146,16 @@ export function PromptDialog({
 interface ConfirmDialogProps {
   message: string;
   danger?: boolean;
+  /** Override for the confirm button's label when the action needs to be
+   *  spelled out (e.g. 一并归档). */
+  confirmLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
   /** Extra body content (e.g. the file list of the switch confirmation). */
   children?: ReactNode;
 }
 
-export function ConfirmDialog({ message, danger = false, onConfirm, onCancel, children }: ConfirmDialogProps) {
+export function ConfirmDialog({ message, danger = false, confirmLabel, onConfirm, onCancel, children }: ConfirmDialogProps) {
   const { t } = useTranslation();
   return (
     <ModalShell onClose={onCancel}>
@@ -165,7 +168,7 @@ export function ConfirmDialog({ message, danger = false, onConfirm, onCancel, ch
         {/* The confirm button takes the dialog's initial focus so Enter
          *  confirms instead of cancelling. */}
         <Button variant={danger ? "danger" : "primary"} size="small" autoFocus onClick={onConfirm}>
-          {t("common.confirm")}
+          {confirmLabel ?? t("common.confirm")}
         </Button>
       </div>
     </ModalShell>

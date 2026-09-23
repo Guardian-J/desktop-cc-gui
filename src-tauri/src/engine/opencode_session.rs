@@ -79,14 +79,7 @@ async fn run_server_turn_with_probe_port(
     let mut view = TurnView::default();
     let preassigned_session_id = req.session_id.clone();
     let result = turn_inner(
-        &core,
-        &mut state,
-        &mut view,
-        &req,
-        &bin,
-        &server,
-        &killed,
-        probe_port,
+        &core, &mut state, &mut view, &req, &bin, &server, &killed, probe_port,
     )
     .await;
     // Pending questions die with the turn: settle their cards BEFORE any
@@ -250,7 +243,12 @@ async fn prompt(
     if req.permission.as_deref() == Some("plan") {
         body["agent"] = json!("plan");
     }
-    if let Some(effort) = req.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+    if let Some(effort) = req
+        .effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
         body["variant"] = json!(effort);
     }
     let response = reqwest::Client::new()
@@ -301,7 +299,9 @@ fn spawn_event_stream(
                 let frame = buffer[..at].to_string();
                 buffer.drain(..at + 2);
                 for line in frame.lines() {
-                    let Some(data) = line.strip_prefix("data:") else { continue };
+                    let Some(data) = line.strip_prefix("data:") else {
+                        continue;
+                    };
                     let Ok(value) = serde_json::from_str::<Value>(data.trim()) else {
                         continue;
                     };
@@ -338,12 +338,14 @@ async fn handle_server_event(
             let part = properties.get("part").cloned().unwrap_or(Value::Null);
             let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
             let key = (
-                part
-                    .get("messageID")
+                part.get("messageID")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string(),
-                part.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
+                part.get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             );
             view.part_types.insert(key, part_type.to_string());
             if part_type == "tool" {
@@ -472,10 +474,7 @@ async fn handle_server_event(
 /// One tool part's state transition: "running" opens the row,
 /// completed/error patches its result (the pi row convention).
 fn handle_tool_part(core: &TurnCore, state: &mut TurnState, part: &Value) {
-    let name = part
-        .get("tool")
-        .and_then(Value::as_str)
-        .unwrap_or("tool");
+    let name = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
     let tool_state = part.get("state").cloned().unwrap_or(Value::Null);
     let status = tool_state
         .get("status")
@@ -848,15 +847,13 @@ mod tests {
         let mut parked = None;
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            parked = registry
-                .get("oc-test-run")
-                .and_then(|entry| {
-                    entry
-                        .questions
-                        .lock()
-                        .ok()
-                        .and_then(|q| q.get("que_mock").cloned())
-                });
+            parked = registry.get("oc-test-run").and_then(|entry| {
+                entry
+                    .questions
+                    .lock()
+                    .ok()
+                    .and_then(|q| q.get("que_mock").cloned())
+            });
             if parked.is_some() {
                 break;
             }
@@ -884,14 +881,20 @@ mod tests {
             let flushed: Value = serde_json::from_str(raw).expect("flushed batch must be JSON");
             for value in flushed.as_array().cloned().unwrap_or_else(|| vec![flushed]) {
                 kinds.push((
-                    value.get("kind").and_then(Value::as_str).unwrap_or("").to_string(),
+                    value
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     value.get("data").cloned().unwrap_or(Value::Null),
                 ));
             }
         }
         // Session announced, deltas streamed, question parked, done settled.
         assert!(
-            kinds.iter().any(|(k, d)| k == "session" && d == "ses_mock1"),
+            kinds
+                .iter()
+                .any(|(k, d)| k == "session" && d == "ses_mock1"),
             "{kinds:?}"
         );
         let deltas: String = kinds
@@ -906,19 +909,29 @@ mod tests {
             .map(|(_, d)| d.clone())
             .expect("no question event");
         assert_eq!(question["requestId"], "que_mock");
-        assert_eq!(question["input"]["questions"][0]["options"][1]["label"], "prod");
+        assert_eq!(
+            question["input"]["questions"][0]["options"][1]["label"],
+            "prod"
+        );
         assert!(kinds.iter().any(|(k, _)| k == "done"), "{kinds:?}");
         assert!(!kinds.iter().any(|(k, _)| k == "error"), "{kinds:?}");
 
         // The answered card must be out of the parked map (answer path removes
         // it before the turn-end drain ever sees it — same contract as the
         // answer_question command).
-        let still_parked = registry
-            .get("oc-test-run")
-            .and_then(|entry| entry.questions.lock().ok().and_then(|q| q.get("que_mock").cloned()));
+        let still_parked = registry.get("oc-test-run").and_then(|entry| {
+            entry
+                .questions
+                .lock()
+                .ok()
+                .and_then(|q| q.get("que_mock").cloned())
+        });
         // The reply was posted directly (mirroring answer_question), which
         // does not remove the parked copy; the drain settles it afterwards.
-        assert!(still_parked.is_none(), "drain must settle the parked question");
+        assert!(
+            still_parked.is_none(),
+            "drain must settle the parked question"
+        );
         // The mock saw the reply body the driver's mapping produced.
         let reply_body = reply_seen.try_recv().expect("mock saw no reply POST");
         let reply_json: Value = serde_json::from_str(&reply_body).expect("reply body json");

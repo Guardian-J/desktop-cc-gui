@@ -15,6 +15,9 @@ export interface SessionTabItem {
   icon?: LucideIcon;
   /** Finished activity the user has not opened yet — solid green dot. */
   unseen?: boolean;
+  /** 待读的非会话提醒（如升级后的「新版本」）：强调色圆点，值就是它的
+   *  可访问名与悬停提示。 */
+  unread?: string;
   /** Unsaved-changes dot before the label. */
   dirty?: boolean;
   /** Tooltip; defaults to the label. */
@@ -47,13 +50,16 @@ function TabLeadingIcon({
 }
 
 /** Same status dots as the sidebar: breathing blue while the turn streams,
- * solid green for unseen finished activity. */
+ * solid green for unseen finished activity, accent for a pending notice the
+ * user has not read yet (the release-notes tab's new version). */
 function TabStatusDot({
   streaming,
   unseen,
+  unread,
 }: {
   streaming: boolean;
   unseen?: boolean;
+  unread?: string;
 }) {
   const { t } = useTranslation();
   if (streaming) {
@@ -72,6 +78,16 @@ function TabStatusDot({
         className="sidebar-thread-status sidebar-thread-status-unseen"
         aria-label={t("chat.sessionUnseen")}
         title={t("chat.sessionUnseen")}
+      />
+    );
+  }
+  if (unread) {
+    return (
+      <span
+        className="size-1.5 shrink-0 rounded-full bg-accent-500"
+        role="status"
+        aria-label={unread}
+        title={unread}
       />
     );
   }
@@ -150,7 +166,7 @@ export function SessionTab({
         className="flex min-w-0 flex-1 cursor-default items-center gap-1.5"
       >
         <TabLeadingIcon icon={tab.icon} engine={tab.engine} />
-        <TabStatusDot streaming={tab.streaming} unseen={tab.unseen} />
+        <TabStatusDot streaming={tab.streaming} unseen={tab.unseen} unread={tab.unread} />
         {tab.dirty && (
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-foreground-icon-primary" />
         )}

@@ -13,15 +13,19 @@ import { usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
 import { useChatStore } from "./store";
 import { useChatSidebar } from "./use-chat-sidebar";
 
-vi.mock("@/lib/ipc", () => ({
+vi.mock("@/lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ipc")>()),
   ipc: {
     getAppSettings: vi.fn(async () => ({})),
     updateAppSettings: vi.fn(async () => {}),
+
+  
   },
 }));
 vi.mock("@/lib/events", () => ({
   listenEngineEvents: vi.fn(async () => () => {}),
   listenSessionsChanged: vi.fn(async () => () => {}),
+  listenComputerUseEscape: vi.fn(async () => () => {}),
 }));
 vi.mock("@/lib/platform", () => ({
   pickDirectory: vi.fn(async () => null),
@@ -122,6 +126,60 @@ describe("useChatSidebar repo mapping", () => {
       isDraft: true,
       engine: "codex",
     });
+  });
+
+  it("worktree 子工作区挂到父行下，标签用分支名并带 PR 元数据", async () => {
+    const WT = {
+      id: "wt1",
+      path: "/ws/a-worktrees/pr-1842",
+      name: "pr-1842",
+      lastOpenedAt: null,
+      sortOrder: 1,
+      groupId: null,
+      kind: "worktree",
+      parentId: "w1",
+      meta: { worktree: { branch: "pr-1842-fix-crash", prNumber: 1842 } },
+    } as Workspace;
+    await act(async () => {
+      useChatStore.setState({
+        workspaces: [WS, WT],
+        sessions: [SESSION, { ...SESSION, sessionId: "s-wt", workspacePath: WT.path }],
+      });
+    });
+    // 顶层只剩父行；子行连同自己的会话挂进 worktrees。
+    expect(captured.map((r) => r.id)).toEqual(["w1"]);
+    const child = captured[0]?.worktrees?.[0];
+    expect(child).toMatchObject({
+      id: "wt1",
+      path: WT.path,
+      label: "pr-1842-fix-crash",
+      originalLabel: "pr-1842",
+      worktree: { branch: "pr-1842-fix-crash", prNumber: 1842 },
+    });
+    expect(child?.threads.map((t) => t.id)).toEqual(["codex/s-wt"]);
+  });
+
+  it("父行不可见（已归档/被移除）时 worktree 降级为普通顶层行", async () => {
+    const WT = {
+      id: "wt1",
+      path: "/ws/a-worktrees/pr-1842",
+      name: "pr-1842",
+      lastOpenedAt: null,
+      sortOrder: 1,
+      groupId: null,
+      kind: "worktree",
+      parentId: "w1",
+      meta: { worktree: { branch: "pr-1842-fix-crash" } },
+    } as Workspace;
+    await act(async () => {
+      useChatStore.setState({
+        workspaces: [WS, WT],
+        archivedWorkspaces: ["w1"],
+      });
+    });
+    expect(captured.map((r) => r.id)).toEqual(["wt1"]);
+    expect(captured[0]?.worktrees).toBeUndefined();
+    expect(captured[0]?.label).toBe("pr-1842-fix-crash");
   });
 
   it("插件桥 hooks 注册后徽标响应式出现(activate/热重载不等无关重渲染)", async () => {

@@ -482,7 +482,8 @@ export function StatusBar({
   canCompact,
 }: {
   branch?: string;
-  /** Local branches for the switcher; empty until the first load. */
+  /** Local and remote-tracking branches for the switcher; empty until the
+   *  first load. */
   branches?: BranchMenuItem[];
   /** Repository display name when the chip tracks a nested repo (file-tree
    *  selection inside a subfolder repository); prefixes the branch label. */

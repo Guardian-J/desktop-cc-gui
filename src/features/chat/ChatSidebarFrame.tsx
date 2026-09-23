@@ -30,6 +30,8 @@ export function ChatSidebarFrame({
   onRemoveWorkspace,
   onWorkspaceAlias,
   onSetWorkspaceArchived,
+  onNewWorktree,
+  onDeleteWorktree,
   onNewSessionInWorkspace,
   onNewSession,
   onNewBrowser,
@@ -58,6 +60,10 @@ export function ChatSidebarFrame({
   onRemoveWorkspace: (workspaceId: string) => void;
   onWorkspaceAlias: (workspaceId: string) => void;
   onSetWorkspaceArchived: (workspaceId: string, archived: boolean) => void;
+  /** 右键菜单/WORKTREES ＋：打开 worktree 创建对话框。 */
+  onNewWorktree: (workspaceId: string) => void;
+  /** worktree 子行右键菜单：打开删除确认。 */
+  onDeleteWorktree: (workspaceId: string) => void;
   onNewSessionInWorkspace: (workspaceId: string) => void;
   onNewSession: () => void;
   /** 新建浏览器 nav entry (desktop only; omitted in web-access mode). */
@@ -103,6 +109,8 @@ export function ChatSidebarFrame({
         onRemoveWorkspace={onRemoveWorkspace}
         onWorkspaceAlias={onWorkspaceAlias}
         onSetWorkspaceArchived={onSetWorkspaceArchived}
+        onNewWorktree={onNewWorktree}
+        onDeleteWorktree={onDeleteWorktree}
         archivedRepos={archivedRepos}
         onNewSessionInWorkspace={onNewSessionInWorkspace}
         onNewSession={onNewSession}

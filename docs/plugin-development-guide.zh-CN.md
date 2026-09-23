@@ -267,8 +267,8 @@ interface PluginContext {
 
 | 事件 topic | 载荷 | 所需权限 |
 |---|---|---|
-| `usage://updated` | 完整 EngineEventPayload `{ runId, sessionId, engine, seq, kind: "usage", data, ts? }`；`data` 为引擎原始 usage JSON（字段因引擎而异，如 claude 的 `cache_read_input_tokens`、codex 的 `cached_input_tokens`、pi/omp 的 `cacheRead`）；`ts` 为宿主发射时刻 Unix 毫秒（SDK 0.3.8 起） | `events` |
-| `usage://done`（SDK 0.3.8 起） | 同上形状，`kind: "done"`；`data.usage` 携带该轮最终用量——claude/grok 等不发独立 usage 事件的引擎只经此上报，其它引擎用作轮结束信号 | `events` |
+| `usage://updated` | 完整 EngineEventPayload `{ runId, sessionId, engine, seq, kind: "usage", data, ts?, genMs? }`；`data` 为引擎原始 usage JSON（字段因引擎而异，如 claude 的 `cache_read_input_tokens`、codex 的 `cached_input_tokens`、pi/omp 的 `cacheRead`）；`ts` 为宿主发射时刻 Unix 毫秒（SDK 0.3.8 起）；`genMs` 为宿主实测的生成窗口毫秒（SDK 0.3.15 起，仅 `usage`/`done` 事件携带，工具执行与等待不计入） | `events` |
+| `usage://done`（SDK 0.3.8 起） | 同上形状，`kind: "done"`；`data.usage` 携带该轮最终用量——claude/grok 等不发独立 usage 事件的引擎只经此上报，其它引擎用作轮结束信号；`genMs` 为该轮生成窗口合计 | `events` |
 | `session://activated`（SDK 0.3.8 起） | `{ engine, sessionId }`；pending 标签 `sessionId` 为 null，无活动标签两者皆 null | `events` |
 | `composer://draft` | `{ text }`；草稿变化/清空/会话切换均发射 | `events` |
 

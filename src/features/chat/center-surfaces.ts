@@ -4,10 +4,11 @@ import { useGitStore } from "@/features/git/store";
 import { useMissionStore } from "@/features/mission/store";
 import { usePluginHubStore } from "@/features/plugins/hub/store";
 import { usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
+import { useReleaseNotesTabStore } from "@/features/update/notes-tab";
 
 /**
  * 清掉中心区的非对话面（差异、文件编辑器、浏览器页签、插件页签、插件中心、
- * 任务工作台）。
+ * 任务工作台、版本更新说明）。
  *
  * 中心区同一时刻只允许一个面在视，但「在视」是各 store 自己的一组布尔量，
  * 互斥全靠调用方维护（页签条的选择器 use-chat-tabs 会完整清场）。侧栏入口、
@@ -23,4 +24,5 @@ export function dismissCenterSurfaces(): void {
   usePluginTabsStore.getState().deactivate();
   usePluginHubStore.getState().deactivate();
   useMissionStore.getState().deactivate();
+  useReleaseNotesTabStore.getState().deactivate();
 }

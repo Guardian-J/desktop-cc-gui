@@ -1,7 +1,7 @@
 {
   "name": "ccgui-next",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "type": "module",
   "packageManager": "pnpm@10.29.3",
   "scripts": {
@@ -46,6 +46,7 @@
     "react-i18next": "^15",
     "react-markdown": "^9",
     "react-router-dom": "^7",
+    "react-scan": "^0.5.7",
     "rehype-highlight": "^7",
     "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",

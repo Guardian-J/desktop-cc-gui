@@ -1,12 +1,12 @@
-pub mod agents;
 pub mod agent_catalog;
+pub mod agents;
 pub mod baidu_tongji;
 pub mod browser;
 pub mod cc_switch;
 pub mod cli_lifecycle;
-pub mod config;
 pub mod computer_use;
 pub mod computer_use_ax;
+pub mod config;
 pub mod creator_skill;
 pub mod cu_overlay;
 pub mod db;
@@ -15,29 +15,32 @@ pub mod engine;
 pub mod event_sink;
 pub mod files;
 pub mod git;
+pub mod git_worktree;
 pub mod history;
+pub mod mcp;
 pub mod metrics;
 pub mod mission;
 pub mod open_app;
 pub mod paths;
-pub mod plugins;
 pub mod plugin_caps;
+pub mod plugins;
 pub mod prompts;
-pub mod proxy;
 pub mod provider_files;
 pub mod provider_models;
+pub mod proxy;
 pub mod quit_guard;
+pub mod relay;
 pub mod settings;
-pub mod usage;
+pub mod skills_hub;
 pub mod slash_commands;
 pub mod terminal;
-pub mod relay;
 pub mod updater;
+pub mod usage;
 pub mod web;
 
 use std::sync::Arc;
-use tauri::Manager;
 use tauri::Emitter;
+use tauri::Manager;
 
 pub struct AppState {
     pub db: Arc<db::Db>,
@@ -56,6 +59,9 @@ pub struct AppState {
     pub relay: relay::RelayState,
     pub dsh_host: std::sync::Arc<dsh_host::DshHostState>,
     pub opencode_server: std::sync::Arc<engine::opencode_server::OpencodeServerState>,
+    /// In-flight worktree creations (git_worktree_create) by creationId —
+    /// the cancel command signals through this registry.
+    pub worktree_creations: git_worktree::CreationRegistry,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -162,6 +168,7 @@ pub fn run() {
                 opencode_server: std::sync::Arc::new(
                     engine::opencode_server::OpencodeServerState::default(),
                 ),
+                worktree_creations: git_worktree::CreationRegistry::default(),
             };
             // Clone what the initial scan needs before state moves into manage.
             let scan_db = Arc::clone(&state.db);
@@ -178,15 +185,14 @@ pub fn run() {
             if let Err(error) = cu_overlay::init(app.handle()) {
                 eprintln!("[cu-overlay] init failed (overlay disabled): {error}");
             }
-            app.manage(metrics::MetricsState::new());
+            app.manage(metrics::MetricsState::load().map_err(std::io::Error::other)?);
             app.manage(baidu_tongji::BaiduTongjiState::load());
             // Keep the pairing key from lingering: while the switch is on, a
             // fresh code is minted every ten minutes and broadcast.
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(600));
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
                     loop {
                         interval.tick().await;
                         let _ = crate::settings::rotate_web_auth_key(&handle);
@@ -250,11 +256,14 @@ pub fn run() {
             // 状态必须已经就位。设置改动需重启应用。
             #[cfg(target_os = "windows")]
             let settings = settings::read_settings().unwrap_or_default();
-            let mut window_builder =
-                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-                    .title("CC GUI")
-                    .inner_size(1400.0, 900.0)
-                    .min_inner_size(900.0, 600.0);
+            let mut window_builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("CC GUI")
+            .inner_size(1400.0, 900.0)
+            .min_inner_size(900.0, 600.0);
             #[cfg(target_os = "macos")]
             {
                 // 原 tauri.conf.json: titleBarStyle "Overlay" + hiddenTitle true。
@@ -363,6 +372,14 @@ pub fn run() {
             computer_use::computer_use_open_permission_settings,
             computer_use::computer_use_drag_source,
             computer_use::computer_use_set_active,
+            // MCP inventory (设置 → 能力扩展 → MCP); desktop-only — the
+            // web bridge intentionally does not dispatch these.
+            mcp::mcp_inventory,
+            mcp::mcp_set_enabled,
+            mcp::probe::mcp_probe,
+            // skills hub (设置 → 能力扩展 → Skills)
+            skills_hub::skills_hub_query,
+            skills_hub::skills_hub_mutate,
             // history
             history::reader::list_sessions,
             history::reader::list_archived_sessions,
@@ -441,6 +458,12 @@ pub fn run() {
             git::git_branches,
             git::git_checkout,
             git::git_create_branch,
+            git_worktree::git_worktree_list,
+            git_worktree::git_worktree_create,
+            git_worktree::git_worktree_create_cancel,
+            git_worktree::git_worktree_remove,
+            git_worktree::git_branch_merged,
+            git_worktree::git_resolve_pr,
             // open-app
             open_app::open_workspace_in,
             open_app::open_custom_program,
@@ -453,6 +476,9 @@ pub fn run() {
             terminal::terminal_close,
             // metrics
             metrics::app_metrics,
+            metrics::performance_diagnostics,
+            metrics::performance_diagnostics_enabled,
+            metrics::performance_diagnostics_set_enabled,
             // plugin capability egress (network:/exec: manifest grants)
             plugin_caps::plugin_http_request,
             plugin_caps::plugin_add_workspace,
@@ -494,8 +520,15 @@ pub fn run() {
             baidu_tongji::load_baidu_tongji_script,
             baidu_tongji::send_baidu_tongji_beacon,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(metrics) = app.try_state::<metrics::MetricsState>() {
+                    metrics.stop();
+                }
+            }
+        });
 }
 /// Probe the user's login+interactive shell for its PATH and install it into
 /// this process. `-l` sources .zprofile (homebrew), `-i` sources .zshrc

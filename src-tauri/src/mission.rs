@@ -61,7 +61,9 @@ pub(crate) async fn mission_agent_interrupt(
     run_id: String,
 ) -> Result<bool, String> {
     if !mission_owns_run_id(&run_id) {
-        return Err(format!("run id {run_id:?} not owned by the mission workbench"));
+        return Err(format!(
+            "run id {run_id:?} not owned by the mission workbench"
+        ));
     }
     let state = app.state::<crate::AppState>();
     let registry = std::sync::Arc::clone(&state.processes);

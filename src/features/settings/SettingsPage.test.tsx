@@ -37,6 +37,15 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+// jsdom has no ResizeObserver; PillTabList (the capability pages' tab strip)
+// measures its selection thumb with one.
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
 // Landing page for every render: a registered stub keeps real section bodies
 // (General/Usage/…) unmounted while the rail lists every registered section.
 settingsRegistry.register({
@@ -182,16 +191,18 @@ async function render(engines: EngineInfo[], page = "stub") {
 
 
 describe("SettingsPage misc rail", () => {
-  it("lists 内测功能 above 检查更新 and 社区与反馈", async () => {
+  it("lists 内测功能, 检查更新, 社区与反馈 and 性能诊断 in that order", async () => {
     await render([]);
 
     const labels = navLabels();
     const betaAt = labels.indexOf(i18n.t("settings.betaFeatures"));
     const updateAt = labels.indexOf(i18n.t("settings.checkUpdates"));
     const aboutAt = labels.indexOf(i18n.t("settings.about"));
+    const diagnosticsAt = labels.indexOf(i18n.t("diagnostics.title"));
     expect(betaAt).toBeGreaterThan(-1);
     expect(updateAt).toBeGreaterThan(betaAt);
     expect(aboutAt).toBeGreaterThan(updateAt);
+    expect(diagnosticsAt).toBeGreaterThan(aboutAt);
   });
 });
 
@@ -207,12 +218,13 @@ describe("SettingsPage system rail", () => {
       i18n.t("settings.proxy"),
     ]);
 
-    // 其他 holds the release/feedback pages plus the 内测功能 gate — engine
-    // sections used to lead that group.
+    // 其他 holds the release/feedback pages, the 性能诊断 entry and the
+    // 内测功能 gate — engine sections used to lead that group.
     expect(itemsUnder("settings.groupMisc")).toEqual([
       i18n.t("settings.betaFeatures"),
       i18n.t("settings.checkUpdates"),
       i18n.t("settings.about"),
+      i18n.t("diagnostics.title"),
     ]);
   });
 });
@@ -409,6 +421,71 @@ describe("SettingsPage CLI rail", () => {
       });
     }
   });
+
+
+describe("SettingsPage capabilities rail", () => {
+  it("puts 能力扩展 between CLI 管理 and 工作区与数据", async () => {
+    await render([]);
+
+    const labels = navLabels();
+    const cliAt = labels.indexOf(i18n.t("settings.cliManage"));
+    const capabilitiesAt = labels.indexOf(i18n.t("settings.groupCapabilities"));
+    const workspaceAt = labels.indexOf(i18n.t("settings.groupWorkspace"));
+    expect(cliAt).toBeGreaterThan(-1);
+    expect(capabilitiesAt).toBeGreaterThan(cliAt);
+    expect(workspaceAt).toBeGreaterThan(capabilitiesAt);
+
+    // Skills leads, MCP follows, 电脑操控 closes the group — all in the
+    // same static group.
+    expect(itemsUnder("settings.groupCapabilities")).toEqual([
+      i18n.t("settings.skills"),
+      i18n.t("settings.mcp"),
+      i18n.t("settings.computerUse"),
+    ]);
+    // The new group is static (no fold toggle) like 系统/工作区.
+    const capabilityHeading = [...document.querySelectorAll("nav span")].find(
+      (el) => el.textContent?.trim() === i18n.t("settings.groupCapabilities"),
+    );
+    expect(capabilityHeading).toBeTruthy();
+    expect(capabilityHeading?.closest("button")).toBeNull();
+  });
+
+  it("does not load the Skills page (or its IPC) when ordinary settings open", async () => {
+    await render([]);
+    // Only the landing stub is mounted; the capability sections stay behind
+    // React.lazy and their data hooks never run.
+    expect(document.body.textContent).toContain("stub page");
+    expect(document.body.textContent).not.toContain("我的 Skills");
+  });
+
+  it(
+    "deep-links to the Skills page through the lazy loader",
+    async () => {
+      useChatStore.setState({ engines: [] });
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={[`/settings?page=skills`]}>
+            <SettingsPage />
+          </MemoryRouter>,
+        );
+      });
+      // The rail selection is immediate; the body loads lazily (Vitest
+      // transforms the chunk on demand) through the Suspense fallback. jsdom
+      // reports as a web runtime, so the page's own desktop-only gate is the
+      // loaded evidence.
+      const skillsRow = railRow(i18n.t("settings.skills"));
+      expect(skillsRow?.getAttribute("aria-current")).toBe("page");
+      expect(document.body.textContent).toContain(i18n.t("common.loading"));
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(i18n.t("skills.desktopOnly"));
+        },
+        { timeout: 10000, interval: 50 },
+      );
+    },
+    20000,
+  );
+});
 
   it("unfolds the bucket that holds a deep-linked page", async () => {
     // A CLI-keyed stub section (unknown engine id) lands in 未安装 once the

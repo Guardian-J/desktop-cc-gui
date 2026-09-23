@@ -229,7 +229,8 @@ impl Default for AppSettings {
         let mut default_efforts = HashMap::new();
         // 为所有引擎设置默认推理强度为 "medium"
         for engine in &[
-            "claude", "pi", "omp", "agy", "codex", "grok", "opencode", "kimi", "dsh", "qoder", "qoder-cn",
+            "claude", "pi", "omp", "agy", "codex", "grok", "opencode", "kimi", "dsh", "qoder",
+            "qoder-cn",
         ] {
             default_efforts.insert(engine.to_string(), "medium".to_string());
         }
@@ -1052,7 +1053,9 @@ mod tests {
         );
         let mac: AppSettings = serde_json::from_str(r#"{"titlebar":"mac"}"#).unwrap();
         assert_eq!(mac.titlebar, "mac");
-        assert!(serde_json::to_string(&mac).unwrap().contains("\"titlebar\":\"mac\""));
+        assert!(serde_json::to_string(&mac)
+            .unwrap()
+            .contains("\"titlebar\":\"mac\""));
     }
 
     #[test]
@@ -1100,7 +1103,10 @@ mod tests {
         } else {
             "/opt/ccgui-codex-home-probe"
         };
-        assert_eq!(validate_home_override(ok).unwrap(), std::path::PathBuf::from(ok));
+        assert_eq!(
+            validate_home_override(ok).unwrap(),
+            std::path::PathBuf::from(ok)
+        );
         assert!(validate_home_override("/tmp/codex-home").is_err());
         assert!(validate_home_override("relative/codex").is_err());
     }
@@ -1140,10 +1146,7 @@ mod tests {
     }
 }
 #[tauri::command]
-pub fn set_window_theme(
-    app: tauri::AppHandle,
-    dark: bool,
-) -> Result<(), String> {
+pub fn set_window_theme(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
     // Only Windows consumes these; reference unconditionally so macOS/Linux
     // builds don't warn.
     let _ = (&app, dark);
@@ -1151,11 +1154,7 @@ pub fn set_window_theme(
     {
         use tauri::{Manager, Theme};
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_theme(Some(if dark {
-                Theme::Dark
-            } else {
-                Theme::Light
-            }));
+            let _ = window.set_theme(Some(if dark { Theme::Dark } else { Theme::Light }));
         }
     }
     Ok(())

@@ -89,8 +89,7 @@ pub(crate) fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
 /// exists).
 fn heal_crash_window(staging: &Path, backup: &Path, target: &Path) -> Result<(), String> {
     if !target.exists() && backup.exists() {
-        std::fs::rename(backup, target)
-            .map_err(|e| format!("rename {}: {e}", backup.display()))?;
+        std::fs::rename(backup, target).map_err(|e| format!("rename {}: {e}", backup.display()))?;
     }
     remove_dir_if_exists(staging)?;
     remove_dir_if_exists(backup)
@@ -152,9 +151,7 @@ pub(crate) fn safe_artwork_path(raw: &str) -> Option<String> {
     }
     let is_remote = trimmed.starts_with("https://");
     if !is_remote
-        && (trimmed.starts_with('/')
-            || trimmed.starts_with("//")
-            || trimmed.contains("://"))
+        && (trimmed.starts_with('/') || trimmed.starts_with("//") || trimmed.contains("://"))
     {
         return None;
     }
@@ -179,14 +176,15 @@ pub(crate) fn safe_artwork_path(raw: &str) -> Option<String> {
 pub(crate) fn artwork_data_url(plugins_dir: &Path, id: &str, rel: &str) -> Result<String, String> {
     let rel = safe_artwork_path(rel).ok_or_else(|| format!("{rel:?}: not a safe artwork path"))?;
     if rel.starts_with("https://") {
-        return Err(format!("{rel}: remote artwork is loaded directly, not through the host"));
+        return Err(format!(
+            "{rel}: remote artwork is loaded directly, not through the host"
+        ));
     }
     let plugin_dir = plugins_dir.join(id);
-    let canonical_dir = std::fs::canonicalize(&plugin_dir)
-        .map_err(|e| format!("{}: {e}", plugin_dir.display()))?;
+    let canonical_dir =
+        std::fs::canonicalize(&plugin_dir).map_err(|e| format!("{}: {e}", plugin_dir.display()))?;
     let path = canonical_dir.join(&rel);
-    let canonical =
-        std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let canonical = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !canonical.starts_with(&canonical_dir) {
         return Err(format!("{rel}: escapes the plugin directory"));
     }
@@ -199,7 +197,8 @@ pub(crate) fn artwork_data_url(plugins_dir: &Path, id: &str, rel: &str) -> Resul
             MAX_FILE_BYTES
         ));
     }
-    let bytes = std::fs::read(&canonical).map_err(|e| format!("read {}: {e}", canonical.display()))?;
+    let bytes =
+        std::fs::read(&canonical).map_err(|e| format!("read {}: {e}", canonical.display()))?;
     let mime = match canonical
         .extension()
         .and_then(|ext| ext.to_str())
@@ -437,7 +436,10 @@ mod tests {
     #[test]
     fn artwork_paths_are_validated_and_served_as_data_urls() {
         // Image-only, no traversal, no absolute paths, no backslashes.
-        assert_eq!(safe_artwork_path("docs/icon.png").as_deref(), Some("docs/icon.png"));
+        assert_eq!(
+            safe_artwork_path("docs/icon.png").as_deref(),
+            Some("docs/icon.png")
+        );
         assert_eq!(
             safe_artwork_path("https://example.com/a.webp?v=2").as_deref(),
             Some("https://example.com/a.webp?v=2")

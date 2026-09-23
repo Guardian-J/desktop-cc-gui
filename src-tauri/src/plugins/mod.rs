@@ -21,8 +21,8 @@ mod manifest;
 pub mod market;
 mod state;
 
-pub use state::{KV_TOMBSTONE_TTL_SECS, PluginInfo, PluginRecord, PluginsState};
 pub(crate) use state::plugin_enabled_permissions;
+pub use state::{PluginInfo, PluginRecord, PluginsState, KV_TOMBSTONE_TTL_SECS};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -80,7 +80,9 @@ fn uninstall_at(
             db.plugin_kv_delete_all(id)?;
             state.kv_tombstones.remove(id);
         } else {
-            state.kv_tombstones.insert(id.to_string(), state::now_secs());
+            state
+                .kv_tombstones
+                .insert(id.to_string(), state::now_secs());
         }
         state::write_state(state_path, &state)?;
     }
@@ -96,7 +98,13 @@ pub fn plugin_uninstall(
     id: String,
     delete_data: bool,
 ) -> Result<(), String> {
-    uninstall_at(&db, &state::plugins_dir(), &state::state_path(), &id, delete_data)
+    uninstall_at(
+        &db,
+        &state::plugins_dir(),
+        &state::state_path(),
+        &id,
+        delete_data,
+    )
 }
 
 fn set_enabled_at(

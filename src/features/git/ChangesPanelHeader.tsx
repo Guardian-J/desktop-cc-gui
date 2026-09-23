@@ -228,6 +228,11 @@ export function ChangesPanelHeader({
                   <span className="truncate text-body-medium text-text-primary">
                     {b.name}
                   </span>
+                  {b.isRemote && (
+                    <span className="ml-auto shrink-0 rounded-md bg-background-secondary-default px-1.5 py-0.5 text-caption-1-regular text-text-tertiary">
+                      {t("git.remoteBranch")}
+                    </span>
+                  )}
                 </DropdownItem>
               ))}
               {filteredBranches.length === 0 && (

@@ -1,4 +1,6 @@
 import { ipc, type PluginInfo } from "@/lib/ipc";
+import i18n from "@/lib/i18n";
+import { buildAgentCatalog } from "../conversation/agent-catalog";
 import { getAppVersion } from "@/lib/platform";
 import { invoke } from "@/lib/transport";
 import {
@@ -52,6 +54,7 @@ export interface LoaderBackend extends PluginContextBackend {
 }
 
 export const ipcBackend: LoaderBackend = {
+  agentCatalog: (workspacePath) => buildAgentCatalog(ipc, workspacePath, (key) => i18n.t(key)),
   list: () => ipc.pluginList(),
   readFile: (id, name) => ipc.pluginReadFile(id, name),
   quarantine: (id, error) => ipc.pluginQuarantine(id, error),

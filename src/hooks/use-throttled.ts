@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ThrottledText, nextParseInterval, streamParseInterval } from "./throttled-text";
+import { performanceRecorder } from "@/lib/performance-diagnostics";
 
 export { nextParseInterval, streamParseInterval };
 
@@ -15,6 +16,7 @@ export function useLiveParseInterval(live: boolean, length: number): number {
   const renderStartedAt = performance.now();
   useLayoutEffect(() => {
     commitMs.current = performance.now() - renderStartedAt;
+    if (live) performanceRecorder.duration("liveRenderCommit", commitMs.current);
   });
   return live ? nextParseInterval(streamParseInterval(length), commitMs.current) : 0;
 }

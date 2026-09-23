@@ -51,14 +51,17 @@ describe("SlashCommandMenu", () => {
     // Built-in app rows lead, then commands (backend catalog order), then
     // skills; each row ends with its kind badge.
     const rows = optionTexts(node);
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(8);
     expect(rows[0]).toContain("/new");
     expect(rows[0]).toContain("chat.slashKindApp");
     expect(rows[1]).toContain("/clear");
-    expect(rows[3]).toContain("/commit");
-    expect(rows[3]).toContain("chat.slashKindCommand");
-    expect(rows[5]).toContain("/code-review");
-    expect(rows[5]).toContain("chat.slashKindSkill");
+    expect(rows[3]).toContain("/mcp");
+    expect(rows[4]).toContain("/ccgui-cua");
+    expect(rows[4]).toContain("chat.slashKindApp");
+    expect(rows[5]).toContain("/commit");
+    expect(rows[5]).toContain("chat.slashKindCommand");
+    expect(rows[7]).toContain("/code-review");
+    expect(rows[7]).toContain("chat.slashKindSkill");
   });
 
   it("a catalog command named like an app command shadows the app row", async () => {
@@ -77,9 +80,9 @@ describe("SlashCommandMenu", () => {
       ),
     );
     const rows = optionTexts(node);
-    // /clear and /compact remain in the app group; the user's /new renders
-    // as a command row instead.
-    expect(rows.filter((text) => text?.includes("chat.slashKindApp"))).toHaveLength(2);
+    // /clear, /compact, /mcp and /ccgui-cua remain in the app group; the
+    // user's /new renders as a command row instead.
+    expect(rows.filter((text) => text?.includes("chat.slashKindApp"))).toHaveLength(4);
     expect(rows.filter((text) => text?.includes("/new"))).toHaveLength(1);
     expect(rows.find((text) => text?.includes("/new"))).toContain("chat.slashKindCommand");
   });
@@ -100,9 +103,9 @@ describe("SlashCommandMenu", () => {
       ),
     );
     // The ref is re-registered as activeIndex changes; read it fresh per
-    // keypress (a cached handle closes over a stale `active`). Rows: three
-    // app entries, then commands, then the skill — five downs reach it.
-    for (let i = 0; i < 5; i++) {
+    // keypress (a cached handle closes over a stale `active`). Rows: five
+    // app entries, then commands, then the skill — seven downs reach it.
+    for (let i = 0; i < 7; i++) {
       act(() => {
         expect(menuRef.current!.handleKey("ArrowDown")).toBe(true);
       });

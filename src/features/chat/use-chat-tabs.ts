@@ -6,6 +6,7 @@ import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import Globe from "lucide-react/dist/esm/icons/globe";
 import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid";
 import Network from "lucide-react/dist/esm/icons/network";
+import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import { BROWSER_TAB_PREFIX, useBrowserStore, type BrowserTab } from "@/features/browser/store";
 import { browserTabLabel } from "@/features/browser/address";
 import { useBetaFeature } from "@/features/settings/beta-features";
@@ -14,6 +15,7 @@ import { PLUGIN_HUB_TAB_KEY, usePluginHubStore } from "@/features/plugins/hub/st
 import { centerTabRegistry, useRegistry } from "@ccgui/plugin-sdk";
 import type { LucideIcon } from "lucide-react";
 import { PLUGIN_TAB_PREFIX, usePluginTabsStore } from "@/features/plugins/runtime/center-tabs";
+import { RELEASE_NOTES_TAB_KEY, useReleaseNotesTabStore } from "@/features/update/notes-tab";
 import { fileName, useFilesStore } from "@/features/files/store";
 import { useGitStore } from "@/features/git/store";
 import type { SessionMeta } from "@/lib/ipc";
@@ -103,6 +105,11 @@ export function useChatTabs({
   // 插件中心页签（原生单实例）：侧栏「插件」入口的落地页。
   const hubOpen = usePluginHubStore((s) => s.open);
   const hubActive = usePluginHubStore((s) => s.active);
+  // 版本更新说明页签（原生单实例）：更新检查发现新版本时自动打开，升级后首启
+  // 也可能带着未读标记出现（见 upgrade-announcement.ts）。
+  const notesOpen = useReleaseNotesTabStore((s) => s.open);
+  const notesActive = useReleaseNotesTabStore((s) => s.active);
+  const notesUnread = useReleaseNotesTabStore((s) => s.unreadVersion);
   // 内测入口关闭时对应的中心面整体隐藏（store 状态保留，重新开启即恢复）。
   const browserEntryEnabled = useBetaFeature("newBrowser");
   const missionEntryEnabled = useBetaFeature("missionWorkbench");
@@ -238,6 +245,24 @@ export function useChatTabs({
         : [],
     [visibleMissionOpen, t],
   );
+  // 版本更新说明页签排在最尾：它由更新检查自动弹出，不插到用户自己的页签中间。
+  const notesTabItems = useMemo(
+    () =>
+      notesOpen
+        ? [
+            {
+              key: RELEASE_NOTES_TAB_KEY,
+              label: t("changelog.title"),
+              title: t("changelog.title"),
+              icon: Sparkles as LucideIcon,
+              streaming: false,
+              // 升级后首启的未读标记：页签挂强调色圆点，关掉页签即消失。
+              unread: notesUnread ? t("changelog.newVersion") : undefined,
+            },
+          ]
+        : [],
+    [notesOpen, notesUnread, t],
+  );
   const tabItems = useMemo(
     () => [
       ...sessionTabItems,
@@ -246,6 +271,7 @@ export function useChatTabs({
       ...pluginTabItems,
       ...hubTabItems,
       ...missionTabItems,
+      ...notesTabItems,
       ...(diffView
         ? [
             {
@@ -258,7 +284,7 @@ export function useChatTabs({
           ]
         : []),
     ],
-    [sessionTabItems, fileTabItems, browserTabItems, pluginTabItems, hubTabItems, missionTabItems, diffView],
+    [sessionTabItems, fileTabItems, browserTabItems, pluginTabItems, hubTabItems, missionTabItems, notesTabItems, diffView],
   );
   const activeTabKey = activeCenterTabKey({
     diffView,
@@ -266,6 +292,7 @@ export function useChatTabs({
     activePluginTabId,
     hubActive,
     missionActive: visibleMissionActive,
+    notesActive,
     activeFilePath,
     active,
   });
@@ -325,6 +352,8 @@ export function useChatTabs({
     pluginHubActive: hubActive,
     missionOpen: visibleMissionOpen,
     missionActive: visibleMissionActive,
+    notesOpen,
+    notesActive,
     diffView,
     closeDiff,
   };
@@ -343,13 +372,14 @@ interface SessionTabItem {
 
 /** Tab-kind routing shared by select/close/reorder: keys carry a prefix so
  *  each kind lands in its own store. */
-type TabKind = "session" | "file" | "browser" | "plugin" | "hub" | "mission";
+type TabKind = "session" | "file" | "browser" | "plugin" | "hub" | "mission" | "notes";
 
 function tabKindOf(key: string): TabKind {
   if (key.startsWith(BROWSER_TAB_PREFIX)) return "browser";
   if (key.startsWith(PLUGIN_TAB_PREFIX)) return "plugin";
   if (key === PLUGIN_HUB_TAB_KEY) return "hub";
   if (key === MISSION_WORKBENCH_TAB_KEY) return "mission";
+  if (key === RELEASE_NOTES_TAB_KEY) return "notes";
   if (key.startsWith(FILE_TAB_PREFIX)) return "file";
   return "session";
 }
@@ -364,6 +394,7 @@ function activeCenterTabKey({
   activePluginTabId,
   hubActive,
   missionActive,
+  notesActive,
   activeFilePath,
   active,
 }: {
@@ -372,6 +403,7 @@ function activeCenterTabKey({
   activePluginTabId: string | null;
   hubActive: boolean;
   missionActive: boolean;
+  notesActive: boolean;
   activeFilePath: string | null;
   active: ActiveSession | null;
 }): string | null {
@@ -380,6 +412,7 @@ function activeCenterTabKey({
   if (activePluginTabId) return PLUGIN_TAB_PREFIX + activePluginTabId;
   if (hubActive) return PLUGIN_HUB_TAB_KEY;
   if (missionActive) return MISSION_WORKBENCH_TAB_KEY;
+  if (notesActive) return RELEASE_NOTES_TAB_KEY;
   if (activeFilePath) return FILE_TAB_PREFIX + activeFilePath;
   return active ? sessionKey(active.engine, active.sessionId, active.workspacePath) : null;
 }
@@ -467,6 +500,7 @@ function useChatTabHandlers({
         deactivateBrowserTab();
         deactivatePluginTab();
         useMissionStore.getState().deactivate();
+        useReleaseNotesTabStore.getState().deactivate();
         usePluginHubStore.getState().activate();
         return;
       }
@@ -475,11 +509,22 @@ function useChatTabHandlers({
         deactivateBrowserTab();
         deactivatePluginTab();
         usePluginHubStore.getState().deactivate();
+        useReleaseNotesTabStore.getState().deactivate();
         useMissionStore.getState().activate();
+        return;
+      }
+      if (kind === "notes") {
+        clearActiveFile();
+        deactivateBrowserTab();
+        deactivatePluginTab();
+        usePluginHubStore.getState().deactivate();
+        useMissionStore.getState().deactivate();
+        useReleaseNotesTabStore.getState().activate();
         return;
       }
       useMissionStore.getState().deactivate();
       usePluginHubStore.getState().deactivate();
+      useReleaseNotesTabStore.getState().deactivate();
       if (kind === "browser") {
         clearActiveFile();
         deactivatePluginTab();
@@ -518,6 +563,10 @@ function useChatTabHandlers({
         useMissionStore.getState().close();
         return;
       }
+      if (kind === "notes") {
+        useReleaseNotesTabStore.getState().close();
+        return;
+      }
       if (kind === "browser") {
         closeBrowserTab(tabKey.slice(BROWSER_TAB_PREFIX.length));
         return;
@@ -545,8 +594,8 @@ function useChatTabHandlers({
       if (draggedKey === DIFF_TAB_KEY || targetKey === DIFF_TAB_KEY) return;
       const kind = tabKindOf(draggedKey);
       if (kind !== tabKindOf(targetKey)) return;
-      // 任务工作台与插件中心是单实例页签，不参与拖拽排序。
-      if (kind === "mission" || kind === "hub") return;
+      // 任务工作台、插件中心与版本更新说明是单实例页签，不参与拖拽排序。
+      if (kind === "mission" || kind === "hub" || kind === "notes") return;
       if (kind === "browser") {
         const draggedId = draggedKey.slice(BROWSER_TAB_PREFIX.length);
         const targetId = targetKey.slice(BROWSER_TAB_PREFIX.length);
@@ -588,6 +637,7 @@ function useChatTabHandlers({
     closeDiff();
     useMissionStore.getState().close();
     usePluginHubStore.getState().close();
+    useReleaseNotesTabStore.getState().close();
     for (const item of sessionTabItems) {
       closeTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);
     }
@@ -610,6 +660,7 @@ function useChatTabHandlers({
     if (activeTabKey !== DIFF_TAB_KEY) closeDiff();
     if (activeTabKey !== MISSION_WORKBENCH_TAB_KEY) useMissionStore.getState().close();
     if (activeTabKey !== PLUGIN_HUB_TAB_KEY) usePluginHubStore.getState().close();
+    if (activeTabKey !== RELEASE_NOTES_TAB_KEY) useReleaseNotesTabStore.getState().close();
     for (const item of sessionTabItems) {
       if (item.key === activeTabKey || item.streaming) continue;
       closeTab(item.tab.engine, item.tab.sessionId, item.tab.workspacePath);
