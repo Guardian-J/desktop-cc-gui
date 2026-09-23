@@ -359,7 +359,7 @@ fn import_legacy_workspaces_from(db: &Db, path: &std::path::Path) -> Result<(), 
             serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))?;
         // Sidebar order: ungrouped workspaces first (file order), then each
         // group with its internal sortOrder. Worktree children (parentId)
-        // have no new-app equivalent and are skipped.
+        // import after their parents, once the parent's db id is known.
         let mut entries: Vec<(usize, &serde_json::Value)> = legacy
             .iter()
             .enumerate()
@@ -414,6 +414,72 @@ fn import_legacy_workspaces_from(db: &Db, path: &std::path::Path) -> Result<(), 
             .map_err(|e| e.to_string())?;
             imported_paths.insert(path.to_string());
             index += 1;
+        }
+
+        // Worktree children (legacy kind:"worktree" + parentId). A child is
+        // imported only when its parent made it into the db — resolved
+        // parentId → parent's legacy row → path → db row (which may carry a
+        // pre-existing new-app id after an ON CONFLICT keep) — and the
+        // directory still exists on disk (stale worktree checkouts are
+        // common; the parent rows above import unconditionally by design).
+        {
+            let mut id_stmt = tx
+                .prepare("SELECT id, path FROM workspaces")
+                .map_err(|e| e.to_string())?;
+            let path_to_id: std::collections::HashMap<String, String> = id_stmt
+                .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?)))
+                .map_err(|e| e.to_string())?
+                .flatten()
+                .collect();
+            drop(id_stmt);
+            for w in &legacy {
+                let Some(parent_legacy_id) = w.get("parentId").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let path = w.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if path.is_empty() {
+                    continue;
+                }
+                let parent_path = legacy
+                    .iter()
+                    .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(parent_legacy_id))
+                    .and_then(|p| p.get("path").and_then(|v| v.as_str()))
+                    .map(str::trim);
+                let Some(parent_db_id) = parent_path.and_then(|p| path_to_id.get(p)) else {
+                    eprintln!(
+                        "[db] legacy import: worktree child {path} skipped (parent {parent_legacy_id} not imported)"
+                    );
+                    continue;
+                };
+                if !std::path::Path::new(path).is_dir() {
+                    eprintln!(
+                        "[db] legacy import: worktree child {path} skipped (directory gone)"
+                    );
+                    continue;
+                }
+                let name = w
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path));
+                let id = w
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                tx.execute(
+                    "INSERT INTO workspaces(id, path, name, sort_order, kind, parent_id)
+                     VALUES(?1,?2,?3,?4,'worktree',?5)
+                     ON CONFLICT(path) DO UPDATE SET
+                        kind=COALESCE(workspaces.kind, excluded.kind),
+                        parent_id=COALESCE(workspaces.parent_id, excluded.parent_id)",
+                    rusqlite::params![id, path, name, index, parent_db_id],
+                )
+                .map_err(|e| e.to_string())?;
+                imported_paths.insert(path.to_string());
+                index += 1;
+            }
         }
         // Rows the legacy list doesn't know (added in the new app before the
         // upgrade) keep their relative order, appended after the import.
@@ -664,6 +730,29 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !has_meta {
         conn.execute("ALTER TABLE workspaces ADD COLUMN meta TEXT", [])?;
     }
+
+    // Additive migration: git worktree children hang under their parent
+    // workspace row in the sidebar (kind="worktree"). Matches the legacy
+    // app's per-workspace `kind` in workspaces.json.
+    let has_kind = conn
+        .prepare("PRAGMA table_info(workspaces)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .flatten()
+        .any(|name| name == "kind");
+    if !has_kind {
+        conn.execute("ALTER TABLE workspaces ADD COLUMN kind TEXT", [])?;
+    }
+
+    // Additive migration: worktree child's parent workspace row
+    // (parent_id → workspaces.id; only set when kind="worktree").
+    let has_parent_id = conn
+        .prepare("PRAGMA table_info(workspaces)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .flatten()
+        .any(|name| name == "parent_id");
+    if !has_parent_id {
+        conn.execute("ALTER TABLE workspaces ADD COLUMN parent_id TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -886,21 +975,36 @@ mod tests {
             )
             .unwrap();
         }
-        let legacy = r#"[
-            {"id":"legacy-grouped","name":"grouped-ws","path":"/ws/shared","kind":"main",
-             "parentId":null,"settings":{"sortOrder":2,"groupId":"g1"}},
-            {"id":"legacy-ungrouped","name":"ungrouped-ws","path":"/ws/ungrouped","kind":"main",
-             "parentId":null,"settings":{"sortOrder":null,"groupId":null}},
-            {"id":"legacy-child","name":"worktree-child","path":"/ws/child","kind":"worktree",
-             "parentId":"legacy-grouped","settings":{"sortOrder":null,"groupId":null}}
-        ]"#;
+        // Worktree children need real directories to survive the staleness
+        // check: one valid, one orphaned (parent never imports).
+        let child_dir = scratch.path("wt-child");
+        let orphan_dir = scratch.path("wt-orphan");
+        std::fs::create_dir_all(&child_dir).unwrap();
+        std::fs::create_dir_all(&orphan_dir).unwrap();
+        let legacy = format!(
+            r#"[
+            {{"id":"legacy-grouped","name":"grouped-ws","path":"/ws/shared","kind":"main",
+             "parentId":null,"settings":{{"sortOrder":2,"groupId":"g1"}}}},
+            {{"id":"legacy-ungrouped","name":"ungrouped-ws","path":"/ws/ungrouped","kind":"main",
+             "parentId":null,"settings":{{"sortOrder":null,"groupId":null}}}},
+            {{"id":"legacy-child","name":"worktree-child","path":"{child}","kind":"worktree",
+             "parentId":"legacy-grouped","settings":{{"sortOrder":null,"groupId":null}}}},
+            {{"id":"legacy-stale","name":"stale-child","path":"/ws/gone","kind":"worktree",
+             "parentId":"legacy-grouped","settings":{{"sortOrder":null,"groupId":null}}}},
+            {{"id":"legacy-orphan","name":"orphan-child","path":"{orphan}","kind":"worktree",
+             "parentId":"missing-parent","settings":{{"sortOrder":null,"groupId":null}}}}
+        ]"#,
+            child = child_dir.display(),
+            orphan = orphan_dir.display(),
+        );
         let legacy_path = scratch.path("workspaces.json");
         std::fs::write(&legacy_path, legacy).unwrap();
 
         import_legacy_workspaces_from(&db, &legacy_path).unwrap();
         let rows = list(&db);
-        // Ungrouped first, then grouped, then new-app-only rows; the
-        // worktree child is skipped.
+        // Ungrouped first, then grouped, then the imported worktree child,
+        // then new-app-only rows. Stale (dir gone) and orphan (parent
+        // missing) children are skipped.
         assert_eq!(
             rows,
             vec![
@@ -914,9 +1018,28 @@ mod tests {
                     "/ws/shared".to_string(),
                     Some(1)
                 ),
-                ("new-id-extra".to_string(), "/ws/extra".to_string(), Some(2)),
+                (
+                    "legacy-child".to_string(),
+                    child_dir.display().to_string(),
+                    Some(2)
+                ),
+                ("new-id-extra".to_string(), "/ws/extra".to_string(), Some(3)),
             ]
         );
+        // The child hangs under the parent's *db* id — the parent's legacy id
+        // lost the ON CONFLICT keep to the pre-existing new-app row.
+        {
+            let conn = db.0.lock();
+            let (kind, parent_id): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT kind, parent_id FROM workspaces WHERE id='legacy-child'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(kind.as_deref(), Some("worktree"));
+            assert_eq!(parent_id.as_deref(), Some("new-id-shared"));
+        }
 
         // Second run is a no-op: a removal in the new app is not resurrected.
         {
@@ -925,7 +1048,7 @@ mod tests {
                 .unwrap();
         }
         import_legacy_workspaces_from(&db, &legacy_path).unwrap();
-        assert_eq!(list(&db).len(), 2);
+        assert_eq!(list(&db).len(), 3);
     }
 
     #[test]

@@ -264,6 +264,9 @@ struct PathArgs {
     /// Optional workspace meta passthrough (plugin workspaces.add keeps
     /// transport descriptions alive on the web runtime too).
     meta: Option<serde_json::Value>,
+    /// Optional worktree registration (host UI: 新建/恢复 worktree 子工作区).
+    kind: Option<String>,
+    parent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -731,6 +734,8 @@ pub(super) async fn dispatch(
                 app.state(),
                 a.path,
                 a.meta,
+                a.kind,
+                a.parent_id,
             ))
         }
         "plugin_add_workspace" => {

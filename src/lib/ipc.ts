@@ -118,6 +118,11 @@ export interface Workspace {
   sortOrder: number | null;
   /** Sidebar group id (工作区分组); null = ungrouped. */
   groupId: string | null;
+  /** "worktree" = git worktree child under its parent workspace row;
+   *  undefined = ordinary workspace. */
+  kind?: "worktree";
+  /** Parent workspace id; only set when kind="worktree". */
+  parentId?: string;
   /** Opaque per-workspace metadata written by host-capability callers
    *  (e.g. { wsl: { hostId, distro } } from the wsl plugin); absent for
    *  ordinary directories. */
@@ -977,6 +982,15 @@ export const ipc = {
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   addWorkspace: (path: string, meta?: Record<string, unknown>) =>
     invoke<Workspace>("add_workspace", { path, meta: meta ?? null }),
+  /** Register a git worktree as a child workspace of `parentId`. The Rust
+   *  side validates the parent row exists. */
+  addWorktreeWorkspace: (path: string, parentId: string, meta?: Record<string, unknown>) =>
+    invoke<Workspace>("add_workspace", {
+      path,
+      meta: meta ?? null,
+      kind: "worktree",
+      parentId,
+    }),
   /** Plugin-scoped workspace registration: the Rust side re-checks the
    *  plugin's manifest grants (host:workspace; meta.wsl additionally needs
    *  host:workspace:remote) — the server-side counterpart of the JS gate in

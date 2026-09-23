@@ -981,6 +981,13 @@ pub struct Workspace {
     pub sort_order: Option<i64>,
     /// Sidebar group (工作区分组) this workspace belongs to; None = ungrouped.
     pub group_id: Option<String>,
+    /// "worktree" = git worktree child hanging under its parent workspace
+    /// row in the sidebar; None = ordinary workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Parent workspace id; only set when kind="worktree".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     /// Opaque metadata written via host-capability callers (plugin
     /// `workspaces.add`); absent for ordinary directories. The backend never
     /// interprets it — consumers (spawn transport, plugin panels) own the shape.
@@ -992,10 +999,10 @@ pub struct Workspace {
 pub fn list_workspaces(state: tauri::State<'_, crate::AppState>) -> Result<Vec<Workspace>, String> {
     query_rows(
         &state,
-        "SELECT id, path, name, last_opened_at, sort_order, group_id, meta FROM workspaces
+        "SELECT id, path, name, last_opened_at, sort_order, group_id, kind, parent_id, meta FROM workspaces
          ORDER BY sort_order IS NULL, sort_order, COALESCE(last_opened_at, 0) DESC",
         |r| {
-            let meta_json: Option<String> = r.get(6)?;
+            let meta_json: Option<String> = r.get(8)?;
             Ok(Workspace {
                 id: r.get(0)?,
                 path: r.get(1)?,
@@ -1003,6 +1010,8 @@ pub fn list_workspaces(state: tauri::State<'_, crate::AppState>) -> Result<Vec<W
                 last_opened_at: r.get(3)?,
                 sort_order: r.get(4)?,
                 group_id: r.get(5)?,
+                kind: r.get(6)?,
+                parent_id: r.get(7)?,
                 meta: meta_json.and_then(|s| serde_json::from_str(&s).ok()),
             })
         },
@@ -1014,6 +1023,8 @@ pub fn add_workspace(
     state: tauri::State<'_, crate::AppState>,
     path: String,
     meta: Option<serde_json::Value>,
+    kind: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<Workspace, String> {
     // `wsl` meta steers engine traffic over ssh to a plugin-named host (出站
     // + 远程执行导向) — it must come through plugin_caps::plugin_add_workspace
@@ -1027,7 +1038,36 @@ pub fn add_workspace(
             );
         }
     }
-    add_workspace_inner(&state, &path, meta)
+    // kind/parent_id shape checks: "worktree" requires an existing parent
+    // row; an ordinary workspace must not carry a parent.
+    match kind.as_deref() {
+        None => {
+            if parent_id.is_some() {
+                return Err("parent_id requires kind=\"worktree\"".to_string());
+            }
+        }
+        Some("worktree") => {
+            let pid = parent_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "kind=\"worktree\" requires parent_id".to_string())?;
+            let exists = {
+                let conn = state.db.0.lock();
+                conn.query_row(
+                    "SELECT 1 FROM workspaces WHERE id=?1",
+                    rusqlite::params![pid],
+                    |_| Ok(()),
+                )
+                .is_ok()
+            };
+            if !exists {
+                return Err(format!("unknown parent workspace: {pid}"));
+            }
+        }
+        Some(other) => return Err(format!("unknown workspace kind: {other}")),
+    }
+    add_workspace_inner(&state, &path, meta, kind, parent_id)
 }
 
 /// Shared body of `add_workspace` / `plugin_caps::plugin_add_workspace`:
@@ -1036,6 +1076,8 @@ pub(crate) fn add_workspace_inner(
     state: &crate::AppState,
     path: &str,
     meta: Option<serde_json::Value>,
+    kind: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<Workspace, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -1074,10 +1116,13 @@ pub(crate) fn add_workspace_inner(
     {
         let conn = state.db.0.lock();
         conn.execute(
-            "INSERT INTO workspaces(id, path, name, last_opened_at, meta) VALUES(?1,?2,?3,?4,?5)
+            "INSERT INTO workspaces(id, path, name, last_opened_at, kind, parent_id, meta)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(path) DO UPDATE SET last_opened_at=excluded.last_opened_at,
+                kind=COALESCE(excluded.kind, workspaces.kind),
+                parent_id=COALESCE(excluded.parent_id, workspaces.parent_id),
                 meta=COALESCE(excluded.meta, workspaces.meta)",
-            rusqlite::params![id, trimmed, name, now, meta_json],
+            rusqlite::params![id, trimmed, name, now, kind, parent_id, meta_json],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1089,6 +1134,8 @@ pub(crate) fn add_workspace_inner(
         last_opened_at: Some(now),
         sort_order: None,
         group_id: None,
+        kind,
+        parent_id,
         meta,
     })
 }

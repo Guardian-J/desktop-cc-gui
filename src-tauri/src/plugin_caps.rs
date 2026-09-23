@@ -585,7 +585,9 @@ pub(crate) async fn plugin_add_workspace(
 ) -> Result<crate::history::reader::Workspace, String> {
     let grants = load_grants(&plugin_id)?;
     require_workspace_grants(&grants, &plugin_id, meta.as_ref())?;
-    crate::history::reader::add_workspace_inner(&state, &path, meta)
+    // Plugins register ordinary (or remote-meta) workspaces only; the
+    // worktree kind is host-UI territory and needs no plugin grant.
+    crate::history::reader::add_workspace_inner(&state, &path, meta, None, None)
 }
 
 /// Run a granted binary to completion, capturing stdout/stderr (64KB each).
