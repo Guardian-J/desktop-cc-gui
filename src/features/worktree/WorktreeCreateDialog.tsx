@@ -25,6 +25,7 @@ import { cx } from "@/utils/cx";
 import { useGitStore } from "@/features/git/store";
 import { useWorktreeStore } from "./store";
 import {
+  defaultBaseRef,
   defaultWorktreePath,
   isPlausibleBranchName,
   parsePrInput,
@@ -144,6 +145,8 @@ export function WorktreeCreateDialog({
   const { t } = useTranslation();
   const prefs = useWorktreeStore((s) => s.prefs);
   const branches = useGitStore((s) => s.branchesByWorkspace[parent.path]);
+  /** 当前检出分支，跟实时 status（同 useBranchSwitcher）；detached HEAD 是 "HEAD"。 */
+  const currentBranch = useGitStore((s) => s.statusByWorkspace[parent.path]?.branch);
 
   const [tab, setTab] = useState<SourceTab>("new");
   const [occupied, setOccupied] = useState<Set<string>>(new Set());
@@ -158,7 +161,8 @@ export function WorktreeCreateDialog({
 
   // New-branch tab
   const [branchName, setBranchName] = useState("");
-  const [base, setBase] = useState<string | null>(null);
+  // null = 用户没手选过，base 用下面派生的默认值。
+  const [pickedBase, setPickedBase] = useState<string | null>(null);
 
   // Existing-branch tab
   const [existing, setExisting] = useState<string | null>(null);
@@ -181,7 +185,10 @@ export function WorktreeCreateDialog({
 
   // Branch list + occupancy (existing-branch flow blocks checked-out names).
   useEffect(() => {
-    void useGitStore.getState().loadBranches(parent.path);
+    const git = useGitStore.getState();
+    void git.loadBranches(parent.path);
+    // 默认 base 取自当前分支，status 也要拉（30s TTL / 在途去重在 git store）。
+    void git.refresh(parent.path).catch(() => undefined);
     void ipc
       .gitWorktreeList(parent.path)
       .then((list) => {
@@ -192,15 +199,13 @@ export function WorktreeCreateDialog({
       .catch(() => undefined);
   }, [parent.path]);
 
-  // Default base: prefer origin/main-ish, then any remote, then first.
-  useEffect(() => {
-    if (base || !branches?.length) return;
-    const names = branches.map((b) => b.name);
-    const preferred = ["origin/main", "origin/master", "main", "master"].find((n) =>
-      names.includes(n),
-    );
-    setBase(preferred ?? branches.find((b) => b.isRemote)?.name ?? branches[0].name);
-  }, [branches, base]);
+  // Default base: 当前分支（main/master 除外，规则与理由见 defaultBaseRef）。
+  // 派生而非写进 state：status 比分支列表晚到时默认值能自己跟上，用户手选过则不再改。
+  const defaultBase = useMemo(
+    () => defaultBaseRef(branches ?? [], currentBranch),
+    [branches, currentBranch],
+  );
+  const base = pickedBase ?? defaultBase;
 
   // Location follows the branch name until the user edits it manually.
   useEffect(() => {
@@ -437,7 +442,7 @@ export function WorktreeCreateDialog({
               <BranchCombobox
                 branches={branches ?? []}
                 value={base}
-                onSelect={setBase}
+                onSelect={setPickedBase}
                 placeholder={t("git.searchBranches")}
                 ariaLabel={t("worktree.baseLabel")}
                 remoteLabel={t("git.remoteBranch")}

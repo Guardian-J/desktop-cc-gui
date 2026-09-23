@@ -1,5 +1,7 @@
 /** Pure helpers for the worktree create dialog: PR input parsing, branch
- *  naming, and default directory layout. No IPC — fully unit-tested. */
+ *  naming, base ref choice, and default directory layout. No IPC — fully
+ *  unit-tested. */
+import type { BranchInfo } from "@/lib/ipc";
 
 /** Accepts "1842", "#1842", or a GitHub PR URL (any suffix after the number).
  *  Mirrors the backend's parse_pr_input so the dialog can validate before
@@ -74,6 +76,27 @@ export function dirNameOf(path: string): string {
 export function joinPath(base: string, child: string): string {
   const sep = base.includes("\\") && !base.includes("/") ? "\\" : "/";
   return base.replace(/[\\/]+$/, "") + sep + child;
+}
+
+/** Default base for the new-branch tab: the workspace's own branch — you
+ *  branch off the work at hand, which is also what a bare `git worktree add
+ *  -b` does (HEAD). main/master are the exception: a local main may lag the
+ *  remote, so the remote-tracking sibling wins there (the backend fetches it
+ *  before creating, see git_worktree.rs). `current` is the live status branch
+ *  ("HEAD" when detached), never a remote-tracking name. */
+export function defaultBaseRef(
+  branches: BranchInfo[],
+  current: string | null | undefined,
+): string | null {
+  if (branches.length === 0) return null;
+  const names = new Set(branches.map((b) => b.name));
+  if (current && current !== "main" && current !== "master" && names.has(current)) {
+    return current;
+  }
+  const preferred = ["origin/main", "origin/master", "main", "master"].find((n) =>
+    names.has(n),
+  );
+  return preferred ?? branches.find((b) => b.isRemote)?.name ?? branches[0].name;
 }
 
 /** Default layout: sibling `<repo>-worktrees/<branch>` next to the main

@@ -947,7 +947,7 @@ export const en: Messages = {
     branchLabel: "Branch name",
     branchPlaceholder: "feature/parallel-review",
     baseLabel: "Base",
-    baseHint: "Search local and remote branches; the ref is fetched before creating",
+    baseHint: "Search local and remote branches; a remote ref is fetched before creating",
     existingBranchLabel: "Select branch",
     existingBranchPlaceholder: "Search local or remote branches…",
     existingBranchOccupied: "Already checked out in a worktree",

@@ -910,7 +910,7 @@ export const zh = {
     branchLabel: "分支名",
     branchPlaceholder: "feature/parallel-review",
     baseLabel: "基于（base）",
-    baseHint: "下拉可搜索本地与远程分支；创建前自动 fetch 该 ref",
+    baseHint: "下拉可搜索本地与远程分支；选远程分支时创建前先 fetch",
     existingBranchLabel: "选择分支",
     existingBranchPlaceholder: "搜索本地或远程分支…",
     existingBranchOccupied: "已被 worktree 占用",
