@@ -1712,7 +1712,8 @@ export const zh = {
     probe: {
       check: "检测 {{name}}",
       checkAll: "检测全部",
-      hint: "检测会按配置启动 stdio 服务（npx 可能触发下载）或连接远程地址并握手，完成后立即结束进程；结果只代表本应用此刻能连上。",
+      hint: "检测会按配置启动 stdio 服务（npx 可能触发下载）或连接远程地址并握手，完成后立即结束进程；这里只代表本应用此刻能连上。打开页面会自动检测并复用 3 分钟内的结果，点「检测全部」才强制重跑。",
+      lastChecked: "状态更新于 {{time}}",
       pending: "检测中",
       connected: "已连接",
       connectedTools: "已连接 · {{count}} 个工具",

@@ -1747,7 +1747,8 @@ export const en: Messages = {
     probe: {
       check: "Check {{name}}",
       checkAll: "Check all",
-      hint: "A check starts the stdio server from your config (npx may download packages) or connects to the remote URL and performs a handshake, then ends the process. The result only means this app can connect right now.",
+      hint: "A check starts the stdio server from your config (npx may download packages) or connects to the remote URL and performs a handshake, then ends the process. It only means this app can connect right now. Opening the page checks automatically and reuses results younger than 3 minutes; \"Check all\" forces a fresh run.",
+      lastChecked: "Status updated at {{time}}",
       pending: "Checking",
       connected: "Connected",
       connectedTools: "Connected · {{count}} tools",

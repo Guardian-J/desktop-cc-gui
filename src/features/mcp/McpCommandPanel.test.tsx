@@ -167,7 +167,7 @@ describe("McpCommandPanel", () => {
     expect(document.body.textContent).not.toContain("配置清单");
   });
 
-  it("checks the active engine's servers from the panel", async () => {
+  it("checks the active engine's servers as soon as the panel opens", async () => {
     api.probe.mockResolvedValue({
       status: "connected",
       message: null,
@@ -178,15 +178,41 @@ describe("McpCommandPanel", () => {
     });
     openPanel("codex");
     await renderPanel();
-    const checkAll = [...document.querySelectorAll("button")].find(
-      (item) => item.textContent?.trim() === "检测全部",
-    );
-    await act(async () => checkAll?.click());
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain("已连接 · 1 个工具");
     });
     expect(api.probe).toHaveBeenCalledTimes(1);
     expect(api.probe.mock.calls[0][0].name).toBe("gamma");
+  });
+
+  it("reuses cached results when the panel is reopened quickly", async () => {
+    api.probe.mockResolvedValue({
+      status: "connected",
+      message: null,
+      tools: ["search"],
+      serverName: "fake",
+      protocolVersion: "2025-06-18",
+      elapsedMs: 7,
+    });
+    openPanel("codex");
+    await renderPanel();
+    await vi.waitFor(() => {
+      expect(api.probe).toHaveBeenCalledTimes(1);
+    });
+
+    // 关闭再打开：3 分钟内的结果直接复用，不再启动服务。
+    useMcpPanel.getState().closePanel();
+    await act(async () => {
+      root.render(<McpCommandPanel />);
+    });
+    api.probe.mockClear();
+    openPanel("codex");
+    await renderPanel();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.probe).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("已连接 · 1 个工具");
   });
 
   it("deep links the settings page at the active engine", async () => {

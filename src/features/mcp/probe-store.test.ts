@@ -4,7 +4,14 @@ import type { McpConfigEntry, McpProbeResult } from "./types";
 const api = vi.hoisted(() => ({ probe: vi.fn() }));
 vi.mock("./api", () => ({ mcpApi: api }));
 
-import { probeable, probeStateFor, useMcpProbeStore } from "./probe-store";
+import {
+  PROBE_CONCURRENCY,
+  PROBE_TTL_MS,
+  needsProbe,
+  probeable,
+  probeStateFor,
+  useMcpProbeStore,
+} from "./probe-store";
 
 function entry(overrides: Partial<McpConfigEntry> = {}): McpConfigEntry {
   return {
@@ -83,28 +90,68 @@ describe("probe store", () => {
     expect(useMcpProbeStore.getState().error).toBe("boom");
   });
 
-  it("checks every checkable entry serially, one at a time", async () => {
+  it("runs checks in parallel up to the cap, then reuses fresh results", async () => {
+    const entries = Array.from({ length: 6 }, (_, index) =>
+      entry({ id: `e:${index}`, name: `s${index}` }),
+    );
     let active = 0;
     let maxActive = 0;
     api.probe.mockImplementation(async () => {
       active += 1;
       maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await new Promise((resolve) => setTimeout(resolve, 5));
       active -= 1;
       return connected();
     });
+
+    await useMcpProbeStore.getState().probeAll(entries, null, { force: true });
+    expect(api.probe).toHaveBeenCalledTimes(6);
+    // 并行但有上限：既不串行，也不会一次拉起全部（6 条）。
+    expect(maxActive).toBeGreaterThan(1);
+    expect(maxActive).toBeLessThanOrEqual(PROBE_CONCURRENCY);
+
+    // 新鲜结果直接复用：再打开（非 force）不再启动任何服务。
+    api.probe.mockClear();
+    await useMcpProbeStore.getState().probeAll(entries, null);
+    expect(api.probe).not.toHaveBeenCalled();
+
+    // 超过 TTL 后重新检测。
+    const stale = Date.now() - PROBE_TTL_MS - 1;
+    useMcpProbeStore.setState((state) => ({
+      results: Object.fromEntries(
+        Object.entries(state.results).map(([id, value]) => [
+          id,
+          { ...value, checkedAt: stale },
+        ]),
+      ),
+    }));
+    await useMcpProbeStore.getState().probeAll(entries, null);
+    expect(api.probe).toHaveBeenCalledTimes(6);
+
+    // 停用条目无论强制与否都不启动。
+    api.probe.mockClear();
     await useMcpProbeStore.getState().probeAll(
-      [
-        entry({ id: "a:one", name: "one" }),
-        entry({ id: "b:two", name: "two", command: null, url: null }),
-        entry({ id: "c:three", name: "three" }),
-      ],
+      [...entries, entry({ id: "off:x", name: "off", enabled: false })],
       null,
+      { force: true },
     );
-    expect(api.probe).toHaveBeenCalledTimes(2);
-    expect(maxActive).toBe(1);
+    expect(api.probe).toHaveBeenCalledTimes(6);
+    expect(useMcpProbeStore.getState().pending).toEqual({});
     expect(useMcpProbeStore.getState().runningAll).toBe(false);
-    // 二次进入时正在跑的全部检测不会被叠起来。
-    expect(Object.keys(useMcpProbeStore.getState().results)).toHaveLength(2);
+  });
+
+  it("needsProbe skips disabled, unprobeable and still-fresh entries", () => {
+    const fresh = { result: connected(), checkedAt: Date.now(), version: "v1" };
+    expect(needsProbe(entry(), {})).toBe(true);
+    expect(needsProbe(entry(), { [entry().id]: fresh })).toBe(false);
+    expect(
+      needsProbe(entry(), {
+        [entry().id]: { ...fresh, checkedAt: Date.now() - PROBE_TTL_MS - 1 },
+      }),
+    ).toBe(true);
+    expect(needsProbe(entry({ enabled: false }), {})).toBe(false);
+    expect(needsProbe(entry({ command: null, url: null }), {})).toBe(false);
+    // 配置版本变了：旧结果不算数。
+    expect(needsProbe(entry({ version: "v2" }), { [entry().id]: fresh })).toBe(true);
   });
 });

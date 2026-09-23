@@ -88,6 +88,17 @@ function claudeProject(): McpConfigEntry {
   };
 }
 
+function connectedProbe(tools = ["a"]) {
+  return {
+    status: "connected" as const,
+    message: null,
+    tools,
+    serverName: "fake",
+    protocolVersion: "2025-06-18",
+    elapsedMs: 7,
+  };
+}
+
 function noSession(): McpRuntimeSection {
   return {
     status: "no_session",
@@ -182,6 +193,7 @@ beforeEach(() => {
   api.probe.mockReset();
   api.inventory.mockResolvedValue(payload());
   api.setEnabled.mockResolvedValue(claudeProject());
+  api.probe.mockResolvedValue(connectedProbe());
   useMcpProbeStore.setState({ results: {}, pending: {}, runningAll: false, error: null });
   useChatStore.setState({ active: null });
   container = document.createElement("div");
@@ -456,18 +468,9 @@ describe("McpSection", () => {
     expect(document.body.textContent).toContain("运行时清单");
   });
 
-  it("checks connections on demand and shows per-server status", async () => {
+  it("checks on open, reuses fresh results, and re-checks only on demand", async () => {
     api.probe.mockImplementation(async (entry: McpConfigEntry) => {
-      if (entry.name === "alpha") {
-        return {
-          status: "connected",
-          message: null,
-          tools: ["a", "b"],
-          serverName: "fake",
-          protocolVersion: "2025-06-18",
-          elapsedMs: 12,
-        };
-      }
+      if (entry.name === "alpha") return connectedProbe(["a", "b"]);
       return {
         status: "needs_auth",
         message: "服务要求认证（HTTP 401）",
@@ -478,22 +481,65 @@ describe("McpSection", () => {
       };
     });
     await renderSection();
-    // 未检测：不凭空显示状态。
-    expect(document.body.textContent).not.toContain("已连接");
+    // 打开即检测：只跑当前引擎里启用且可检测的条目（fixture 里 beta 已停用）。
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("已连接 · 2 个工具");
+    });
+    expect(api.probe.mock.calls.map((call) => call[0].name)).toEqual(["alpha"]);
 
+    // 再挂载一次（≈ 快速再次打开）：新鲜结果直接复用，不再启动服务。
+    act(() => root.unmount());
+    root = createRoot(container);
+    api.probe.mockClear();
+    await renderSection();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.probe).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("已连接 · 2 个工具");
+
+    // 手动「检测全部」是强制重跑（同样只针对启用中的条目）。
     await act(async () => {
       buttonExact("检测全部").click();
     });
     await vi.waitFor(() => {
-      expect(document.body.textContent).toContain("已连接 · 2 个工具");
+      expect(api.probe).toHaveBeenCalledTimes(1);
+      expect(api.probe.mock.calls[0][0].name).toBe("alpha");
     });
-    expect(document.body.textContent).toContain("需要登录");
-    // 只检测当前引擎的可检测条目（claude 两条），不会跑去启动 codex 的。
-    expect(api.probe).toHaveBeenCalledTimes(2);
-    expect(api.probe.mock.calls.map((call) => call[0].name)).toEqual([
-      "alpha",
-      "beta",
-    ]);
+  });
+
+  it("skips disabled entries and shows the needs-sign-in state", async () => {
+    api.inventory.mockResolvedValue(
+      payload({
+        engines: [
+          engine("claude", {
+            config: {
+              entries: [{ ...claudeProject(), enabled: true }, { ...claudeUser(), enabled: false }],
+              errors: [],
+            },
+          }),
+          payload().engines[1],
+        ],
+      }),
+    );
+    api.probe.mockImplementation(async (entry: McpConfigEntry) =>
+      entry.name === "beta"
+        ? {
+            status: "needs_auth" as const,
+            message: "服务要求认证（HTTP 401）",
+            tools: [],
+            serverName: null,
+            protocolVersion: null,
+            elapsedMs: 5,
+          }
+        : connectedProbe(),
+    );
+    await renderSection();
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("需要登录");
+    });
+    // 停用的 alpha 不启动，只检测启用的 beta。
+    expect(api.probe.mock.calls.map((call) => call[0].name)).toEqual(["beta"]);
   });
 
   it("surfaces a probe transport failure next to the row", async () => {
@@ -509,10 +555,6 @@ describe("McpSection", () => {
     const alphaRow = [...document.querySelectorAll("li")].find((row) =>
       row.textContent?.includes("alpha"),
     );
-    const check = alphaRow?.querySelector<HTMLButtonElement>('button[aria-label*="检测"]');
-    await act(async () => {
-      check?.click();
-    });
     await vi.waitFor(() => {
       expect(alphaRow?.textContent).toContain("连接失败");
     });
@@ -520,8 +562,6 @@ describe("McpSection", () => {
     expect(
       alphaRow?.querySelector('[title*="启动失败"]'),
     ).toBeTruthy();
-    // 单条检测只跑这一条。
-    expect(api.probe).toHaveBeenCalledTimes(1);
   });
 
   it("workspace switches cannot be overwritten by a late response", async () => {

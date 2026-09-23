@@ -29,7 +29,12 @@ import { isWeb } from "@/lib/transport";
 import { cx } from "@/utils/cx";
 import { McpDetailDialog } from "./McpDetailDialog";
 import { ProbeActionButton, ProbeStatusChip } from "./probe-ui";
-import { probeable, useMcpProbeStore } from "./probe-store";
+import {
+  latestCheckedAt,
+  probeable,
+  useAutoProbe,
+  useMcpProbeStore,
+} from "./probe-store";
 import { engineIdFromHash, engineLabel, readonlyReasonText } from "./labels";
 import type {
   McpConfigEntry,
@@ -292,7 +297,7 @@ function SupportNote({ engine }: { engine: McpEngineInventory }) {
 }
 
 export function McpSection() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const activeWorkspace = useChatStore((state) => state.active?.workspacePath ?? null);
   const store = useMcpInventory(activeWorkspace);
   const [engineId, setEngineId] = useState<McpEngineId>(
@@ -306,12 +311,15 @@ export function McpSection() {
   const probeAll = useMcpProbeStore((state) => state.probeAll);
   const probingAll = useMcpProbeStore((state) => state.runningAll);
   const probeError = useMcpProbeStore((state) => state.error);
+  const probeResults = useMcpProbeStore((state) => state.results);
 
   const engines = store.inventory?.engines ?? [];
   const engine = useMemo(
     () => engines.find((item) => item.id === engineId) ?? engines[0] ?? null,
     [engines, engineId],
   );
+  // 打开页面即检测（复用新鲜缓存；配置一变指纹就变，只补没结果的）。
+  useAutoProbe(engine?.config.entries, activeWorkspace, !isWeb);
 
   const filteredEntries = useMemo(() => {
     if (!engine) return [];
@@ -327,6 +335,10 @@ export function McpSection() {
   const probeableCount = useMemo(
     () => (engine?.config.entries ?? []).filter(probeable).length,
     [engine],
+  );
+  const checkedAt = useMemo(
+    () => latestCheckedAt(engine?.config.entries ?? [], probeResults),
+    [engine, probeResults],
   );
 
   const handleToggle = (entry: McpConfigEntry, enabled: boolean) => {
@@ -386,7 +398,9 @@ export function McpSection() {
           disabled={store.loading || probingAll || probeableCount === 0}
           leadingIcon={Activity}
           onClick={() =>
-            void probeAll(engine?.config.entries ?? [], activeWorkspace)
+            void probeAll(engine?.config.entries ?? [], activeWorkspace, {
+              force: true,
+            })
           }
         >
           {t("mcp.probe.checkAll")}
@@ -420,6 +434,14 @@ export function McpSection() {
             config: engine?.config.entries.length ?? 0,
             runtime: engine?.runtime.entries.length ?? 0,
           })}
+          {checkedAt
+            ? ` · ${t("mcp.probe.lastChecked", {
+                time: new Intl.DateTimeFormat(i18n.language, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }).format(new Date(checkedAt)),
+              })}`
+            : ""}
         </span>
       </div>
 

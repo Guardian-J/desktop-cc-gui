@@ -19,7 +19,12 @@ import { isWeb } from "@/lib/transport";
 import { useChatStore } from "@/features/chat/store";
 import { McpDetailDialog } from "./McpDetailDialog";
 import { McpConfigList, McpSourceHint, RuntimeBlock } from "./McpSection";
-import { probeable, useMcpProbeStore } from "./probe-store";
+import {
+  latestCheckedAt,
+  probeable,
+  useAutoProbe,
+  useMcpProbeStore,
+} from "./probe-store";
 import { engineLabel, openMcpSettings } from "./labels";
 import { useMcpPanel } from "./panel";
 import type { McpConfigEntry } from "./types";
@@ -32,7 +37,7 @@ export function McpCommandPanel() {
 }
 
 function PanelBody() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const closePanel = useMcpPanel((state) => state.closePanel);
   const engineId = useChatStore((state) => state.active?.engine ?? null);
   const workspacePath = useChatStore((state) => state.active?.workspacePath ?? null);
@@ -44,8 +49,12 @@ function PanelBody() {
   const probeAll = useMcpProbeStore((state) => state.probeAll);
   const probingAll = useMcpProbeStore((state) => state.runningAll);
   const probeError = useMcpProbeStore((state) => state.error);
+  const probeResults = useMcpProbeStore((state) => state.results);
   const label = engineId ? engineLabel(engineId) : t("mcp.command.title");
   const probeableCount = (engine?.config.entries ?? []).filter(probeable).length;
+  // 打开面板即检测：新鲜缓存直接复用（重复打开不重复启动服务）。
+  useAutoProbe(engine?.config.entries, workspacePath, !isWeb);
+  const checkedAt = latestCheckedAt(engine?.config.entries ?? [], probeResults);
 
   const handleToggle = (entry: McpConfigEntry, enabled: boolean) => {
     setToggleError(null);
@@ -151,7 +160,17 @@ function PanelBody() {
 
           {engine && engine.support !== "none" ? (
             <section className="flex flex-col gap-2">
-              <h4 className="text-body-medium text-text-primary">{t("mcp.config.title")}</h4>
+              <h4 className="text-body-medium text-text-primary">
+                {t("mcp.config.title")}
+                {checkedAt
+                  ? ` · ${t("mcp.probe.lastChecked", {
+                      time: new Intl.DateTimeFormat(i18n.language, {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }).format(new Date(checkedAt)),
+                    })}`
+                  : ""}
+              </h4>
               {engine.config.entries.length === 0 ? (
                 <>
                   <EmptyState className="py-4">
