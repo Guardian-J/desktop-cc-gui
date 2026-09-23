@@ -230,7 +230,11 @@ impl ProcessRegistry {
     /// already reaped — nothing left to signal. Virtual runs (no child) only
     /// raise the killed flag: the transport task observes it on its next
     /// loop tick, cancels the host-side turn, and settles the turn itself.
-    fn kill_entry(child: Option<&Arc<TokioMutex<tokio::process::Child>>>, pid: u32, killed: &Arc<std::sync::atomic::AtomicBool>) -> bool {
+    fn kill_entry(
+        child: Option<&Arc<TokioMutex<tokio::process::Child>>>,
+        pid: u32,
+        killed: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> bool {
         killed.store(true, std::sync::atomic::Ordering::SeqCst);
         let Some(child) = child else {
             return true;
@@ -499,7 +503,11 @@ mod registry_tests {
     #[tokio::test]
     async fn preassigned_session_alias_routes_stop_before_session_event() {
         let child = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
-            .args(if cfg!(windows) { ["/c", "ping -n 30 127.0.0.1"] } else { ["-c", "sleep 30"] })
+            .args(if cfg!(windows) {
+                ["/c", "ping -n 30 127.0.0.1"]
+            } else {
+                ["-c", "sleep 30"]
+            })
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

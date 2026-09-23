@@ -172,10 +172,7 @@ fn upsert_stamp(
 
 /// Sessions-row stat, re-checked under SCAN_LOCK before any stamp: a file
 /// rewritten mid-parse must not be stamped at the new stat.
-fn stat_unchanged(
-    conn: &rusqlite::Connection,
-    row: &PendingSession,
-) -> Result<bool, String> {
+fn stat_unchanged(conn: &rusqlite::Connection, row: &PendingSession) -> Result<bool, String> {
     let current: Option<(i64, i64)> = conn
         .query_row(
             "SELECT file_size, file_mtime_ms FROM sessions WHERE engine=?1 AND session_id=?2",
@@ -398,10 +395,7 @@ fn find_from(haystack: &[char], needle: &[char], from: usize) -> Option<usize> {
 /// Go-side content snippet.
 fn like_snippet(text: &str, needles: &[Vec<char>]) -> Vec<SnippetPart> {
     let lower = lower_chars(text);
-    let first = needles
-        .iter()
-        .filter_map(|n| find_from(&lower, n, 0))
-        .min();
+    let first = needles.iter().filter_map(|n| find_from(&lower, n, 0)).min();
     let Some(first) = first else {
         // Row matched in SQL but not here (exotic case fold): show the head.
         let head: String = text.chars().take(SNIPPET_RADIUS * 2).collect();
@@ -412,11 +406,7 @@ fn like_snippet(text: &str, needles: &[Vec<char>]) -> Vec<SnippetPart> {
     };
     let start = first.saturating_sub(SNIPPET_RADIUS);
     let end = (first + SNIPPET_RADIUS * 2).min(lower.len());
-    let window: String = text
-        .chars()
-        .skip(start)
-        .take(end - start)
-        .collect();
+    let window: String = text.chars().skip(start).take(end - start).collect();
     let window_lower = lower_chars(&window);
 
     // Mark every occurrence of every token inside the window; overlaps keep
@@ -571,10 +561,8 @@ fn like_search(
         tokens.len() + 1,
         tokens.len() + 2,
     );
-    let mut params: Vec<rusqlite::types::Value> = tokens
-        .iter()
-        .map(|t| like_pattern(t).into())
-        .collect();
+    let mut params: Vec<rusqlite::types::Value> =
+        tokens.iter().map(|t| like_pattern(t).into()).collect();
     params.push((limit as i64 + 1).into());
     params.push((offset as i64).into());
     let conn = db.0.lock();
@@ -723,7 +711,13 @@ mod tests {
         let scratch = Scratch::new();
         let db = crate::db::Db::open_at(&scratch.0.join("app.db")).unwrap();
         insert_session(&db, "s1", 100);
-        insert_message(&db, "s1", 1, "assistant", "So do not commit; report. 已生成 v1.0.5 版本记录，详见更新日志");
+        insert_message(
+            &db,
+            "s1",
+            1,
+            "assistant",
+            "So do not commit; report. 已生成 v1.0.5 版本记录，详见更新日志",
+        );
 
         let page = search(&db, "已生成 v1.0.5 版本记录", None, None).unwrap();
         assert_eq!(page.hits.len(), 1);
@@ -749,7 +743,10 @@ mod tests {
         let page = search(&db, "提交 代码", None, None).unwrap();
         let ids: Vec<&str> = page.hits.iter().map(|h| h.session_id.as_str()).collect();
         assert_eq!(ids, ["s2", "s1"], "recency order, both tokens required");
-        assert!(page.hits[0].snippet.iter().any(|p| p.marked && p.text.contains("提交")));
+        assert!(page.hits[0]
+            .snippet
+            .iter()
+            .any(|p| p.marked && p.text.contains("提交")));
     }
 
     #[test]
@@ -766,7 +763,11 @@ mod tests {
         // updated_at tie-break decides: newest session first.
         let page = search(&db, "搜索目标关键词", None, None).unwrap();
         let ids: Vec<&str> = page.hits.iter().map(|h| h.session_id.as_str()).collect();
-        assert_eq!(ids, ["new", "old"], "one row per session, newest first on a tie");
+        assert_eq!(
+            ids,
+            ["new", "old"],
+            "one row per session, newest first on a tie"
+        );
     }
 
     #[test]
@@ -775,17 +776,15 @@ mod tests {
         let db = crate::db::Db::open_at(&scratch.0.join("app.db")).unwrap();
         insert_session(&db, "s1", 100);
         insert_message(&db, "s1", 1, "user", "删除后不可见的独特内容");
-        db.0
-            .lock()
+        db.0.lock()
             .execute("DELETE FROM sessions WHERE session_id='s1'", [])
             .unwrap();
         let page = search(&db, "删除后不可见", None, None).unwrap();
         assert!(page.hits.is_empty());
-        let count: i64 = db
-            .0
-            .lock()
-            .query_row("SELECT COUNT(*) FROM session_messages", [], |r| r.get(0))
-            .unwrap();
+        let count: i64 =
+            db.0.lock()
+                .query_row("SELECT COUNT(*) FROM session_messages", [], |r| r.get(0))
+                .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -847,11 +846,10 @@ mod tests {
         let page = search(&db, "追加的新消息", None, None).unwrap();
         assert_eq!(page.hits.len(), 1);
         // Old content stays (replace-then-insert keeps one copy).
-        let count: i64 = db
-            .0
-            .lock()
-            .query_row("SELECT COUNT(*) FROM session_messages", [], |r| r.get(0))
-            .unwrap();
+        let count: i64 =
+            db.0.lock()
+                .query_row("SELECT COUNT(*) FROM session_messages", [], |r| r.get(0))
+                .unwrap();
         assert_eq!(count, 2);
     }
 
@@ -922,24 +920,36 @@ mod tests {
         assert_eq!(
             parts,
             vec![
-                SnippetPart { text: "a".into(), marked: false },
-                SnippetPart { text: "b".into(), marked: true },
-                SnippetPart { text: "c".into(), marked: false },
+                SnippetPart {
+                    text: "a".into(),
+                    marked: false
+                },
+                SnippetPart {
+                    text: "b".into(),
+                    marked: true
+                },
+                SnippetPart {
+                    text: "c".into(),
+                    marked: false
+                },
             ]
         );
         // Marker chars already present in content cannot forge highlight
         // state beyond their own toggle.
         let parts = split_marks("\u{1}\u{2}x");
-        assert_eq!(parts, vec![SnippetPart { text: "x".into(), marked: false }]);
+        assert_eq!(
+            parts,
+            vec![SnippetPart {
+                text: "x".into(),
+                marked: false
+            }]
+        );
     }
 
     #[test]
     fn like_snippet_marks_all_tokens_case_insensitively() {
         let needles = vec![lower_chars("error"), lower_chars("超时")];
-        let parts = like_snippet(
-            "请求失败：Error 连接超时，重试后仍然 error 不断",
-            &needles,
-        );
+        let parts = like_snippet("请求失败：Error 连接超时，重试后仍然 error 不断", &needles);
         let marked: String = parts
             .iter()
             .filter(|p| p.marked)

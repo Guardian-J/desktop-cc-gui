@@ -86,7 +86,8 @@ fn collect_tree(root: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     let mut out: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+        let entries =
+            std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
@@ -106,13 +107,11 @@ fn collect_tree(root: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
             if rel.file_name().is_some_and(|name| name == META_FILE) {
                 continue;
             }
-            if rel
-                .components()
-                .any(|c| !matches!(c, Component::Normal(_)))
-            {
+            if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
                 continue;
             }
-            let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
             out.push((rel, bytes));
         }
     }
@@ -142,7 +141,8 @@ fn write_tree(skill_dir: &Path, files: &[(PathBuf, Vec<u8>)], hash: &str) -> Res
     for (rel, bytes) in files {
         let target = skill_dir.join(rel);
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
         std::fs::write(&target, bytes).map_err(|e| format!("write {}: {e}", target.display()))?;
     }
@@ -228,7 +228,9 @@ pub(crate) fn skill_source_root(resource_dir: Option<&Path>) -> Option<PathBuf> 
             .join(SKILLS_DIR)
             .join(SKILL_ID),
     );
-    candidates.into_iter().find(|c| c.join("SKILL.md").is_file())
+    candidates
+        .into_iter()
+        .find(|c| c.join("SKILL.md").is_file())
 }
 
 /// 要同步的 skills 根：引擎 home 已存在才写（不替用户创建引擎目录）。
@@ -316,10 +318,8 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "ccgui-creator-skill-{name}-{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("ccgui-creator-skill-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self { dir }
@@ -329,7 +329,11 @@ mod tests {
             let source = self.dir.join("source");
             std::fs::write(self.dir.join("placeholder"), b"").unwrap();
             std::fs::create_dir_all(source.join("references")).unwrap();
-            std::fs::write(source.join("SKILL.md"), b"---\nname: ccgui-plugin-creator\n---\n").unwrap();
+            std::fs::write(
+                source.join("SKILL.md"),
+                b"---\nname: ccgui-plugin-creator\n---\n",
+            )
+            .unwrap();
             std::fs::write(source.join("references/sdk-api.md"), b"# sdk\n").unwrap();
             source
         }
@@ -412,12 +416,18 @@ mod tests {
         assert!(read_meta(&target).is_some(), "marker must be written");
 
         // 第二次：内容一致 → 不重写（用 mtime 证明确实没动文件）。
-        let before = std::fs::metadata(target.join("SKILL.md")).unwrap().modified().unwrap();
+        let before = std::fs::metadata(target.join("SKILL.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert_eq!(
             install_skill_into(&target, &source).unwrap(),
             SkillAction::Current
         );
-        let after = std::fs::metadata(target.join("SKILL.md")).unwrap().modified().unwrap();
+        let after = std::fs::metadata(target.join("SKILL.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert_eq!(before, after, "current install must not touch files");
     }
 
@@ -432,7 +442,11 @@ mod tests {
         );
 
         // 源换代：改内容、删一个文件、加一个文件。
-        std::fs::write(source.join("SKILL.md"), b"---\nname: ccgui-plugin-creator\n---\nv2\n").unwrap();
+        std::fs::write(
+            source.join("SKILL.md"),
+            b"---\nname: ccgui-plugin-creator\n---\nv2\n",
+        )
+        .unwrap();
         std::fs::remove_file(source.join("references/sdk-api.md")).unwrap();
         std::fs::write(source.join("references/permissions.md"), b"# perms\n").unwrap();
         // 用户自己在目录里放的文件必须留下（不在我们标记的清单里）。
@@ -442,10 +456,18 @@ mod tests {
             install_skill_into(&target, &source).unwrap(),
             SkillAction::Written
         );
-        assert!(std::fs::read_to_string(target.join("SKILL.md")).unwrap().contains("v2"));
-        assert!(!target.join("references/sdk-api.md").exists(), "stale managed file must go");
+        assert!(std::fs::read_to_string(target.join("SKILL.md"))
+            .unwrap()
+            .contains("v2"));
+        assert!(
+            !target.join("references/sdk-api.md").exists(),
+            "stale managed file must go"
+        );
         assert!(target.join("references/permissions.md").exists());
-        assert!(target.join("user-notes.md").exists(), "unmanaged file must survive");
+        assert!(
+            target.join("user-notes.md").exists(),
+            "unmanaged file must survive"
+        );
         assert_eq!(read_meta(&target).unwrap().files.len(), 2);
     }
 
@@ -492,7 +514,10 @@ mod tests {
             ("HOME", &agents),
         ]);
         let roots = engine_skill_roots();
-        assert!(roots.is_empty(), "no engine home exists → no targets: {roots:?}");
+        assert!(
+            roots.is_empty(),
+            "no engine home exists → no targets: {roots:?}"
+        );
         drop(steer);
 
         // 建好三个 home → 三个目标，各取自己的 skills 根。
@@ -507,7 +532,10 @@ mod tests {
         let roots = engine_skill_roots();
         assert!(roots.contains(&claude.join("skills")), "{roots:?}");
         assert!(roots.contains(&codex.join("skills")), "{roots:?}");
-        assert!(roots.contains(&agents.join(".agents").join("skills")), "{roots:?}");
+        assert!(
+            roots.contains(&agents.join(".agents").join("skills")),
+            "{roots:?}"
+        );
     }
 
     #[test]
@@ -531,23 +559,37 @@ mod tests {
         let resource_dir = scratch.dir.join("resource_dir");
         let bundled = resource_dir.join(SKILLS_DIR).join(SKILL_ID);
         std::fs::create_dir_all(bundled.join("references")).unwrap();
-        std::fs::write(bundled.join("SKILL.md"), b"---\nname: ccgui-plugin-creator\n---\n").unwrap();
+        std::fs::write(
+            bundled.join("SKILL.md"),
+            b"---\nname: ccgui-plugin-creator\n---\n",
+        )
+        .unwrap();
         std::fs::write(bundled.join("references/sdk-api.md"), b"# sdk\n").unwrap();
 
         let report = install(Some(&resource_dir));
-        assert_eq!(report.source.as_deref(), Some(bundled.to_string_lossy().as_ref()));
+        assert_eq!(
+            report.source.as_deref(),
+            Some(bundled.to_string_lossy().as_ref())
+        );
         assert_eq!(report.targets.len(), 3, "{:?}", report.targets);
         for target in &report.targets {
             assert!(target.action == SkillAction::Written, "{:?}", target);
             let dir = Path::new(&target.path);
             assert!(dir.join("SKILL.md").is_file(), "{}", target.path);
-            assert!(dir.join("references/sdk-api.md").is_file(), "{}", target.path);
+            assert!(
+                dir.join("references/sdk-api.md").is_file(),
+                "{}",
+                target.path
+            );
             assert!(dir.join(META_FILE).is_file(), "{}", target.path);
         }
 
         // 第二次启动：三个根都报 current（内容哈希一致，零写入）。
         let again = install(Some(&resource_dir));
-        assert!(again.targets.iter().all(|t| t.action == SkillAction::Current));
+        assert!(again
+            .targets
+            .iter()
+            .all(|t| t.action == SkillAction::Current));
     }
 
     #[test]
@@ -571,7 +613,8 @@ mod tests {
     fn bundled_skill_resource_exists_in_repo() {
         // 打包资源缺失只会在运行时暴露，这里先在本仓把门（含 SKILL.md 与
         // 生成的 SDK 参考；生成物是否最新由前端 vitest 断言）。
-        let root = skill_source_root(None).expect("bundled skill must resolve from CARGO_MANIFEST_DIR");
+        let root =
+            skill_source_root(None).expect("bundled skill must resolve from CARGO_MANIFEST_DIR");
         assert!(root.join("SKILL.md").is_file());
         assert!(root.join("references/sdk-api.md").is_file());
     }

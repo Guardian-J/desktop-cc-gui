@@ -34,6 +34,8 @@ import { EmptyState } from "@/components/base/empty-state";
 import { parseUsage } from "../usage";
 import { rememberContextWindow, resolveContextMax } from "../context-window-memory";
 import { useWorkspaceUIHooks, workspaceAllowedEngines } from "../workspace-ui-bridge";
+import { ConversationModePane, ConversationModePicker } from "@/features/plugins/conversation/ConversationModeHost";
+import { useConversationMode } from "@/features/plugins/conversation/use-conversation-mode";
 
 
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -236,7 +238,8 @@ export const ChatConversation = memo(function ChatConversation({
   startNewChat: (workspacePath: string) => void;
   composerInputRef: React.RefObject<ComposerInputHandle | null>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const conversationMode = useConversationMode(active);
   const key = active
     ? sessionKey(active.engine, active.sessionId, active.workspacePath)
     : "";
@@ -424,6 +427,20 @@ export const ChatConversation = memo(function ChatConversation({
       loadingEngines,
     });
 
+  if (active && conversationMode.exitBlocked && !conversationMode.mode) {
+    return <EmptyState className="text-body-medium">{t("plugins.conversationMode.recoveryRequired")}</EmptyState>;
+  }
+
+  if (active && conversationMode.mode) {
+    return <ConversationModePane
+      mode={conversationMode.mode}
+      conversationId={conversationMode.conversationId}
+      workspacePath={active.workspacePath}
+      language={i18n.language}
+      onExit={conversationMode.onExit}
+    />;
+  }
+
   return (
     <>
       {active && hasSession ? (
@@ -470,7 +487,7 @@ export const ChatConversation = memo(function ChatConversation({
         noEnabledEngines={noEnabledEngines}
         composerInputRef={composerInputRef}
         addMenu={addMenu}
-        cliMenu={cliMenu}
+        cliMenu={<>{cliMenu}<ConversationModePicker disabled={!active || streaming || queue.length > 0} onSelect={conversationMode.onSelect} /></>}
         permissionMenu={permissionMenu}
         supportsImages={supportsImages}
         onPasteImages={pasteImages}

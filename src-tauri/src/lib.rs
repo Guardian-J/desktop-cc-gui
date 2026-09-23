@@ -1,12 +1,12 @@
-pub mod agents;
 pub mod agent_catalog;
+pub mod agents;
 pub mod baidu_tongji;
 pub mod browser;
 pub mod cc_switch;
 pub mod cli_lifecycle;
-pub mod config;
 pub mod computer_use;
 pub mod computer_use_ax;
+pub mod config;
 pub mod creator_skill;
 pub mod cu_overlay;
 pub mod db;
@@ -16,30 +16,30 @@ pub mod event_sink;
 pub mod files;
 pub mod git;
 pub mod history;
-pub mod metrics;
 pub mod mcp;
+pub mod metrics;
 pub mod mission;
 pub mod open_app;
 pub mod paths;
-pub mod plugins;
 pub mod plugin_caps;
+pub mod plugins;
 pub mod prompts;
-pub mod proxy;
 pub mod provider_files;
 pub mod provider_models;
+pub mod proxy;
 pub mod quit_guard;
+pub mod relay;
 pub mod settings;
 pub mod skills_hub;
-pub mod usage;
 pub mod slash_commands;
 pub mod terminal;
-pub mod relay;
 pub mod updater;
+pub mod usage;
 pub mod web;
 
 use std::sync::Arc;
-use tauri::Manager;
 use tauri::Emitter;
+use tauri::Manager;
 
 pub struct AppState {
     pub db: Arc<db::Db>,
@@ -187,8 +187,7 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(600));
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
                     loop {
                         interval.tick().await;
                         let _ = crate::settings::rotate_web_auth_key(&handle);
@@ -252,11 +251,14 @@ pub fn run() {
             // 状态必须已经就位。设置改动需重启应用。
             #[cfg(target_os = "windows")]
             let settings = settings::read_settings().unwrap_or_default();
-            let mut window_builder =
-                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-                    .title("CC GUI")
-                    .inner_size(1400.0, 900.0)
-                    .min_inner_size(900.0, 600.0);
+            let mut window_builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("CC GUI")
+            .inner_size(1400.0, 900.0)
+            .min_inner_size(900.0, 600.0);
             #[cfg(target_os = "macos")]
             {
                 // 原 tauri.conf.json: titleBarStyle "Overlay" + hiddenTitle true。

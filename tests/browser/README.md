@@ -1,5 +1,16 @@
 # Chat streaming regression
 
+Open `/tests/browser/relay-plugin.html` for the installable Relay plugin's actual
+React UI with a fake Agent transport. The plugin source is a sibling checkout at
+`../ccgui-plugin/ccgui-plugin-plan-execute-relay` (dev server allows sibling
+plugin repos per `vite.config.ts`); without that checkout the page cannot load.
+Configure the two nodes, send two planning turns, verify that neither reply
+starts execution, then approve the latest plan.
+An unsent draft must disable approval. The visible request counter distinguishes
+planning and execution. Test editing/version selection, stopping, and returning
+to regular chat. No real model, credentials, CLI or workspace files are used.
+This is not evidence of native read-only enforcement or live-model correctness.
+
 Open `/tests/browser/process-disclosure-bounded.html` for large process groups.
 The production disclosure renders 120 or 500 synthetic tools with at most 40
 items per page. Previous/next/latest preserve access to every item; append while

@@ -151,7 +151,8 @@ pub(crate) fn parse_tool_args_value(value: &Value) -> Option<Value> {
                 return None;
             }
             match serde_json::from_str::<Value>(trimmed) {
-                Ok(parsed) => parse_tool_args_value(&parsed).or_else(|| Some(Value::String(trimmed.to_string()))),
+                Ok(parsed) => parse_tool_args_value(&parsed)
+                    .or_else(|| Some(Value::String(trimmed.to_string()))),
                 Err(_) => Some(Value::String(trimmed.to_string())),
             }
         }
@@ -394,7 +395,11 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
         }),
         "append" => {
             let items = match args.get("items").and_then(Value::as_array) {
-                Some(items) => items.iter().filter_map(Value::as_str).map(pending_item).collect(),
+                Some(items) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(pending_item)
+                    .collect(),
                 None => phase_items(args),
             };
             Some(TodosPayload {

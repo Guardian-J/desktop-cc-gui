@@ -1,7 +1,7 @@
 <!-- 由 src/features/plugins/skill/creator-skill-docs.ts 从源码生成，请勿手改。 -->
 <!-- 重新生成：pnpm plugin-skill:docs（测试 creator-skill-docs.test.ts 会断言本文件与源码一致）。 -->
 
-# CC GUI 插件 SDK 参考（SDK 0.3.13）
+# CC GUI 插件 SDK 参考（SDK 0.3.14）
 
 本文件由脚本从 `packages/plugin-sdk`（公共契约）与宿主运行时（权限门禁）派生，属于 `ccgui-plugin-creator` skill。
 字段、方法、权限以本文件为准：**文中没有的 API 一律视为不存在**，不要凭记忆猜测方法名或权限名。
@@ -46,6 +46,7 @@ export default function activate(ctx: PluginContext): void | (() => void) {
 
 | 入口 | 权限 | 说明 |
 |---|---|---|
+| `ctx.ui.registerConversationMode` | `ui:conversation-mode` | — |
 | `ctx.ui.registerSettingsSection` | `ui:settings-section` | — |
 | `ctx.ui.registerAddMenuRow` | `ui:add-menu` | — |
 | `ctx.ui.registerComposerSlot` | `ui:composer-status` | Extra control rendered beside a composer slot's builtin control (plan §4.2 #2). Permission `ui:composer-status` (shared with registerComposerStatusItem — both gate on the same composer-area grant; there is no separate `ui:composer` permission). |
@@ -74,6 +75,7 @@ export default function activate(ctx: PluginContext): void | (() => void) {
 | `ctx.sessions.refresh` | `host:session` | 请求宿主立即刷新会话目录（侧栏/标签页），0.3.7 起。 插件绕过宿主直写会话数据（如 sqlite custom_title、转录 title 行）后 调用——否则变更要等用户手动同步或下次常规刷新才可见。 |
 | `ctx.sessions.setEffort` | `host:session` | 修改已有会话的 effort 档位，0.3.10 起。直写宿主会话状态并持久化 （等价于用户在会话内切换档位，refreshSessions 不会回滚）。未知会话 或空 effort 以 rejection 失败——不会创建幽灵会话条目。 |
 | `ctx.sessions.registerSource` | `host:session` | — |
+| `ctx.agent.catalog` | `agent` | — |
 | `ctx.agent.start` | `agent` | 启动一个 agent 轮次；返回的 runId 用于事件过滤与 interrupt。 |
 | `ctx.agent.interrupt` | `agent` | 中断本插件启动的 run（run id 属主前缀由宿主强制）。 |
 
@@ -85,6 +87,8 @@ export default function activate(ctx: PluginContext): void | (() => void) {
 
 ```ts
 ui: {
+  /** 权限：ui:conversation-mode */
+  registerConversationMode(def: { key?: string; label(): string; component: ComponentType<PluginConversationProps> }): Disposer;
   /** 权限：ui:settings-section */
   registerSettingsSection(def: { key?: string; label(): string; icon?: ComponentType<{ className?: string }>; component: ComponentType }): Disposer;
   /** 权限：ui:add-menu */
@@ -207,9 +211,11 @@ Agent 轮次（权限 `agent`，0.3.13 起）：经宿主引擎管线拉起 agen
 ```ts
 agent: {
   /** 权限：agent */
-  start(def: { engine: string; prompt: string; workspacePath: string; model?: string; providerId?: string; sessionId?: string }): Promise<{ runId: string; sessionId: string | null }>;
+  catalog(workspacePath: string): Promise<PluginAgentCatalogEntry[]>;
   /** 权限：agent */
-  interrupt(runId: string): Promise<void>;
+  start(def: { engine: string; prompt: string; workspacePath: string; model?: string; providerId?: string; sessionId?: string; readOnly?: boolean; requestId?: string }): Promise<{ runId: string; sessionId: string | null }>;
+  /** 权限：agent */
+  interrupt(runId: string): Promise<boolean>;
 }
 ```
 
@@ -261,7 +267,8 @@ ctx.react: typeof React; // Shared host React instance: external bundles can't r
 | `ui:session-menu` | `ctx.ui.registerSessionMenuItem` |
 | `ui:sidebar-entry` | `ctx.ui.registerSidebarNav` |
 | `ui:center-tab` | `ctx.ui.registerCenterTab`、`ctx.ui.openCenterTab` |
-| `agent` | `ctx.agent.start`、`ctx.agent.interrupt` |
+| `ui:conversation-mode` | `ctx.ui.registerConversationMode` |
+| `agent` | `ctx.agent.catalog`、`ctx.agent.start`、`ctx.agent.interrupt` |
 | `theme` | `ctx.theme.injectCss`、`ctx.theme.setTokens` |
 | `i18n` | `ctx.i18n.addBundle` |
 | `events` | `ctx.events.on`、`ctx.events.emit` |

@@ -59,7 +59,11 @@ pub(crate) fn sanitize_meta_value(value: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn parse_meta_line(line: &str, description: &mut Option<String>, argument_hint: &mut Option<String>) {
+pub(crate) fn parse_meta_line(
+    line: &str,
+    description: &mut Option<String>,
+    argument_hint: &mut Option<String>,
+) {
     let Some((key, value)) = line.split_once(':') else {
         return;
     };
@@ -83,9 +87,7 @@ pub(crate) fn parse_meta_line(line: &str, description: &mut Option<String>, argu
 /// YAML-ish frontmatter between `---` fences. Only the fields the menu
 /// renders are read; a `name:` override is honored by the caller via
 /// `name_override`. Unterminated frontmatter means the file has none.
-fn parse_command_frontmatter(
-    content: &str,
-) -> (Option<String>, Option<String>, Option<String>) {
+fn parse_command_frontmatter(content: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut segments = content.split_inclusive('\n');
     let Some(first_segment) = segments.next() else {
         return (None, None, None);
@@ -127,13 +129,20 @@ fn derive_command_name(path: &Path, root: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let mut parts: Vec<String> = relative
         .components()
-        .filter_map(|component| component.as_os_str().to_str().map(|value| value.to_string()))
+        .filter_map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .map(|value| value.to_string())
+        })
         .collect();
     if parts.is_empty() {
         return None;
     }
     let file_name = parts.pop()?;
-    let stem = Path::new(&file_name).file_stem().and_then(|value| value.to_str())?;
+    let stem = Path::new(&file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())?;
     if stem.eq_ignore_ascii_case("readme") {
         return None;
     }
@@ -149,7 +158,9 @@ fn discover_commands_in(dir: &Path, root: &Path, source: &str) -> Vec<SlashComma
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_dir = std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = std::fs::metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
         if is_dir {
             out.extend(discover_commands_in(&path, root, source));
             continue;
@@ -222,7 +233,8 @@ fn commands_dirs(workspace_root: &Path) -> Vec<(PathBuf, &'static str)> {
     if workspace_dir.is_dir() {
         dirs.push((workspace_dir, "workspace"));
     }
-    let global_dir = crate::engine::engine_home(Some("CLAUDE_CONFIG_DIR"), ".claude").join("commands");
+    let global_dir =
+        crate::engine::engine_home(Some("CLAUDE_CONFIG_DIR"), ".claude").join("commands");
     if global_dir.is_dir() {
         dirs.push((global_dir, "global"));
     }
@@ -311,7 +323,9 @@ fn discover_skills_in(dir: &Path, source: &str) -> Vec<SlashCommandEntry> {
     };
     for entry in entries.flatten() {
         let skill_dir = entry.path();
-        let is_dir = std::fs::metadata(&skill_dir).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = std::fs::metadata(&skill_dir)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
         if !is_dir {
             continue;
         }
@@ -499,7 +513,11 @@ mod tests {
         // Two layouts seen in the wild: cache/<plugin>/<version>/skills and
         // cache/<marketplace>/<plugin>/<version>/skills.
         let flat = cache.join("gsd").join("1.2.0").join("skills");
-        let nested = cache.join("market").join("aimax").join("0.3.1").join("skills");
+        let nested = cache
+            .join("market")
+            .join("aimax")
+            .join("0.3.1")
+            .join("skills");
         fs::create_dir_all(&flat).unwrap();
         fs::create_dir_all(&nested).unwrap();
         // A `skills` file (not dir) and a version dir without skills are ignored.

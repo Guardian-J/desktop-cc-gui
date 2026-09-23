@@ -195,7 +195,10 @@ impl Engine for ClaudeEngine {
         let mut seen_dirs = std::collections::HashSet::new();
         for dir in &req.additional_dirs {
             let dir = dir.trim();
-            if dir.is_empty() || dir == req.workspace.to_string_lossy() || !seen_dirs.insert(dir.to_string()) {
+            if dir.is_empty()
+                || dir == req.workspace.to_string_lossy()
+                || !seen_dirs.insert(dir.to_string())
+            {
                 continue;
             }
             cmd.arg("--add-dir");
@@ -299,15 +302,13 @@ impl Engine for ClaudeEngine {
                     }
                 }
             }
-            "stream_event" => {
-                parse_stream_event(
-                    &self.pending_tool_json,
-                    &self.tool_names,
-                    &self.tool_paths,
-                    &value,
-                    out,
-                )
-            }
+            "stream_event" => parse_stream_event(
+                &self.pending_tool_json,
+                &self.tool_names,
+                &self.tool_paths,
+                &value,
+                out,
+            ),
             "assistant" => {
                 // Full message snapshot; used as session-id and actual model source.
                 push_session_id(&value, "session_id", out);
@@ -346,9 +347,9 @@ impl Engine for ClaudeEngine {
                     // fall back to scraping the free-text error when the call
                     // was never seen (e.g. resumed transcript) or carries no
                     // path argument (e.g. Bash).
-                    let tool = id.as_ref().and_then(|id| {
-                        self.tool_names.lock().ok()?.get(id).cloned()
-                    });
+                    let tool = id
+                        .as_ref()
+                        .and_then(|id| self.tool_names.lock().ok()?.get(id).cloned());
                     let path = id
                         .as_ref()
                         .and_then(|id| self.tool_paths.lock().ok()?.get(id).cloned())
@@ -532,10 +533,15 @@ fn attach_reported_context_window(mut usage: Value, source: &Value) -> Value {
             if window <= 0 {
                 return None;
             }
-            let tokens: i64 = ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"]
-                .iter()
-                .filter_map(|key| model.get(*key).and_then(Value::as_i64))
-                .sum();
+            let tokens: i64 = [
+                "inputTokens",
+                "outputTokens",
+                "cacheReadInputTokens",
+                "cacheCreationInputTokens",
+            ]
+            .iter()
+            .filter_map(|key| model.get(*key).and_then(Value::as_i64))
+            .sum();
             Some((tokens, window))
         })
         .max_by_key(|(tokens, _)| *tokens);
@@ -599,7 +605,10 @@ fn looks_like_permission_denial(message: &str) -> bool {
 fn extract_absolute_path(text: &str) -> Option<String> {
     for token in text.split_whitespace() {
         let cleaned = token.trim_matches(|c: char| {
-            matches!(c, '"' | '\'' | '`' | ',' | ';' | ')' | '(' | '[' | ']' | '{' | '}' | '.')
+            matches!(
+                c,
+                '"' | '\'' | '`' | ',' | ';' | ')' | '(' | '[' | ']' | '{' | '}' | '.'
+            )
         });
         let bytes = cleaned.as_bytes();
         if cleaned.len() >= 3
@@ -646,7 +655,11 @@ fn tool_result_error_blocks(value: &Value) -> Vec<(Option<String>, String)> {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
             continue;
         }
-        if !block.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+        if !block
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             continue;
         }
         let text = tool_result_block_text(block);
@@ -665,8 +678,14 @@ fn tool_result_error_blocks(value: &Value) -> Vec<(Option<String>, String)> {
 /// Human-readable line for a `system/api_retry` event.
 fn format_api_retry(value: &Value) -> String {
     let attempt = value.get("attempt").and_then(Value::as_u64).unwrap_or(0);
-    let max = value.get("max_retries").and_then(Value::as_u64).unwrap_or(0);
-    let delay_ms = value.get("retry_delay_ms").and_then(Value::as_u64).unwrap_or(0);
+    let max = value
+        .get("max_retries")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let delay_ms = value
+        .get("retry_delay_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let detail = value
         .get("error")
         .and_then(Value::as_str)
@@ -862,7 +881,10 @@ mod tests {
                 ("broken".to_string(), Some("failed".to_string())),
             ]
         );
-        assert_eq!(tools, &vec!["Bash".to_string(), "mcp__alpha__search".to_string()]);
+        assert_eq!(
+            tools,
+            &vec!["Bash".to_string(), "mcp__alpha__search".to_string()]
+        );
 
         // 没有 mcp_servers 的 init 不产生事件（不凭空造快照）。
         let mut out = Vec::new();
@@ -892,7 +914,8 @@ mod tests {
         let mut out = Vec::new();
         ClaudeEngine::new().parse_line(&line, &mut out);
         assert!(
-            out.iter().any(|e| matches!(e, EngineEvent::Effort(level) if level == "high")),
+            out.iter()
+                .any(|e| matches!(e, EngineEvent::Effort(level) if level == "high")),
             "got {out:?}"
         );
 
@@ -903,7 +926,8 @@ mod tests {
             &mut out,
         );
         assert!(
-            out.iter().any(|e| matches!(e, EngineEvent::Effort(level) if level == "low")),
+            out.iter()
+                .any(|e| matches!(e, EngineEvent::Effort(level) if level == "low")),
             "got {out:?}"
         );
         let mut out = Vec::new();
@@ -911,7 +935,10 @@ mod tests {
             &serde_json::json!({ "type": "assistant", "thinking_effort": "  " }).to_string(),
             &mut out,
         );
-        assert!(!out.iter().any(|e| matches!(e, EngineEvent::Effort(_))), "got {out:?}");
+        assert!(
+            !out.iter().any(|e| matches!(e, EngineEvent::Effort(_))),
+            "got {out:?}"
+        );
     }
 
     #[test]
@@ -998,7 +1025,9 @@ mod tests {
         ClaudeEngine::new().parse_line(&line, &mut out);
         assert_eq!(out.len(), 1);
         match &out[0] {
-            EngineEvent::Message { role, text, args, .. } => {
+            EngineEvent::Message {
+                role, text, args, ..
+            } => {
                 assert_eq!(role, "tool");
                 assert_eq!(text, "Bash");
                 assert!(args.is_none());
@@ -1273,7 +1302,10 @@ mod tests {
     #[test]
     fn tool_result_non_error_and_non_denial_stay_silent() {
         for (is_error, text) in [
-            (false, "Claude requested permissions to read from /etc, but you haven't granted it yet."),
+            (
+                false,
+                "Claude requested permissions to read from /etc, but you haven't granted it yet.",
+            ),
             (true, "file not found: /tmp/missing.txt"),
         ] {
             let line = serde_json::json!({
@@ -1462,9 +1494,13 @@ mod tests {
     /// explicit fallback instead of this layer inventing a number.
     #[test]
     fn result_without_a_reported_window_adds_nothing() {
-        for models in [None, Some(serde_json::json!({})), Some(serde_json::json!({
-            "m": { "inputTokens": 10, "contextWindow": 0 }
-        }))] {
+        for models in [
+            None,
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({
+                "m": { "inputTokens": 10, "contextWindow": 0 }
+            })),
+        ] {
             let mut value = serde_json::json!({
                 "type": "result",
                 "subtype": "success",
@@ -1479,7 +1515,11 @@ mod tests {
             ClaudeEngine::new().parse_line(&value.to_string(), &mut out);
             match &out[0] {
                 EngineEvent::Done { usage, .. } => {
-                    assert!(usage.as_ref().expect("usage").get("model_context_window").is_none());
+                    assert!(usage
+                        .as_ref()
+                        .expect("usage")
+                        .get("model_context_window")
+                        .is_none());
                 }
                 _ => panic!("expected done event"),
             }
@@ -1506,7 +1546,10 @@ mod tests {
         ClaudeEngine::new().parse_line(&line, &mut out);
         match &out[0] {
             EngineEvent::Done { usage, .. } => {
-                assert_eq!(usage.as_ref().expect("usage")["model_context_window"], 500000);
+                assert_eq!(
+                    usage.as_ref().expect("usage")["model_context_window"],
+                    500000
+                );
             }
             _ => panic!("expected done event"),
         }
@@ -1583,7 +1626,12 @@ mod tests {
             .collect();
         assert!(args.windows(2).any(|w| w == ["--effort", "ultra"]));
         assert_eq!(
-            built.command.as_std().get_envs().find(|(k, _)| *k == "CLAUDE_CODE_EFFORT_LEVEL").and_then(|(_, v)| v),
+            built
+                .command
+                .as_std()
+                .get_envs()
+                .find(|(k, _)| *k == "CLAUDE_CODE_EFFORT_LEVEL")
+                .and_then(|(_, v)| v),
             Some(std::ffi::OsStr::new("ultra"))
         );
     }
@@ -1617,7 +1665,10 @@ mod tests {
             .collect();
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
         assert!(args.windows(2).any(|w| w == ["--allowedTools", "Read"]));
-        let deny_at = args.iter().position(|a| a == "--disallowedTools").expect("deny list");
+        let deny_at = args
+            .iter()
+            .position(|a| a == "--disallowedTools")
+            .expect("deny list");
         for tool in ["Bash", "Edit", "Write", "NotebookEdit", "Task"] {
             assert!(
                 args[deny_at + 1..].iter().any(|a| a == tool),
@@ -1625,6 +1676,8 @@ mod tests {
             );
         }
         // 普通权限参数不应同时出现（避免 mode 冲突）。
-        assert!(!args.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
+        assert!(!args
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "acceptEdits"]));
     }
 }
