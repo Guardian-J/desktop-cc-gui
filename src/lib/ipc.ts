@@ -521,6 +521,9 @@ export interface GitTreeStatus {
 
 export interface BranchInfo {
   name: string;
+  /** Remote-tracking branch (`origin/x`): checking it out materializes (or
+   *  switches to) the local branch of the same short name. */
+  isRemote: boolean;
 }
 export interface AppMetrics {
   /** Resident memory of the app process, bytes. */

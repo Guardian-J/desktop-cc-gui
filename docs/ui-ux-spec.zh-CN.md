@@ -95,6 +95,7 @@
 - **禁用目标不能谎报**：Skills 详情里的目标复选框对只读来源（内置 / 系统 / 插件）禁用并同时给出只读原因文案（`skills.readonly.*`），不用静默过滤把只读来源「藏掉」。移除操作要分开「已删除」与「保留了你自己目录里的副本」（后端 `kept`）：后者不能报成「已移除」，否则刷新后图标还在，自相矛盾。
 - **多引擎列表自带滚动，底部动作必须留在框内**：Skills 详情（`SkillDetailDialog.tsx`）的「同步到」最多 13 个引擎，整页内容（描述 / 属性 / 活动情况 / 同步到 / SKILL.md）放在同一个滚动体里，同步列表自己再限高滚动（`max-h-[13rem]`），「从所有 Agent 移除 / 更新 / 关闭」固定在框底——引擎变多不能把底部动作推出可视区。
 - **终端路径链接用修饰键点击才唤起文件管理器**：终端输出里的绝对路径（`src/features/terminal/links.ts`）悬停仍有下划线与手型，但普通单击不再直接打开——只有 macOS `⌥`+点击、Windows/Linux `Ctrl`+点击才 reveal（`holdsRevealModifier` 从 xterm 传来的 `MouseEvent` 取修饰键；非 mac 选 Ctrl 与 Windows Terminal / GNOME Terminal 的开链习惯一致）。理由是选中文本、点回窗口很容易碰到链接，无修饰直接唤起访达的干扰太大。macOS 同时把 xterm 的 `altClickMovesCursor` 关掉（`TerminalView.tsx`）：同一个 `⌥`+点击否则还会把 shell 光标挪到点击处；Windows/Linux 保留该功能（那里的 reveal 手势是 Ctrl）。右键菜单里的「在访达中显示」不受影响——显式动作不需要修饰键。回归：`links.test.ts` 的修饰键用例。
+- **分支选择器列远程分支并标「远程分支」**：变更面板与状态栏的分支列表（同一份 `git_branches` 数据）在本地分支之后列出 remote-tracking 分支（`origin/x`），行尾挂中性徽标「远程分支」（`git.remoteBranch`）——刚 fetch 到、本地尚无同名分支的远程分支必须可搜可切，与 VSCode / CLI 一致。选择远程分支不直接进入 detached HEAD：后端物化为同名本地跟踪分支（已存在则切到它，绝不以远程 tip 覆盖本地提交）；`origin/HEAD` 这类符号引用不进列表。列表仍按「本地在前、远程在后」分组，搜索仍是子串匹配。回归：`git.rs` 的 `branches_list_*` / `checkout_remote_branch_*` 用例、`ChangesPanelHeader.test.tsx`。
 
 ## 4. 动作反馈
 
@@ -210,6 +211,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.43 | 2026-09-23 | 分支选择器列出远程跟踪分支（本地在前、远程在后，行尾「远程分支」徽标，跳过 `origin/HEAD`）：刚 fetch 的分支可搜可切；选择远程分支物化为同名本地跟踪分支（已存在则切换，不覆盖本地提交）；§3 补充规则 |
 | v0.42 | 2026-09-23 | MCP 连接检测改为打开页面即自动跑（只补没有新鲜结果的条目，3 分钟窗口内复用缓存，配置一变成指纹自动只补变化项），手动「检测全部」为强制重跑；检测改为最多 4 个并行（原先串行）；标题行显示「状态更新于 …」；§3 与 §7 同步 |
 | v0.41 | 2026-09-23 | MCP 页引擎选择器改为与 Skills 同形的 Chip + 品牌图标（共用 `Chip`）；新增「连接检测」——显式按配置启动/连接并握手，行内给已连接/需要登录/连接失败状态（与 CLI 会话上报的运行时分区分开），本机地址绕开环境代理；Claude 用户级与 local 来源可就地启停（写 `.claude.json` 的 `projects[<ws>].disabledMcpServers`，已与 `claude mcp list` 对拍）；§3 补五条规则、§7 登记检测入口 |
 | v0.40 | 2026-09-23 | MCP 覆盖全部已接入 CLI：新增 Kimi / Grok / OMP / OpenCode / Antigravity / Qoder（含 CN）/ dsh 来源，PI 显式标注不内置 MCP；grok、opencode 开放启停（本机 CLI 验证过语义），其余来源只读并给可本地化的原因码；清单为空时列出本页读取的来源文件，页签支持引擎深链；输入框 `/mcp`（选择器点击或提交）弹出当前引擎的 MCP 面板，与设置页共用同一份数据；§3 补两条规则、§7 登记面板刷新 |

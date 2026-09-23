@@ -975,6 +975,9 @@ fn current_branch_name(repo: &Repository) -> Result<String, String> {
 #[serde(rename_all = "camelCase")]
 pub struct BranchInfo {
     pub name: String,
+    /// Remote-tracking branch (`origin/<name>`). Checkout materializes the
+    /// local tracking branch instead of detaching HEAD.
+    pub is_remote: bool,
 }
 
 #[tauri::command]
@@ -983,23 +986,111 @@ pub fn git_branches(path: String) -> Result<Vec<BranchInfo>, String> {
     // No is_current flag: consumers compare against the live status branch —
     // a cached flag here goes stale on external (CLI) checkouts.
     let mut out = Vec::new();
-    let branches = repo
-        .branches(Some(git2::BranchType::Local))
-        .map_err(|e| e.to_string())?;
-    for branch in branches.flatten() {
-        let (b, _) = branch;
-        if let Ok(Some(name)) = b.name() {
-            out.push(BranchInfo {
-                name: name.to_string(),
-            });
+    // Locals first, then remote-tracking branches. A branch that only exists
+    // on the remote (e.g. right after a fetch) must still be listed: hiding
+    // it made the picker unable to find what the CLI/VSCode can see.
+    for branch_type in [git2::BranchType::Local, git2::BranchType::Remote] {
+        let branches = repo
+            .branches(Some(branch_type))
+            .map_err(|e| e.to_string())?;
+        for branch in branches.flatten() {
+            let (b, _) = branch;
+            // `refs/remotes/origin/HEAD` is a symbolic alias for the remote
+            // default branch, not a checkout target; listing it would offer a
+            // dead row (`git_branch_set_upstream` on a phantom `HEAD` too).
+            if b.get().target().is_none() {
+                continue;
+            }
+            if let Ok(Some(name)) = b.name() {
+                out.push(BranchInfo {
+                    name: name.to_string(),
+                    is_remote: branch_type == git2::BranchType::Remote,
+                });
+            }
         }
     }
     Ok(out)
 }
 
+/// Local branch name git creates for `origin/release/1.0`: the remote name
+/// (the longest configured one that prefix-matches — remote names may contain
+/// slashes) is stripped, the rest is the local name.
+fn local_name_for_remote_branch(repo: &Repository, remote_shorthand: &str) -> Option<String> {
+    let remotes = repo.remotes().ok()?;
+    let remote = remotes
+        .iter()
+        .flatten()
+        .filter(|name| {
+            remote_shorthand.starts_with(*name)
+                && remote_shorthand.as_bytes().get(name.len()) == Some(&b'/')
+        })
+        .max_by_key(|name| name.len())?;
+    Some(remote_shorthand[remote.len() + 1..].to_string())
+}
+
+/// `git checkout <remote>/<branch>` semantics: switch to the local branch of
+/// the same short name — creating it, tracking the remote, when absent. An
+/// existing local branch wins untouched: it may hold local commits, so the
+/// remote tip must never be forced onto it.
+fn checkout_remote_branch(
+    repo: &Repository,
+    remote_shorthand: &str,
+    remote: &git2::Branch<'_>,
+) -> Result<(), String> {
+    // Symbolic refs (origin/HEAD) have no target of their own and no local
+    // branch to materialize.
+    if remote.get().target().is_none() {
+        return Err(format!("{remote_shorthand} is not a branch"));
+    }
+    let target = remote
+        .get()
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?;
+    let local_name = local_name_for_remote_branch(repo, remote_shorthand)
+        .ok_or_else(|| format!("no remote matches {remote_shorthand}"))?;
+    let (mut local, created) = match repo.find_branch(&local_name, git2::BranchType::Local) {
+        Ok(existing) => (existing, false),
+        Err(_) => (
+            repo.branch(&local_name, &target, false)
+                .map_err(|e| e.to_string())?,
+            true,
+        ),
+    };
+    // Check out the branch actually being switched to: for an existing local
+    // branch that is its own tip, not the remote's — the remote tip may lack
+    // local commits, and checking it out would leave the worktree inconsistent
+    // with HEAD.
+    let checkout_commit = local.get().peel_to_commit().map_err(|e| e.to_string())?;
+    if let Err(e) = repo.checkout_tree(checkout_commit.as_object(), None) {
+        // The checkout failed (e.g. uncommitted edits in the way) and HEAD
+        // stays put: drop the just-created branch instead of stranding it.
+        if created {
+            let _ = local.delete();
+        }
+        return Err(e.to_string());
+    }
+    if created {
+        // Track only after a successful checkout: nothing to clean out of the
+        // config when the branch above was deleted.
+        local
+            .set_upstream(Some(remote_shorthand))
+            .map_err(|e| e.to_string())?;
+    }
+    repo.set_head(&format!("refs/heads/{local_name}"))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn git_checkout(path: String, branch: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
+    // A remote-tracking branch never receives HEAD directly (that would
+    // detach it): it is materialized as a local tracking branch instead.
+    // A same-named local branch wins, matching `git checkout` resolution.
+    if repo.find_branch(&branch, git2::BranchType::Local).is_err() {
+        if let Ok(remote) = repo.find_branch(&branch, git2::BranchType::Remote) {
+            return checkout_remote_branch(&repo, &branch, &remote);
+        }
+    }
     let (object, reference) = repo
         .revparse_ext(&branch)
         .map_err(|e| format!("unknown branch {branch}: {e}"))?;
@@ -1753,6 +1844,112 @@ mod tests {
         let status = git_status_blocking(repo_path.to_str().unwrap()).unwrap();
         assert_eq!(status.ahead, None, "status={status:?}");
         assert_eq!(status.behind, None, "status={status:?}");
+    }
+
+    #[test]
+    fn branches_list_locals_then_remote_tracking_skipping_origin_head() {
+        let scratch = Scratch::new();
+        let origin_path = scratch.0.join("origin");
+        let origin = Repository::init(&origin_path).unwrap();
+        commit_file(&origin, "a.txt", "a\n");
+        let head = origin.head().unwrap().peel_to_commit().unwrap();
+        origin.branch("v1.0.9", &head, false).unwrap();
+
+        let local_path = scratch.0.join("local");
+        let local = Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
+        // A fetched remote HEAD alias: a symbolic ref with no target of its
+        // own must not surface as a dead picker row.
+        let remote_head = format!(
+            "refs/remotes/origin/{}",
+            origin.head().unwrap().shorthand().unwrap()
+        );
+        local
+            .reference_symbolic("refs/remotes/origin/HEAD", &remote_head, true, "test")
+            .unwrap();
+
+        let branches = git_branches(local_path.to_string_lossy().into_owned()).unwrap();
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"origin/v1.0.9"), "names={names:?}");
+        assert!(!names.contains(&"origin/HEAD"), "names={names:?}");
+        let local_count = branches.iter().filter(|b| !b.is_remote).count();
+        assert!(local_count > 0, "names={names:?}");
+        assert!(
+            branches[..local_count].iter().all(|b| !b.is_remote),
+            "locals must come first: {names:?}"
+        );
+        assert!(
+            branches[local_count..].iter().all(|b| b.is_remote),
+            "names={names:?}"
+        );
+    }
+
+    #[test]
+    fn checkout_remote_branch_creates_local_tracking_branch() {
+        let scratch = Scratch::new();
+        let origin_path = scratch.0.join("origin");
+        let origin = Repository::init(&origin_path).unwrap();
+        commit_file(&origin, "a.txt", "a\n");
+        let head = origin.head().unwrap().peel_to_commit().unwrap();
+        origin.branch("v1.0.9", &head, false).unwrap();
+
+        let local_path = scratch.0.join("local");
+        let local = Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
+
+        git_checkout(
+            local_path.to_string_lossy().into_owned(),
+            "origin/v1.0.9".to_string(),
+        )
+        .unwrap();
+
+        let head_ref = local.head().unwrap();
+        assert_eq!(head_ref.shorthand(), Some("v1.0.9"));
+        assert_eq!(head_ref.target(), Some(head.id()));
+        let branch = local.find_branch("v1.0.9", git2::BranchType::Local).unwrap();
+        assert_eq!(
+            branch.upstream().unwrap().name().unwrap(),
+            Some("origin/v1.0.9")
+        );
+        // Tracking makes ahead/behind visible (0/0) instead of hidden.
+        let status = git_status_blocking(local_path.to_str().unwrap()).unwrap();
+        assert_eq!((status.ahead, status.behind), (Some(0), Some(0)), "{status:?}");
+    }
+
+    #[test]
+    fn checkout_remote_branch_keeps_existing_local_branch() {
+        let scratch = Scratch::new();
+        let origin_path = scratch.0.join("origin");
+        let origin = Repository::init(&origin_path).unwrap();
+        commit_file(&origin, "a.txt", "a\n");
+        let base = origin.head().unwrap().peel_to_commit().unwrap();
+        origin.branch("feature", &base, false).unwrap();
+
+        let local_path = scratch.0.join("local");
+        let local = Repository::clone(origin_path.to_str().unwrap(), &local_path).unwrap();
+        // Local `feature` carries a commit the remote does not have: checking
+        // out `origin/feature` must switch to it, never reset it to the tip.
+        local
+            .branch(
+                "feature",
+                &local.head().unwrap().peel_to_commit().unwrap(),
+                false,
+            )
+            .unwrap();
+        local.set_head("refs/heads/feature").unwrap();
+        commit_file(&local, "local.txt", "local\n");
+        let local_tip = local.head().unwrap().target().unwrap();
+        assert_ne!(local_tip, base.id());
+
+        git_checkout(
+            local_path.to_string_lossy().into_owned(),
+            "origin/feature".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(local.head().unwrap().target(), Some(local_tip));
+        assert!(local_path.join("local.txt").exists());
+        // Only switched: no upstream was invented for the existing branch.
+        let branch = local.find_branch("feature", git2::BranchType::Local).unwrap();
+        assert!(branch.upstream().is_err());
     }
 
     #[test]

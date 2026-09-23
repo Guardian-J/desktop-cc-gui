@@ -834,6 +834,7 @@ export const zh = {
     branchNamePlaceholder: "分支名称",
     searchBranches: "搜索分支…",
     noMatchingBranches: "无匹配分支",
+    remoteBranch: "远程分支",
     back: "返回",
     notARepo: "当前工作区不是 Git 仓库",
     diffTooLarge: "Diff 过大，已截断",
