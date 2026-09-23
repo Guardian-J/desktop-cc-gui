@@ -10,8 +10,10 @@
 //!   busy→idle settles the turn, `session.error` fails it.
 //! - The built-in `question` tool parks server-side: `question.asked` →
 //!   answer card → `POST /question/:requestID/reply {answers: string[][]}`
-//!   (or `/reject`). `permission.asked` auto-allows once — the old headless
-//!   run never prompted, same net behavior.
+//!   (or `/reject`). `permission.asked` is auto-answered: "once" per
+//!   ask, or "always" under bypass (approve matching asks for the rest
+//!   of the session) — either way the old headless run never prompted,
+//!   same net outcome; config denies never reach us.
 //! - Interrupt sends `POST /session/:id/abort`.
 
 use std::collections::HashMap;
@@ -159,11 +161,15 @@ async fn turn_inner(
 
     let mut kill_poll = tokio::time::interval(KILL_POLL);
     kill_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Wire value for answering permission asks this turn: bypass remembers
+    // approvals session-wide ("always"), every other mode approves each ask
+    // individually ("once").
+    let permission_reply = permission_reply(req.permission.as_deref());
     loop {
         tokio::select! {
             frame = events.recv() => match frame {
                 Some(value) => {
-                    handle_server_event(core, state, view, &value, &origin, &directory).await;
+                    handle_server_event(core, state, view, &value, &origin, &directory, permission_reply).await;
                     if view.turn_ended {
                         return Ok(());
                     }
@@ -322,6 +328,18 @@ fn spawn_event_stream(
     (rx, ready_rx)
 }
 
+/// Reply sent to `permission.asked`: bypass pre-approves matching asks for
+/// the rest of the session ("always"), every other mode approves each ask
+/// individually ("once"). Explicit `deny` rules never produce an ask, so
+/// they hold under either reply.
+fn permission_reply(permission: Option<&str>) -> &'static str {
+    if permission == Some("bypass") {
+        "always"
+    } else {
+        "once"
+    }
+}
+
 /// One server event for this session, projected to engine events.
 async fn handle_server_event(
     core: &TurnCore,
@@ -330,6 +348,7 @@ async fn handle_server_event(
     value: &Value,
     origin: &str,
     directory: &str,
+    permission_reply: &str,
 ) {
     let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
     let properties = value.get("properties").cloned().unwrap_or(Value::Null);
@@ -456,13 +475,14 @@ async fn handle_server_event(
         "permission.asked" => {
             // The attached client has no approval UI; the old one-shot run
             // ran under the CLI's own config (allow by default). Auto-allow
-            // once to preserve that behavior instead of parking the turn.
+            // instead of parking the turn: "always" under bypass (the
+            // server remembers it for the session), "once" otherwise.
             if let Some(request_id) = properties.get("id").and_then(Value::as_str) {
                 let _ = opencode_server::post(
                     origin,
                     &format!("/permission/{request_id}/reply"),
                     directory,
-                    Some(json!({ "reply": "once" })),
+                    Some(json!({ "reply": permission_reply })),
                 )
                 .await;
             }
@@ -951,5 +971,16 @@ mod tests {
             Some("plain".to_string())
         );
         assert_eq!(extract_error_message(&json!({})), None);
+    }
+
+    #[test]
+    fn bypass_answers_permission_asks_always() {
+        assert_eq!(permission_reply(Some("bypass")), "always");
+        // Every other mode (and unresolved/unknown values) approves each
+        // ask individually; the engine trait already falls back to "auto".
+        assert_eq!(permission_reply(Some("auto")), "once");
+        assert_eq!(permission_reply(Some("plan")), "once");
+        assert_eq!(permission_reply(Some("manual")), "once");
+        assert_eq!(permission_reply(None), "once");
     }
 }

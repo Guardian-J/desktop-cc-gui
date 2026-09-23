@@ -675,6 +675,7 @@ function PagedThreadList({
   onThreadAction?: (id: string, action: ThreadAction) => void;
   onThreadContextMenu?: (event: ReactMouseEvent<HTMLElement>, id: string) => void;
 }) {
+
   const { t } = useTranslation();
   // Pagination: 0 = 初始 limit 条, 1 = +50 条, 2 = 全部。
   const [page, setPage] = useState(0);
