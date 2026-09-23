@@ -1,0 +1,315 @@
+//! MCP 配置与运行时清单（设置 → 能力扩展 → MCP）。
+//!
+//! 设计约束（对应迁移计划 §3.3 / §4.4）：
+//! - 「配置已启用」与「运行时已连接」是两个独立分区，分别带自己的
+//!   来源、采集时间与失败原因；
+//! - 条目标识由后端生成，写入接口不接受前端指定文件路径；项目级来源的
+//!   workspace 必须落在已注册工作区内（`files::ensure_allowed`）；
+//! - 只对已验证写入语义的来源开放启停：Codex user/project 的
+//!   `config.toml` `enabled` 字段、Claude 项目级 `.mcp.json` 的
+//!   enabled/disabled 列表。Claude 用户级 `~/.claude.json` 没有可验证的
+//!   原生停用开关，只读展示并说明原因；
+//! - 写入同路径串行化 + 版本（内容哈希）冲突检测 + 原子替换；解析失败
+//!   不写入、不重置；
+//! - 列表/详情默认脱敏 URL 查询凭据、认证头与环境变量值。
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::Arc;
+
+mod config;
+mod runtime;
+
+use config::*;
+// `runtime` is called from the engine event pipeline (register/record/end),
+// so its (pub(crate)) items must stay re-exported at crate scope.
+pub(crate) use runtime::*;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpError {
+    code: &'static str,
+    message: String,
+}
+
+impl McpError {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self::new("internal", message)
+    }
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
+        Self::new("invalid_input", message)
+    }
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
+        Self::new("not_found", message)
+    }
+    pub(crate) fn format(message: impl Into<String>) -> Self {
+        Self::new("format", message)
+    }
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+        Self::new("conflict", message)
+    }
+    pub(crate) fn from_io(error: std::io::Error, path: &std::path::Path) -> Self {
+        let code = match error.kind() {
+            std::io::ErrorKind::NotFound => "not_found",
+            std::io::ErrorKind::PermissionDenied => "permission",
+            _ => "internal",
+        };
+        Self::new(code, format!("{}: {error}", path.display()))
+    }
+}
+
+/// 一个配置来源里的服务条目（URL / env / header 已脱敏）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpConfigEntry {
+    /// 后端生成的条目标识：`"{source}:{name}"`，前端只回传，不解析。
+    pub(crate) id: String,
+    pub(crate) engine: String,
+    pub(crate) name: String,
+    /// claude_user | claude_project | codex_user | codex_project
+    pub(crate) source: String,
+    /// user | project
+    pub(crate) scope: String,
+    /// 展示用文件路径（项目级显示 workspace 相对路径）。
+    pub(crate) path: String,
+    pub(crate) format: String,
+    pub(crate) enabled: bool,
+    pub(crate) transport: Option<String>,
+    pub(crate) command: Option<String>,
+    pub(crate) args_count: usize,
+    pub(crate) url: Option<String>,
+    pub(crate) env_keys: Vec<String>,
+    pub(crate) header_keys: Vec<String>,
+    pub(crate) writable: bool,
+    pub(crate) readonly_reason: Option<String>,
+    /// 读取时的文件内容哈希；写入时回读比对，不一致即冲突。
+    pub(crate) version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpSourceError {
+    pub(crate) source: String,
+    pub(crate) path: String,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpConfigSection {
+    pub(crate) entries: Vec<McpConfigEntry>,
+    pub(crate) errors: Vec<McpSourceError>,
+}
+
+/// 运行时条目：来自实际会话（Claude init 事件），带采集时间与所属会话。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpRuntimeEntry {
+    pub(crate) name: String,
+    pub(crate) status: Option<String>,
+    pub(crate) builtin: bool,
+    pub(crate) tool_names: Vec<String>,
+    pub(crate) resources_count: usize,
+    pub(crate) templates_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpRuntimeSection {
+    /// ready | no_session | session_ended | unsupported | unavailable
+    pub(crate) status: String,
+    pub(crate) reason: Option<String>,
+    pub(crate) workspace: Option<String>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) collected_at: Option<i64>,
+    pub(crate) entries: Vec<McpRuntimeEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpEngineInventory {
+    pub(crate) id: String,
+    pub(crate) available: bool,
+    pub(crate) config: McpConfigSection,
+    pub(crate) runtime: McpRuntimeSection,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpInventory {
+    pub(crate) engines: Vec<McpEngineInventory>,
+    pub(crate) collected_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpSetEnabledRequest {
+    pub(crate) entry_id: String,
+    pub(crate) enabled: bool,
+    pub(crate) version: String,
+    #[serde(default)]
+    pub(crate) workspace: Option<String>,
+}
+
+/// 配置清单：Claude / Codex 各自聚合配置条目、来源级错误与运行时状态。
+#[tauri::command]
+pub(crate) async fn mcp_inventory(
+    db: tauri::State<'_, Arc<crate::db::Db>>,
+    workspace: Option<String>,
+) -> Result<McpInventory, McpError> {
+    let workspace = validate_workspace(workspace.as_deref(), &db)?;
+    let engines = crate::engine::list_engines()
+        .await
+        .map_err(McpError::internal)?;
+    let available = |id: &str| {
+        engines
+            .iter()
+            .find(|engine| engine.id == id)
+            .map(|engine| engine.available)
+            .unwrap_or(false)
+    };
+    let config = read_config_entries(workspace.as_deref());
+    let collected_at = now_ms();
+
+    let claude_runtime = runtime::claude_section(workspace.as_deref());
+    let codex_runtime = McpRuntimeSection {
+        // Localized by the UI; `unsupported` means "this build cannot query
+        // it", and no CLI/MCP process is ever started just to list servers.
+        status: "unsupported".to_string(),
+        reason: None,
+        workspace: None,
+        session_id: None,
+        collected_at: None,
+        entries: Vec::new(),
+    };
+
+    let by_engine = |engine: &str, runtime: McpRuntimeSection| {
+        let mut section = McpConfigSection {
+            entries: config
+                .entries
+                .iter()
+                .filter(|entry| entry.engine == engine)
+                .cloned()
+                .collect(),
+            errors: config
+                .errors
+                .iter()
+                .filter(|error| error.source.starts_with(engine))
+                .cloned()
+                .collect(),
+        };
+        // 稳定排序：来源 → 名称，保证列表顺序不随文件里的键序变化。
+        section.entries.sort_by(|a, b| {
+            a.source
+                .cmp(&b.source)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        McpEngineInventory {
+            id: engine.to_string(),
+            available: available(engine),
+            config: section,
+            runtime,
+        }
+    };
+
+    Ok(McpInventory {
+        engines: vec![
+            by_engine("claude", claude_runtime),
+            by_engine("codex", codex_runtime),
+        ],
+        collected_at,
+    })
+}
+
+/// 切换一个配置条目的启用状态：版本比对 → 原子替换 → 回读实际状态。
+#[tauri::command]
+pub(crate) async fn mcp_set_enabled(
+    db: tauri::State<'_, Arc<crate::db::Db>>,
+    request: McpSetEnabledRequest,
+) -> Result<McpConfigEntry, McpError> {
+    let workspace = validate_workspace(request.workspace.as_deref(), &db)?;
+    write_enabled(
+        &request.entry_id,
+        request.enabled,
+        &request.version,
+        workspace.as_deref(),
+    )
+}
+
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 项目级来源必须落在已注册工作区内；未注册路径直接拒绝，不读取其上的文件。
+fn validate_workspace(
+    workspace: Option<&str>,
+    db: &crate::db::Db,
+) -> Result<Option<String>, McpError> {
+    let Some(raw) = workspace.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let resolved = crate::files::ensure_allowed(raw, db).map_err(McpError::invalid)?;
+    Ok(Some(resolved.to_string_lossy().into_owned()))
+}
+
+/// 解析 JSON 文本（保留键序由 serde_json 的 preserve_order 特性提供）。
+pub(crate) fn parse_json(text: &str, path: &str) -> Result<Value, McpError> {
+    serde_json::from_str::<Value>(text)
+        .map_err(|error| McpError::format(format!("{path}: invalid JSON: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_snapshot_is_workspace_scoped_and_marks_session_end() {
+        runtime::register_run("run-mcp-test", "/tmp/ws-mcp-test");
+        runtime::record_from_run(
+            "run-mcp-test",
+            Some("session-1"),
+            vec![
+                ("alpha".to_string(), Some("connected".to_string())),
+                (crate::computer_use::MCP_SERVER_NAME.to_string(), None),
+            ],
+            vec![
+                "mcp__alpha__search".to_string(),
+                "mcp__alpha__fetch".to_string(),
+                "Bash".to_string(),
+            ],
+        );
+        let section = runtime::claude_section(Some("/tmp/ws-mcp-test"));
+        assert_eq!(section.status, "ready");
+        assert_eq!(section.session_id.as_deref(), Some("session-1"));
+        let alpha = section.entries.iter().find(|e| e.name == "alpha").unwrap();
+        assert_eq!(alpha.tool_names, vec!["fetch", "search"]);
+        assert!(!alpha.builtin);
+        let builtin = section
+            .entries
+            .iter()
+            .find(|e| e.name == crate::computer_use::MCP_SERVER_NAME)
+            .unwrap();
+        assert!(builtin.builtin);
+
+        runtime::mark_run_ended("run-mcp-test");
+        let ended = runtime::claude_section(Some("/tmp/ws-mcp-test"));
+        assert_eq!(ended.status, "session_ended");
+        assert_eq!(ended.entries.len(), 2);
+
+        // 未注册的 run 不写快照。
+        runtime::record_from_run("unknown-run", None, vec![("x".to_string(), None)], vec![]);
+        let other = runtime::claude_section(Some("/tmp/ws-mcp-other"));
+        assert_eq!(other.status, "no_session");
+        assert!(other.entries.is_empty());
+        assert_eq!(runtime::claude_section(None).status, "no_session");
+    }
+}

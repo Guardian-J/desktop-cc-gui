@@ -29,8 +29,9 @@ const GROUP_META: Record<string, { labelKey: string; order: number }> = {
   system: { labelKey: "settings.groupSystem", order: 0 },
   plugins: { labelKey: "settings.groupPlugins", order: 1 },
   cli: { labelKey: "settings.cliManage", order: 2 },
-  workspace: { labelKey: "settings.groupWorkspace", order: 3 },
-  misc: { labelKey: "settings.groupMisc", order: 4 },
+  capabilities: { labelKey: "settings.groupCapabilities", order: 3 },
+  workspace: { labelKey: "settings.groupWorkspace", order: 4 },
+  misc: { labelKey: "settings.groupMisc", order: 5 },
 };
 const KNOWN_GROUP_COUNT = Object.keys(GROUP_META).length;
 /** localStorage key for the user's CLI 管理 rail order (section keys). */

@@ -951,6 +951,9 @@ async fn send_reserved(
         launch.req.model.clone()
     };
     let initial_effort = launch.req.effort.clone().filter(|e| !e.trim().is_empty());
+    // MCP runtime snapshots are workspace-scoped; the event dispatcher only
+    // has the run id, so remember the mapping for the run's lifetime.
+    crate::mcp::register_run(&run_id, &launch.req.workspace.to_string_lossy());
     let ctx = RunContext {
         core: TurnCore {
             sink: Arc::clone(&sink),

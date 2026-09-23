@@ -100,6 +100,15 @@ pub enum EngineEvent {
     Model(String),
     /// Reasoning effort level requested at launch, then the level the engine actually reported.
     Effort(String),
+    /// MCP servers the CLI reported as loaded for this session (claude
+    /// `system/init`): `(name, status)` pairs plus the session's tool names
+    /// (used to attribute `mcp__<server>__<tool>` tools back to their server).
+    /// Consumed by the MCP settings page's runtime section; not streamed to
+    /// the chat UI.
+    McpServers {
+        servers: Vec<(String, Option<String>)>,
+        tools: Vec<String>,
+    },
 }
 /// One todo entry carried to the frontend.
 #[derive(Debug, Clone, Serialize)]

@@ -77,6 +77,9 @@
 - **「链接」三项各带目标图标**：插件详情页右栏的仓库 / 发布记录 / 问题反馈在文字前各给一个 14px（`size-3.5 shrink-0`）lucide 图标——GitHub 标记（`github`）、发布标签（`tag`）、issue 圆点（`circle-dot`），三个目的地不读文字也能分开；图标 `aria-hidden`，可访问名仍只有链接文字。文字后的 `square-arrow-out-up-right` 保留：图标说明去哪儿，箭头说明会离开应用，两者不互相替代（`ExternalLink`）。回归：`PluginHub.test.tsx` 详情页用例。
 - **浮动滚动浮标方向跟随滚轮**：聊天时间线的浮动控件（`ScrollControl.tsx`）只在用户滚轮后出现——向上滚显示「回到顶部」（`ArrowUp` / `chat.backToTop`，点击暂停跟随后平滑滚回顶部），向下滚显示「回到底部」（`ArrowDown` / `chat.backToBottom`，点击恢复跟随并平滑滑向尾部，落定后再硬钉一次吸收动画期间长高的内容）；仅在内容不足一屏、已在底部（距底 100px 内）或滚轮停下 1.5s 后隐藏。`scroll` / `resize` 只负责隐藏、从不主动显示，所以流式钉底不会闪出浮标；平滑滑向尾部的整个过程中自动钉底让位（`use-scroll-follow.ts` 的 `smoothPinRef`），避免中途一次流式刷新把过渡掐断；`prefers-reduced-motion` 下两侧都改为瞬时跳转。
 - **可折叠分组标题的箭头尾随标签**：设置页导航（`src/components/application/settings/settings-shell.tsx`）里可折叠分组的标题行是「标签 + 右侧箭头」——箭头只占行尾，标题文字留在与静态分组标题（如「插件」）相同的左侧内边距列上，而不是被头部箭头推进条目图标列；展开只转箭头（`rotate-90`），`aria-expanded` 同步。
+- **目标引擎的「已同步」不能只靠颜色**：能力扩展 → Skills 行的引擎同步态是一排小圆点（`TargetDots`，`src/features/skills/components.tsx`）：实心=已同步、红色=副本丢失、空心=无副本；每个点同时带 `role="img"` 的 `aria-label` 与 `title`（「{{引擎}} 已同步 / 副本丢失 / 无副本」），不把颜色当唯一信息。
+- **配置态与运行时态分开表达**：能力扩展 → MCP 页把「配置已启用」（CLI 配置文件里的状态）与「运行时已连接」（某次会话实际加载的服务）拆成两个清单：运行时条目必须带来源会话与采集时间，没有会话 / 引擎不支持查询时用状态文案说明原因，不显示成「没有服务」。配置条目里，不可安全写入的来源只渲染带 `title` 原因的锁图标（`src/features/mcp/McpSection.tsx`），不渲染不可用的开关；开关只对已验证写入语义的来源开放。
+- **禁用目标不能谎报**：Skills 详情里的目标复选框对只读来源（内置 / 系统 / 插件）禁用并同时给出只读原因文案（`skills.readonly.*`），不用静默过滤把只读来源「藏掉」。
 
 ## 4. 动作反馈
 
@@ -166,6 +169,8 @@ const feedback = useRunningFeedback(store.loading);
 | 模型目录 | `src/components/application/ai-chat/engine-model-panel.tsx` | `useActionFeedback` | — |
 | 浏览器刷新 | `src/features/browser/BrowserPane.tsx` | `useActionFeedback` | webview 无加载完成事件，对号 = 指令已下发 |
 | 状态栏「立即同步」 | `src/components/application/app-status-bar/app-status-bar.tsx` | `useRunningFeedback(syncing)` | 进度由 `scan://progress` 事件驱动 |
+| Skills 刷新 | `src/features/skills/InstalledPane.tsx` | `useActionFeedback({ spin: true })` | 一次动作同时重读已安装列表与更新信号；失败走行内 `role="alert"` |
+| MCP 刷新 | `src/features/mcp/McpSection.tsx` | `useActionFeedback({ spin: true })` | 重读配置清单与运行时分区；写入成功后也会自动重读 |
 | 报错态「刷新」 | `src/features/files/FileTreeBody.tsx`、`src/features/files/EditorPane.tsx` | **不加反馈** | 纯文本恢复入口，见 §8 |
 | 更换密钥 | `src/features/settings/WebAuthCard.tsx` | **不加反馈** | 语义是"轮换"不是"刷新" |
 
@@ -183,6 +188,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.28 | 2026-09-23 | 新增设置「能力扩展」分组的 UI 约定：Skills 的引擎同步圆点带可访问名；MCP 把配置态与运行时态拆开、只读来源用带原因的锁而不是假开关；§7 登记 Skills / MCP 刷新入口 |
 | v0.27 | 2026-09-23 | 修复「新建会话/点击会话后中心面不跳转」：新建会话（侧栏、页签条 +、快捷键）、工作区行 +、点击会话线程、新建浏览器、打开文件与插件 `openCenterTab`/`selectSession` 统一先清掉其他中心面（`center-surfaces.ts`），页签高亮与画面一致；§3 补充规则 |
 | v0.26 | 2026-09-23 | 设置页导航插件条目改用插件真实品牌图：`icon` → manifest 素材（`plugin_read_artwork`）→ `layout-grid` 兜底；§2.2 与 §3 同步规则 |
 | v0.25 | 2026-09 | 设置页导航可折叠分组标题改为「标签 + 尾随箭头」，标题文字与静态分组标题同一左列对齐；§3 补充规则 |

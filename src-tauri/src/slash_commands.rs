@@ -266,8 +266,9 @@ fn skills_dirs(workspace_root: &Path) -> Vec<(PathBuf, &'static str)> {
 /// Codex plugin skills: each plugin ships a `skills/` directory inside its
 /// version dir under `plugins/cache`, and the nesting between `cache` and
 /// the version dir isn't fixed — walk the tree (bounded) and collect every
-/// `skills` directory found.
-fn codex_plugin_skills_dirs(codex_home: &Path) -> Vec<(PathBuf, &'static str)> {
+/// `skills` directory found. Shared with the Skills hub page so the two
+/// surfaces never disagree about which plugin skills exist.
+pub(crate) fn codex_plugin_skills_dirs(codex_home: &Path) -> Vec<(PathBuf, &'static str)> {
     let cache = codex_home.join("plugins").join("cache");
     let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
     let mut stack = vec![(cache, 0usize)];

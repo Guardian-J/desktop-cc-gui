@@ -238,6 +238,50 @@ impl Engine for ClaudeEngine {
                             .unwrap_or(0),
                         message: format_api_retry(&value),
                     });
+                } else if subtype == Some("init") {
+                    // `system/init` is the only place the CLI reports which MCP
+                    // servers it actually loaded. Capture it as an engine event
+                    // (session-scoped snapshot for the MCP settings page); its
+                    // `tools` list lets us attribute `mcp__<server>__<tool>`
+                    // names back to each server.
+                    let servers = value
+                        .get("mcp_servers")
+                        .or_else(|| value.get("mcpServers"))
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| {
+                                    let name = item
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .map(str::trim)
+                                        .filter(|name| !name.is_empty())?;
+                                    let status = item
+                                        .get("status")
+                                        .and_then(Value::as_str)
+                                        .map(str::trim)
+                                        .filter(|status| !status.is_empty())
+                                        .map(str::to_string);
+                                    Some((name.to_string(), status))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if !servers.is_empty() {
+                        let tools = value
+                            .get("tools")
+                            .and_then(Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_string)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        out.push(EngineEvent::McpServers { servers, tools });
+                    }
                 } else if subtype == Some("compact_boundary") {
                     if let Some(post_tokens) = value
                         .get("compactMetadata")
@@ -787,6 +831,55 @@ fn parse_content_block_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_event_reports_mcp_servers_and_tools() {
+        let line = serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s-1",
+            "mcp_servers": [
+                { "name": "alpha", "status": "connected" },
+                { "name": "broken", "status": "failed" },
+                { "name": "  " }
+            ],
+            "tools": ["Bash", "mcp__alpha__search", 7]
+        })
+        .to_string();
+        let mut out = Vec::new();
+        ClaudeEngine::new().parse_line(&line, &mut out);
+        let (servers, tools) = out
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::McpServers { servers, tools } => Some((servers, tools)),
+                _ => None,
+            })
+            .expect("init must emit an MCP snapshot event");
+        assert_eq!(
+            servers,
+            &vec![
+                ("alpha".to_string(), Some("connected".to_string())),
+                ("broken".to_string(), Some("failed".to_string())),
+            ]
+        );
+        assert_eq!(tools, &vec!["Bash".to_string(), "mcp__alpha__search".to_string()]);
+
+        // 没有 mcp_servers 的 init 不产生事件（不凭空造快照）。
+        let mut out = Vec::new();
+        ClaudeEngine::new().parse_line(
+            &serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s-2",
+                "mcp_servers": []
+            })
+            .to_string(),
+            &mut out,
+        );
+        assert!(!out
+            .iter()
+            .any(|event| matches!(event, EngineEvent::McpServers { .. })));
+    }
 
     #[test]
     fn assistant_message_reports_actual_thinking_effort() {

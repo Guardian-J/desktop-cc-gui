@@ -17,6 +17,7 @@ pub mod files;
 pub mod git;
 pub mod history;
 pub mod metrics;
+pub mod mcp;
 pub mod mission;
 pub mod open_app;
 pub mod paths;
@@ -28,6 +29,7 @@ pub mod provider_files;
 pub mod provider_models;
 pub mod quit_guard;
 pub mod settings;
+pub mod skills_hub;
 pub mod usage;
 pub mod slash_commands;
 pub mod terminal;
@@ -363,6 +365,13 @@ pub fn run() {
             computer_use::computer_use_open_permission_settings,
             computer_use::computer_use_drag_source,
             computer_use::computer_use_set_active,
+            // MCP inventory (设置 → 能力扩展 → MCP); desktop-only — the
+            // web bridge intentionally does not dispatch these.
+            mcp::mcp_inventory,
+            mcp::mcp_set_enabled,
+            // skills hub (设置 → 能力扩展 → Skills)
+            skills_hub::skills_hub_query,
+            skills_hub::skills_hub_mutate,
             // history
             history::reader::list_sessions,
             history::reader::list_archived_sessions,

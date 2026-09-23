@@ -1,3 +1,5 @@
+import { lazy, Suspense, type ComponentType } from "react";
+import { useTranslation } from "react-i18next";
 import Settings from "lucide-react/dist/esm/icons/settings";
 import Keyboard from "lucide-react/dist/esm/icons/keyboard";
 import Globe from "lucide-react/dist/esm/icons/globe";
@@ -9,6 +11,8 @@ import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Bot from "lucide-react/dist/esm/icons/bot";
 import Smartphone from "lucide-react/dist/esm/icons/smartphone";
 import ChartColumn from "lucide-react/dist/esm/icons/chart-column";
+import Sparkles from "lucide-react/dist/esm/icons/sparkles";
+import Plug from "lucide-react/dist/esm/icons/plug";
 import i18n from "@/lib/i18n";
 import type { SettingsNavItem } from "@/components/application/settings/settings-shell";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
@@ -124,6 +128,60 @@ settingsRegistry.register({
   group: "workspace",
   order: 2,
   component: UsageSection,
+});
+/**
+ * Capability pages (Skills / MCP) load lazily: opening ordinary settings must
+ * not scan skill directories, touch the network or read MCP config files.
+ * The fallback is a quiet line — the settings shell already shows the title.
+ */
+function lazySection(
+  loader: () => Promise<{ default: ComponentType }>,
+): ComponentType {
+  const Lazy = lazy(loader);
+  return function LazySettingsSection() {
+    const { t } = useTranslation();
+    return (
+      <Suspense
+        fallback={
+          <p className="py-8 text-body-2-regular text-text-tertiary">
+            {t("common.loading")}
+          </p>
+        }
+      >
+        <Lazy />
+      </Suspense>
+    );
+  };
+}
+
+const LazySkillsSection = lazySection(() =>
+  import("@/features/skills/SkillsSection").then((module) => ({
+    default: module.SkillsSection,
+  })),
+);
+const LazyMcpSection = lazySection(() =>
+  import("@/features/mcp/McpSection").then((module) => ({
+    default: module.McpSection,
+  })),
+);
+
+settingsRegistry.register({
+  id: "skills",
+  key: "skills",
+  label: () => i18n.t("settings.skills"),
+  icon: Sparkles,
+  group: "capabilities",
+  order: 0,
+  component: LazySkillsSection,
+});
+settingsRegistry.register({
+  id: "mcp",
+  key: "mcp",
+  label: () => i18n.t("settings.mcp"),
+  icon: Plug,
+  group: "capabilities",
+  order: 1,
+  component: LazyMcpSection,
 });
 settingsRegistry.register({
   id: "update",

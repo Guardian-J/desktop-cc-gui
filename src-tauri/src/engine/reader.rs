@@ -276,6 +276,7 @@ impl TurnCore {
             }
             EngineEvent::Error(error) => {
                 state.saw_error = true;
+                crate::mcp::mark_run_ended(&self.run_id);
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -453,8 +454,19 @@ impl TurnCore {
                     Value::String(effort),
                 );
             }
+            EngineEvent::McpServers { servers, tools } => {
+                // Not a chat event: the MCP settings page reads this snapshot
+                // (workspace-scoped, timestamped) instead of the stream.
+                crate::mcp::record_from_run(
+                    &self.run_id,
+                    state.native_session_id.as_deref(),
+                    servers,
+                    tools,
+                );
+            }
             EngineEvent::Done { session_id, usage } => {
                 state.saw_done = true;
+                crate::mcp::mark_run_ended(&self.run_id);
                 if let Some(id) = session_id {
                     self.adopt_session_id(state, &id, false);
                 }

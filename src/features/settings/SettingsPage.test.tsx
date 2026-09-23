@@ -37,6 +37,15 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+// jsdom has no ResizeObserver; PillTabList (the capability pages' tab strip)
+// measures its selection thumb with one.
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
 // Landing page for every render: a registered stub keeps real section bodies
 // (General/Usage/…) unmounted while the rail lists every registered section.
 settingsRegistry.register({
@@ -409,6 +418,69 @@ describe("SettingsPage CLI rail", () => {
       });
     }
   });
+
+
+describe("SettingsPage capabilities rail", () => {
+  it("puts 能力扩展 between CLI 管理 and 工作区与数据", async () => {
+    await render([]);
+
+    const labels = navLabels();
+    const cliAt = labels.indexOf(i18n.t("settings.cliManage"));
+    const capabilitiesAt = labels.indexOf(i18n.t("settings.groupCapabilities"));
+    const workspaceAt = labels.indexOf(i18n.t("settings.groupWorkspace"));
+    expect(cliAt).toBeGreaterThan(-1);
+    expect(capabilitiesAt).toBeGreaterThan(cliAt);
+    expect(workspaceAt).toBeGreaterThan(capabilitiesAt);
+
+    // Skills leads, MCP follows — both in the same static group.
+    expect(itemsUnder("settings.groupCapabilities")).toEqual([
+      i18n.t("settings.skills"),
+      i18n.t("settings.mcp"),
+    ]);
+    // The new group is static (no fold toggle) like 系统/工作区.
+    const capabilityHeading = [...document.querySelectorAll("nav span")].find(
+      (el) => el.textContent?.trim() === i18n.t("settings.groupCapabilities"),
+    );
+    expect(capabilityHeading).toBeTruthy();
+    expect(capabilityHeading?.closest("button")).toBeNull();
+  });
+
+  it("does not load the Skills page (or its IPC) when ordinary settings open", async () => {
+    await render([]);
+    // Only the landing stub is mounted; the capability sections stay behind
+    // React.lazy and their data hooks never run.
+    expect(document.body.textContent).toContain("stub page");
+    expect(document.body.textContent).not.toContain("我的 Skills");
+  });
+
+  it(
+    "deep-links to the Skills page through the lazy loader",
+    async () => {
+      useChatStore.setState({ engines: [] });
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={[`/settings?page=skills`]}>
+            <SettingsPage />
+          </MemoryRouter>,
+        );
+      });
+      // The rail selection is immediate; the body loads lazily (Vitest
+      // transforms the chunk on demand) through the Suspense fallback. jsdom
+      // reports as a web runtime, so the page's own desktop-only gate is the
+      // loaded evidence.
+      const skillsRow = railRow(i18n.t("settings.skills"));
+      expect(skillsRow?.getAttribute("aria-current")).toBe("page");
+      expect(document.body.textContent).toContain(i18n.t("common.loading"));
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(i18n.t("skills.desktopOnly"));
+        },
+        { timeout: 10000, interval: 50 },
+      );
+    },
+    20000,
+  );
+});
 
   it("unfolds the bucket that holds a deep-linked page", async () => {
     // A CLI-keyed stub section (unknown engine id) lands in 未安装 once the

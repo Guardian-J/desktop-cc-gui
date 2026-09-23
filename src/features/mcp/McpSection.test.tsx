@@ -1,0 +1,387 @@
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  McpConfigEntry,
+  McpInventory,
+  McpRuntimeSection,
+} from "./types";
+
+const api = vi.hoisted(() => ({
+  inventory: vi.fn(),
+  setEnabled: vi.fn(),
+}));
+
+vi.mock("./api", () => ({
+  McpHubError: class McpHubError extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.code = code;
+    }
+  },
+  mcpApi: api,
+}));
+
+vi.mock("@/lib/transport", () => ({ isWeb: false }));
+
+import "@/lib/i18n";
+import { useChatStore } from "@/features/chat/store";
+import { McpSection } from "./McpSection";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var IS_REACT_ACT_ENVIRONMENT: boolean;
+}
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver;
+
+function claudeUser(): McpConfigEntry {
+  return {
+    id: "claude_user:alpha",
+    engine: "claude",
+    name: "alpha",
+    source: "claude_user",
+    scope: "user",
+    path: "/home/u/.claude.json",
+    format: "json",
+    enabled: true,
+    transport: "stdio",
+    command: "npx",
+    argsCount: 2,
+    url: null,
+    envKeys: ["API_KEY"],
+    headerKeys: [],
+    writable: false,
+    readonlyReason: "Claude Code 未在该来源提供可验证的原生停用开关，这里只读展示",
+    version: "v1",
+  };
+}
+
+function claudeProject(): McpConfigEntry {
+  return {
+    id: "claude_project:beta",
+    engine: "claude",
+    name: "beta",
+    source: "claude_project",
+    scope: "project",
+    path: "/ws/.mcp.json",
+    format: "json",
+    enabled: false,
+    transport: "http",
+    command: null,
+    argsCount: 0,
+    url: "https://example.com/mcp?token=***",
+    envKeys: [],
+    headerKeys: ["Authorization"],
+    writable: true,
+    readonlyReason: null,
+    version: "v2",
+  };
+}
+
+function noSession(): McpRuntimeSection {
+  return {
+    status: "no_session",
+    reason: null,
+    workspace: "/ws",
+    sessionId: null,
+    collectedAt: null,
+    entries: [],
+  };
+}
+
+function payload(overrides: Partial<McpInventory> = {}): McpInventory {
+  return {
+    engines: [
+      {
+        id: "claude",
+        available: true,
+        config: { entries: [claudeUser(), claudeProject()], errors: [] },
+        runtime: noSession(),
+      },
+      {
+        id: "codex",
+        available: false,
+        config: {
+          entries: [
+            {
+              ...claudeProject(),
+              id: "codex_user:gamma",
+              engine: "codex",
+              name: "gamma",
+              source: "codex_user",
+              path: "/home/u/.codex/config.toml",
+              format: "toml",
+              enabled: true,
+              writable: true,
+            },
+          ],
+          errors: [],
+        },
+        runtime: {
+          status: "unsupported",
+          reason: null,
+          workspace: null,
+          sessionId: null,
+          collectedAt: null,
+          entries: [],
+        },
+      },
+    ],
+    collectedAt: 1,
+    ...overrides,
+  };
+}
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  api.inventory.mockReset();
+  api.setEnabled.mockReset();
+  api.inventory.mockResolvedValue(payload());
+  api.setEnabled.mockResolvedValue(claudeProject());
+  useChatStore.setState({ active: null });
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+  useChatStore.setState({ active: null });
+});
+
+async function renderSection() {
+  await act(async () => {
+    root.render(<McpSection />);
+  });
+}
+
+function buttonExact(text: string): HTMLButtonElement {
+  const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (item) => item.textContent?.trim() === text,
+  );
+  if (!button) throw new Error(`button not found: ${text}`);
+  return button;
+}
+
+describe("McpSection", () => {
+  it("keeps config and runtime separate, with the read-only reason on the lock", async () => {
+    await renderSection();
+    expect(document.body.textContent).toContain("alpha");
+    expect(document.body.textContent).toContain("beta");
+    // Runtime section explains why it is empty instead of claiming no servers.
+    expect(document.body.textContent).toContain("运行时清单");
+    expect(document.body.textContent).toContain("没有运行中的会话，无法观测运行时状态");
+    // Read-only entry: no switch, a labelled lock instead.
+    const alphaRow = [...document.querySelectorAll("li")].find((row) =>
+      row.textContent?.includes("alpha"),
+    );
+    expect(alphaRow?.querySelector("input[type=checkbox]")).toBeNull();
+    expect(alphaRow?.querySelector('[title*="只读"]')).toBeTruthy();
+  });
+
+  it("switches engines and shows the not-installed notice for Codex", async () => {
+    await renderSection();
+    await act(async () => {
+      buttonExact("Codex CLI").click();
+    });
+    expect(document.body.textContent).toContain("gamma");
+    expect(document.body.textContent).not.toContain("alpha");
+    expect(document.body.textContent).toContain("该 CLI 未安装");
+    expect(document.body.textContent).toContain("当前引擎不支持运行时查询");
+  });
+
+  it("toggles a writable entry without opening its detail dialog", async () => {
+    await renderSection();
+    const betaRow = [...document.querySelectorAll("li")].find((row) =>
+      row.textContent?.includes("beta"),
+    );
+    const toggle = betaRow?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(api.setEnabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "claude_project:beta" }),
+      true,
+      null,
+    );
+    expect(api.inventory).toHaveBeenCalledTimes(2);
+    // The row click opens details; the switch must not.
+    expect(document.querySelector('[aria-label="查看 beta 详情"]')).toBeTruthy();
+    expect(
+      [...document.querySelectorAll("h3")].some((heading) =>
+        heading.textContent?.includes("beta 详情"),
+      ),
+    ).toBe(false);
+  });
+
+  it("distinguishes a source parse error from an empty config list", async () => {
+    api.inventory.mockResolvedValue(
+      payload({
+        engines: [
+          {
+            id: "claude",
+            available: true,
+            config: {
+              entries: [],
+              errors: [
+                {
+                  source: "claude_project",
+                  path: "/ws/.mcp.json",
+                  message: "/ws/.mcp.json: invalid JSON: boom",
+                },
+              ],
+            },
+            runtime: noSession(),
+          },
+          payload().engines[1],
+        ],
+      }),
+    );
+    await renderSection();
+    expect(document.body.textContent).toContain("invalid JSON");
+    expect(document.body.textContent).toContain("/ws/.mcp.json");
+    expect(document.body.textContent).toContain("当前引擎没有可展示的 MCP 配置");
+  });
+
+  it("searches runtime entries too, with a distinct no-match message", async () => {
+    api.inventory.mockResolvedValue(
+      payload({
+        engines: [
+          {
+            ...payload().engines[0],
+            runtime: {
+              status: "ready",
+              reason: null,
+              workspace: "/ws",
+              sessionId: "s-1",
+              collectedAt: Date.now(),
+              entries: [
+                {
+                  name: "alpha-tools",
+                  status: "connected",
+                  builtin: false,
+                  toolNames: ["search", "fetch"],
+                  resourcesCount: 0,
+                  templatesCount: 0,
+                },
+                {
+                  name: "beta-tools",
+                  status: "failed",
+                  builtin: false,
+                  toolNames: [],
+                  resourcesCount: 0,
+                  templatesCount: 0,
+                },
+              ],
+            },
+          },
+          payload().engines[1],
+        ],
+      }),
+    );
+    await renderSection();
+    expect(document.body.textContent).toContain("alpha-tools");
+    expect(document.body.textContent).toContain("beta-tools");
+
+    await act(async () => {
+      const input = document.querySelector<HTMLInputElement>('input[placeholder]');
+      if (!input) throw new Error("search input missing");
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, "alpha");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("alpha-tools");
+    expect(document.body.textContent).not.toContain("beta-tools");
+
+    await act(async () => {
+      const input = document.querySelector<HTMLInputElement>('input[placeholder]');
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, "ghost");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("没有匹配的服务");
+  });
+
+  it("filters to runtime only and hides the config section", async () => {
+    await renderSection();
+    await act(async () => {
+      buttonExact("运行时").click();
+    });
+    expect(document.body.textContent).not.toContain("alpha");
+    expect(document.body.textContent).toContain("运行时清单");
+  });
+
+  it("workspace switches cannot be overwritten by a late response", async () => {
+    let releaseA: (value: McpInventory) => void = () => undefined;
+    api.inventory.mockImplementationOnce(
+      () =>
+        new Promise<McpInventory>((resolve) => {
+          releaseA = resolve;
+        }),
+    );
+    const workspace = (path: string) =>
+      ({
+        engine: "claude",
+        sessionId: null,
+        workspacePath: path,
+      }) as never;
+    useChatStore.setState({ active: workspace("/ws-a") });
+    await act(async () => {
+      root.render(<McpSection />);
+    });
+
+    api.inventory.mockResolvedValue(
+      payload({
+        engines: [
+          {
+            ...payload().engines[0],
+            config: {
+              entries: [{ ...claudeUser(), name: "from-b" }],
+              errors: [],
+            },
+          },
+          payload().engines[1],
+        ],
+      }),
+    );
+    await act(async () => {
+      useChatStore.setState({ active: workspace("/ws-b") });
+    });
+    expect(document.body.textContent).toContain("from-b");
+
+    // The late /ws-a response must not replace the newer /ws-b state.
+    await act(async () => {
+      releaseA(
+        payload({
+          engines: [
+            {
+              ...payload().engines[0],
+              config: {
+                entries: [{ ...claudeUser(), name: "from-a" }],
+                errors: [],
+              },
+            },
+            payload().engines[1],
+          ],
+        }),
+      );
+    });
+    expect(document.body.textContent).toContain("from-b");
+    expect(document.body.textContent).not.toContain("from-a");
+  });
+});
