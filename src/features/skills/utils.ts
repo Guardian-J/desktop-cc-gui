@@ -55,9 +55,22 @@ export function sortSkills(skills: SkillRow[]): SkillRow[] {
   });
 }
 
-/** Engines the row icon strip should offer: installed CLIs plus any engine
- *  that already holds a copy (or a missing copy) — an uninstalled CLI must not
- *  hide the cleanup path for its stale copy. */
+/** Engines the row icon strip shows: only the ones that actually hold a copy
+ *  (or lost one). Adding an engine happens in the detail panel — a row stays a
+ *  state readout, instead of painting 13 faded icons on every one of hundreds
+ *  of rows. */
+export function copiedTargets(
+  skill: SkillRow,
+  targets: SkillTargetInfo[],
+): SkillTargetInfo[] {
+  return targets.filter(
+    (target) => (skill.targetStates?.[target.id] ?? "off") !== "off",
+  );
+}
+
+/** Engines the detail panel's "同步到" list offers: installed CLIs plus any
+ *  engine that already holds a copy (or a missing copy) — an uninstalled CLI
+ *  must not hide the cleanup path for its stale copy. */
 export function relevantTargets(
   skill: SkillRow,
   targets: SkillTargetInfo[],

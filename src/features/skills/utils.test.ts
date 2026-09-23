@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SkillRow, SkillTargetInfo, SkillUsageResult } from "./types";
 import {
+  copiedTargets,
   daysSince,
   filterSkills,
   formatTokens,
@@ -110,7 +111,16 @@ describe("skills utils", () => {
     expect(formatTokens(null)).toBe("0");
   });
 
-  it("offers installed engines plus any engine holding a copy", () => {
+  it("shows only engines holding a copy in the row strip", () => {
+    const targets = [target("claude", true), target("grok", true), target("hermes", false)];
+    const row = skill({
+      targetStates: { claude: "synced", grok: "off", hermes: "orphan" },
+    });
+    expect(copiedTargets(row, targets).map((item) => item.id)).toEqual(["claude", "hermes"]);
+    expect(copiedTargets(skill({ targetStates: {} }), targets)).toEqual([]);
+  });
+
+  it("offers installed engines plus any engine holding a copy in the detail list", () => {
     const targets = [target("claude", true), target("grok", true), target("hermes", false)];
     const row = skill({ targetStates: { claude: "synced", hermes: "orphan" } });
     // 未安装但已存副本（或副本丢失）的引擎仍要出现：清理路径不能消失。

@@ -243,47 +243,38 @@ describe("InstalledPane", () => {
     expect(document.body.textContent).not.toContain("全部目标同步完成");
   });
 
-  it("toggles one engine from the row icon without opening the dialog", async () => {
+  it("removes one engine copy from the row icon without opening the dialog", async () => {
     api.setTargets.mockResolvedValue({
       ok: true,
-      targetResults: [{ target: "codex", ok: true, error: null }],
+      targetResults: [{ target: "claude", ok: true, error: null }],
     } satisfies SkillMutationResult);
     await renderPane();
     const rowIcons = () =>
-      document.querySelectorAll<HTMLButtonElement>('button[data-target="codex"]');
+      document.querySelectorAll<HTMLButtonElement>('button[data-target="claude"]');
     expect(rowIcons().length).toBeGreaterThan(0);
     await act(async () => {
       rowIcons()[0].click();
     });
-    expect(api.setTargets).toHaveBeenCalledWith("anthropics/skills:alpha", [
-      "claude",
-      "codex",
-    ]);
+    // alpha 只有 claude 一份副本：点它 = 取消该引擎同步。
+    expect(api.setTargets).toHaveBeenCalledWith("anthropics/skills:alpha", []);
     expect(document.querySelector('[aria-label="alpha 详情"]')).toBeNull();
-
-    // 本地技能点引擎图标 = 先纳管再同步（与详情面板同一条路径）。
-    api.importLocal.mockResolvedValue({
-      ok: true,
-      targetResults: [{ target: "grok", ok: true, error: null }],
-    } satisfies SkillMutationResult);
-    await act(async () => {
-      document
-        .querySelectorAll<HTMLButtonElement>('button[data-target="grok"]')[1]
-        .click();
-    });
-    expect(api.importLocal).toHaveBeenCalledWith("beta", ["claude", "grok"]);
+    // 未纳管的本地技能：自己的副本不能从行内取消（后端也不会删）。
+    const betaRow = document.querySelector('[aria-label="查看 beta 详情"]')?.parentElement;
+    expect(betaRow?.querySelector<HTMLButtonElement>('button[data-target="claude"]')?.disabled).toBe(
+      true,
+    );
   });
 
-  it("shows engine state in the row icons and hides uninstalled engines", async () => {
+  it("shows only engines that hold a copy in the row strip", async () => {
     await renderPane();
+    const alphaRow = document.querySelector('[aria-label="查看 alpha 详情"]')?.parentElement;
     const stateOf = (row: Element | null | undefined, engine: string) =>
       row?.querySelector<HTMLButtonElement>(`button[data-target="${engine}"]`)?.dataset
         .targetState;
-    const alphaRow = document.querySelector('[aria-label="查看 alpha 详情"]')?.parentElement;
     expect(stateOf(alphaRow, "claude")).toBe("synced");
-    expect(stateOf(alphaRow, "codex")).toBe("off");
-    expect(stateOf(alphaRow, "grok")).toBe("off");
-    // 未安装且无副本的引擎不出现在行里，也不出现在筛选 chips 里。
+    // 没有副本 / 未安装的引擎不占行内位置（加引擎在详情面板里做）。
+    expect(stateOf(alphaRow, "codex")).toBeUndefined();
+    expect(stateOf(alphaRow, "grok")).toBeUndefined();
     expect(alphaRow?.querySelector('button[data-target="hermes"]')).toBeNull();
     expect(
       [...document.querySelectorAll("button")].some((button) =>
@@ -291,12 +282,13 @@ describe("InstalledPane", () => {
       ),
     ).toBe(false);
 
-    // beta 的 codex 副本丢失：图标标出 orphan，点击即重新同步。
+    // beta 的 codex 副本丢失：行内仍要出现，否则清理路径就消失了。
     const betaRow = document.querySelector('[aria-label="查看 beta 详情"]')?.parentElement;
     expect(stateOf(betaRow, "codex")).toBe("orphan");
     expect(betaRow?.querySelector('button[data-target="codex"]')?.getAttribute("aria-pressed")).toBe(
       "false",
     );
+    expect(stateOf(betaRow, "grok")).toBeUndefined();
   });
 
   it("keeps a user-owned local copy and says so instead of claiming removal", async () => {
