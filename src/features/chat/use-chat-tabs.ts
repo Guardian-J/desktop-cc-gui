@@ -119,6 +119,7 @@ export function useChatTabs({
   // starts/stops streaming, so these selectors do not rescan bySession on
   // every per-frame stream flush.
   const streamingByKey = useChatStore((s) => s.streamingByKey);
+  const retryingByKey = useChatStore((s) => s.retryingByKey);
   // Per-tab streaming flags for the tab strip; recomputed only when a flag
   // actually flips (or the tab list changes).
   const tabStreaming = useMemo(
@@ -128,8 +129,16 @@ export function useChatTabs({
       ),
     [openTabs, streamingByKey],
   );
-  // Sidebar status dots: per-thread streaming flags plus the unseen map
-  // (reference-stable until a flag actually changes).
+  // Same for the retry flag: reference-stable, so the strip only re-renders
+  // when a tab actually enters/leaves provider backoff.
+  const tabRetrying = useMemo(
+    () =>
+      openTabs.map(
+        (tab) => retryingByKey[sessionKey(tab.engine, tab.sessionId, tab.workspacePath)] === true,
+      ),
+    [openTabs, retryingByKey],
+  );
+  // Sidebar status dots: per-thread streaming/retry flags plus the unseen map.
   const threadStreaming = useMemo(
     () =>
       sessions.map(
@@ -137,6 +146,14 @@ export function useChatTabs({
           streamingByKey[sessionKey(sess.engine, sess.sessionId, sess.workspacePath)] === true,
       ),
     [sessions, streamingByKey],
+  );
+  const threadRetrying = useMemo(
+    () =>
+      sessions.map(
+        (sess) =>
+          retryingByKey[sessionKey(sess.engine, sess.sessionId, sess.workspacePath)] === true,
+      ),
+    [sessions, retryingByKey],
   );
 
   const sessionById = useMemo(() => {
@@ -155,11 +172,12 @@ export function useChatTabs({
           engine: tab.engine,
           label: meta?.customTitle || meta?.title || t("chat.newChat"),
           streaming: tabStreaming[index] ?? false,
+          retrying: tabRetrying[index] ?? false,
           unseen: unseen[`${tab.engine}/${tab.sessionId}`] ?? false,
           tab,
         };
       }),
-    [openTabs, sessionById, tabStreaming, t, unseen],
+    [openTabs, sessionById, tabStreaming, tabRetrying, t, unseen],
   );
   // File tabs trail the session tabs in the same strip.
   const fileTabItems = useMemo(
@@ -336,6 +354,7 @@ export function useChatTabs({
     handleTabReorder,
     sessionById,
     threadStreaming,
+    threadRetrying,
     openFiles,
     activeFilePath,
     // Hidden beta surfaces report empty/inactive so ChatCenterPane unmounts
@@ -698,5 +717,6 @@ function useChatTabHandlers({
     handleTabCloseAll,
     handleTabCloseInactive,
     handleTabReorder,
+
   };
 }

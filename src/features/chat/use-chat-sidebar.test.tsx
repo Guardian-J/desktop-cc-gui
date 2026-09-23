@@ -61,9 +61,12 @@ let captured: AiChatRepo[];
 let sidebar: ReturnType<typeof useChatSidebar>;
 
 function Harness() {
+  const streaming = useChatStore((s) => s.streamingByKey["codex/s-1"] === true);
+  const retrying = useChatStore((s) => s.retryingByKey["codex/s-1"] === true);
   sidebar = useChatSidebar({
     sessionById: new Map(),
-    threadStreaming: [false],
+    threadStreaming: [streaming],
+    threadRetrying: [retrying],
     collapseSidebarOnMobile: () => {},
     composerInputRef: { current: null },
     setDialog: () => {},
@@ -82,7 +85,8 @@ describe("useChatSidebar repo mapping", () => {
       workspaceGroups: [],
       workspaceAliases: {},
       archivedWorkspaces: [],
-      unseen: {},
+      retryingByKey: {},
+      streamingByKey: {},
     });
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -133,6 +137,20 @@ describe("useChatSidebar repo mapping", () => {
       });
     });
     expect(captured[0]?.labelSuffix).toBe("WSL");
+  });
+
+  it("maps retrying state to the matching sidebar thread", async () => {
+    await act(async () => {
+      useChatStore.setState({
+        streamingByKey: { "codex/s-1": true },
+        retryingByKey: { "codex/s-1": true },
+      });
+    });
+
+    expect(captured[0]?.threads[0]).toMatchObject({
+      streaming: true,
+      retrying: true,
+    });
   });
 });
 
