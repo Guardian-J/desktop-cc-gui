@@ -249,6 +249,30 @@ fn hash_directory_stable_and_sensitive() {
     }
 }
 
+/// 移除同步到引擎的副本时，目录符号链接必须连链接本身一起删掉。
+/// Windows 的 `remove_file` 对目录 symlink 报 Access denied，只会留下
+/// “copy still present” 并让下一次 copy 顺着链接写进 SSOT。
+#[test]
+fn remove_path_deletes_directory_and_dangling_symlinks() {
+    let temp = TestDir::new("remove-link");
+    let source = temp.path().join("source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), b"body").unwrap();
+
+    let link = temp.path().join("linked");
+    if symlink_dir(&source, &link).is_ok() {
+        remove_path(&link);
+        assert!(!is_symlink(&link), "link still present: {link:?}");
+        assert!(source.join("SKILL.md").is_file(), "target was deleted");
+    }
+
+    let dangling = temp.path().join("dangling");
+    if symlink_dir(&temp.path().join("missing"), &dangling).is_ok() {
+        remove_path(&dangling);
+        assert!(!is_symlink(&dangling), "dangling link still present");
+    }
+}
+
 #[test]
 fn source_signature_from_tree_semantics() {
     let tree = json!([

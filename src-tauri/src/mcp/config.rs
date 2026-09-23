@@ -1085,9 +1085,18 @@ mod tests {
         assert_eq!(error.code, "format");
     }
 
+    /// 路径插进 JSON 文本前按 JSON 字符串转义：Windows 路径带 `\`，直接
+    /// 拼接会写出非法 JSON（invalid escape）。
+    fn json_key(value: &str) -> String {
+        serde_json::to_string(value).expect("json string")
+    }
+
     #[test]
     fn claude_project_toggle_writes_personal_settings_only() {
-        let dir = TempDir::new("claude-toggle");
+        // read_claude_project 会经 claude_user_config_path() 读进程级 env；和
+        // 其它 HOME / CLAUDE_CONFIG_DIR 测试共用一把锁，避免读到切换中的值。
+        let _guard = crate::paths::HOME_ENV_LOCK.lock();
+        let dir = TempDir::new("claude-project-toggle");
         let mcp = dir.path().join(".mcp.json");
         let settings = dir.path().join(".claude").join("settings.local.json");
         std::fs::write(
@@ -1150,10 +1159,11 @@ mod tests {
         let workspace = dir.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_key = workspace.to_string_lossy().into_owned();
+        let workspace_json = json_key(&workspace_key);
         std::fs::write(
             &path,
             format!(
-                r#"{{"mcpServers":{{"user-server":{{"command":"npx"}}}},"projects":{{"{workspace_key}":{{"mcpServers":{{"local-server":{{"url":"https://x/mcp"}}}},"disabledMcpServers":["user-server"]}}}}}}"#
+                r#"{{"mcpServers":{{"user-server":{{"command":"npx"}}}},"projects":{{{workspace_json}:{{"mcpServers":{{"local-server":{{"url":"https://x/mcp"}}}},"disabledMcpServers":["user-server"]}}}}}}"#
             ),
         )
         .unwrap();
@@ -1192,8 +1202,9 @@ mod tests {
         let workspace = dir.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_key = workspace.to_string_lossy().into_owned();
+        let workspace_json = json_key(&workspace_key);
         let original = format!(
-            "{{\n  \"mcpServers\": {{\n    \"alpha\": {{ \"command\": \"npx\" }}\n  }},\n  \"projects\": {{\n    \"{workspace_key}\": {{}}\n  }}\n}}\n"
+            "{{\n  \"mcpServers\": {{\n    \"alpha\": {{ \"command\": \"npx\" }}\n  }},\n  \"projects\": {{\n    {workspace_json}: {{}}\n  }}\n}}\n"
         );
         std::fs::write(&path, &original).unwrap();
         std::env::set_var("CLAUDE_CONFIG_DIR", dir.path());
@@ -1244,6 +1255,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_key = workspace.to_string_lossy().into_owned();
+        let workspace_json = json_key(&workspace_key);
         std::fs::write(
             &path,
             r#"{"mcpServers":{"alpha":{"command":"npx"}},"projects":{}}"#,
@@ -1262,7 +1274,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                r#"{{"mcpServers":{{"alpha":{{"command":"npx"}}}},"projects":{{"{workspace_key}":{{}}}}}}"#
+                r#"{{"mcpServers":{{"alpha":{{"command":"npx"}}}},"projects":{{{workspace_json}:{{}}}}}}"#
             ),
         )
         .unwrap();

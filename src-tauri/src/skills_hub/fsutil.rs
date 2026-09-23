@@ -88,14 +88,21 @@ pub(super) fn is_symlink(path: &Path) -> bool {
 }
 
 /// upstream removePath：entity 或 dangling symlink 存在才删除，递归 force、吞错。
+/// 符号链接按平台挑删除方式：Windows 的目录 symlink 只有 `remove_dir` 能删
+/// （`remove_file` 报 Access denied），Unix 则相反 —— 先试 `remove_file`，
+/// 失败再试 `remove_dir`，否则残留链接会被后续 copy 当作空目录写穿。
 pub(super) fn remove_path(path: &Path) {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return;
     };
-    if meta.file_type().is_symlink() || !meta.is_dir() {
-        let _ = fs::remove_file(path);
-    } else {
+    if meta.file_type().is_symlink() {
+        if fs::remove_file(path).is_err() {
+            let _ = fs::remove_dir(path);
+        }
+    } else if meta.is_dir() {
         let _ = fs::remove_dir_all(path);
+    } else {
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -166,6 +173,14 @@ pub(super) fn copy_dir_recursive(source: &Path, dest: &Path) -> std::io::Result<
 pub(super) fn copy_dir(source: &Path, dest: &Path) -> SkillResult<()> {
     assert_not_nested(source, dest)?;
     remove_path(dest);
+    // 删不掉的残留链接不能当空目录写：create_dir_all 会顺着链接把文件灌进
+    // 链接目标（SSOT 或用户自己的目录）。
+    if is_symlink(dest) {
+        return Err(SkillError::other(format!(
+            "Could not clear symbolic link before copy: {}",
+            dest.display()
+        )));
+    }
     copy_dir_recursive(source, dest).map_err(SkillError::from)
 }
 

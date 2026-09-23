@@ -8,19 +8,37 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
-struct HomeGuard(Option<std::ffi::OsString>);
+/// 测试期间的 scratch HOME：持全 crate 共享的 HOME 串行锁，并在 Windows 上
+/// 同时指向 USERPROFILE（engine_home 的测试回落两者都读）。此前不持锁时，
+/// 并发改 HOME 的测试会把这里的 grok home 解析到别的 scratch 目录。
+struct HomeGuard {
+    _lock: parking_lot::MutexGuard<'static, ()>,
+    home: Option<std::ffi::OsString>,
+    profile: Option<std::ffi::OsString>,
+}
 impl HomeGuard {
     fn new(home: &Path) -> Self {
-        let previous = std::env::var_os("HOME");
+        let lock = crate::paths::HOME_ENV_LOCK.lock();
+        let previous_home = std::env::var_os("HOME");
+        let previous_profile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", home);
-        Self(previous)
+        std::env::set_var("USERPROFILE", home);
+        Self {
+            _lock: lock,
+            home: previous_home,
+            profile: previous_profile,
+        }
     }
 }
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        match self.0.take() {
+        match self.home.take() {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        match self.profile.take() {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
         }
     }
 }
