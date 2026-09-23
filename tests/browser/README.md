@@ -120,6 +120,16 @@ single-member section still has a working grip, empty groups mount only
 mid-drag and accept a drop there, and a plain in-section drag still commits
 `onReorderWorkspaces` without also firing a section drop. Static props, no
 app, no backend.
+
+Open `/tests/browser/sidebar-collapse.html` to check the sidebar's worktree
+disclosures frame by frame: collapsing the「WORKTREES · n」group, re-expanding
+it and expanding one worktree child row must each pass through intermediate
+region heights (a real grid-template-rows transition) instead of jumping
+between two values, and the rows must still be in the DOM while the region
+clips shut. The fixture drives the real AiChatSidebar and reports PASS with
+the sampled start/end heights and intermediate frame count; a broken version
+reads `0 intermediate frames`. Static props, no app, no backend.
+
 Open `/tests/browser/agent-prompt-menus.html` to check the composer's `#`
 agent picker and `!` prompt picker against seeded stores: the agent menu
 groups 我的智能体 then one section per enabled built-in division (flat when

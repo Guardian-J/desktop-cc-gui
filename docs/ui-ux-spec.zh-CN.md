@@ -52,6 +52,13 @@
 - 图标按钮必须同时有 `aria-label`（可访问名）和 `title`（指针悬停）。可访问名用**动作名**（"刷新"、"重新加载"），不用"点这里"。
 - 需要解释性文案、快捷键或多行说明时才用 `Tooltip`（`src/components/base/tooltip/tooltip.tsx`）：它基于 react-aria，trigger 必须是 react-aria 组件或包在 `Focusable` 里的元素；触屏上不可达，所以**关键信息不能只放在 tooltip 里**。
 
+### 2.4 展开 / 收起动效
+
+- **把下面内容推开的展开/收起一律做高度过渡，不允许条件渲染直接闪现**（`{open && …}` 少了过渡就是瞬间抽走 / 塞回）。实现统一用 CSS `grid-template-rows: 1fr ⇄ 0fr`，让浏览器插值轨道高度、兄弟行被平滑推开；不用 `max-height` 猜高度，也不用 JS 逐帧量高。现成实现两处，不要另起：侧栏树/列表用 `src/components/application/ai-chat/repo-tree.tsx` 的 `SidebarDisclosure`（`WorktreeGroup` 分组与线程列表共用：`300ms` + `ease-in-out` + `motion-reduce:transition-none`）；消息/面板级折叠用 `src/components/application/collapsible/collapsible.tsx` 的 `Collapsible`（额外 `opacity` + `visibility` 收尾，时长由调用点给）。两者都只转箭头方向（`transition-transform duration-150` + 展开时 `rotate-90`）并同步 `aria-expanded`。
+- **收起过程中内容保持挂载，动画结束才卸载**：内容要在关闭动画期间留在 DOM 里（`SIDEBAR_COLLAPSE_MS` = 300ms 后卸载，顺带回收分页等组件内状态，下次展开回到第一页），否则收起读起来是「啪」地消失。
+- **不用 `opacity` 淡出列表行**：列表淡出会在下方内容上留一帧合成残影（`repo-tree.tsx` 的注释记录了这次事故）；只裁切高度。收起期间给区域 `aria-hidden="true"` + `inert`，键盘与读屏不进入被裁掉的内容。长消息的「展开全文」（`CollapsibleMessage`，`max-height` + 渐变遮罩）是把气泡裁短而不是推动兄弟行，属于另一类视觉，不在这条规则内。
+- **回归**：`tests/browser/sidebar-collapse.html` 逐帧采样「WORKTREES」分组与 worktree 子行的展开/收起高度——每个方向必须经过 ≥3 个中间帧、收起期间行仍在 DOM（只有首尾两个值＝直接跳变）；`ai-chat-sidebar.test.tsx` 覆盖收起后 300ms 才卸载。
+
 ## 3. 状态与可用性
 
 - **插件会话模式**：获得 `ui:conversation-mode` 授权后，在 CLI 选择器旁提供入口，不伪装成 CLI 或权限选项；普通轮次或发送队列未结束时禁止切入。模式替换当前聊天内容区与输入框，保留原普通对话。运行、取消待确认及恢复待核对期间禁止通过宿主「返回普通对话」绕过插件的退出锁。
@@ -102,7 +109,7 @@
 - **多引擎列表自带滚动，底部动作必须留在框内**：Skills 详情（`SkillDetailDialog.tsx`）的「同步到」最多 13 个引擎，整页内容（描述 / 属性 / 活动情况 / 同步到 / SKILL.md）放在同一个滚动体里，同步列表自己再限高滚动（`max-h-[13rem]`），「从所有 Agent 移除 / 更新 / 关闭」固定在框底——引擎变多不能把底部动作推出可视区。
 - **终端路径链接用修饰键点击才唤起文件管理器**：终端输出里的绝对路径（`src/features/terminal/links.ts`）悬停仍有下划线与手型，但普通单击不再直接打开——只有 macOS `⌥`+点击、Windows/Linux `Ctrl`+点击才 reveal（`holdsRevealModifier` 从 xterm 传来的 `MouseEvent` 取修饰键；非 mac 选 Ctrl 与 Windows Terminal / GNOME Terminal 的开链习惯一致）。理由是选中文本、点回窗口很容易碰到链接，无修饰直接唤起访达的干扰太大。macOS 同时把 xterm 的 `altClickMovesCursor` 关掉（`TerminalView.tsx`）：同一个 `⌥`+点击否则还会把 shell 光标挪到点击处；Windows/Linux 保留该功能（那里的 reveal 手势是 Ctrl）。右键菜单里的「在访达中显示」不受影响——显式动作不需要修饰键。回归：`links.test.ts` 的修饰键用例。
 - **分支选择器列远程分支并标「远程分支」**：变更面板与状态栏的分支列表（同一份 `git_branches` 数据）在本地分支之后列出 remote-tracking 分支（`origin/x`），行尾挂中性徽标「远程分支」（`git.remoteBranch`）——刚 fetch 到、本地尚无同名分支的远程分支必须可搜可切，与 VSCode / CLI 一致。选择远程分支不直接进入 detached HEAD：后端物化为同名本地跟踪分支（已存在则切到它，绝不以远程 tip 覆盖本地提交）；`origin/HEAD` 这类符号引用不进列表。列表仍按「本地在前、远程在后」分组，搜索仍是子串匹配。回归：`git.rs` 的 `branches_list_*` / `checkout_remote_branch_*` 用例、`ChangesPanelHeader.test.tsx`。
-- **Worktree = 侧栏子工作区**：workspaces 表以 `kind="worktree"` + `parentId` 表达子工作区（`worktreeMetaOf()` 从 `meta.worktree` 读分支/PR 元数据），侧栏把它挂到父仓库行的「WORKTREES · n」分组内（`repo-tree.tsx` 的 `WorktreeGroup`）：子行主名是分支名（目录名进 tooltip），可展开各自的会话线程（展开态复用侧栏持久化展开集），分组整体也可折叠（折叠集存在 worktree store 的 localStorage）。行内徽标：「PR#n」（仅从 PR 创建时，`status-purple-*`）。父行不可见（已归档/已移除）时子行降级为普通顶层行，不丢入口；子行悬停出现 ＋（`chat.newSession`），直接在该 worktree 目录下开新会话（复用工作区行的 `onNewSessionInWorkspace` 链路）。分组只在有子项或有进行中创建时渲染，首个创建入口在工作区右键菜单「新建 Worktree…」；创建对话框三来源 Chip 顺序为「新分支（默认）/ 已有分支 / 从 PR 创建」。回归：`use-chat-sidebar.test.tsx` 的挂载/降级用例、`ai-chat-sidebar.test.tsx` 的子行 ＋ 用例。
+- **Worktree = 侧栏子工作区**：workspaces 表以 `kind="worktree"` + `parentId` 表达子工作区（`worktreeMetaOf()` 从 `meta.worktree` 读分支/PR 元数据），侧栏把它挂到父仓库行的「WORKTREES · n」分组内（`repo-tree.tsx` 的 `WorktreeGroup`）：子行主名是分支名（目录名进 tooltip），可展开各自的会话线程（展开态复用侧栏持久化展开集），分组整体也可折叠（折叠集存在 worktree store 的 localStorage）。分组与子行两层的展开/收起都走 [§2.4](#24-展开--收起动效) 的 `SidebarDisclosure` 高度动画。行内徽标：「PR#n」（仅从 PR 创建时，`status-purple-*`）。父行不可见（已归档/已移除）时子行降级为普通顶层行，不丢入口；子行悬停出现 ＋（`chat.newSession`），直接在该 worktree 目录下开新会话（复用工作区行的 `onNewSessionInWorkspace` 链路）。分组只在有子项或有进行中创建时渲染，首个创建入口在工作区右键菜单「新建 Worktree…」；创建对话框三来源 Chip 顺序为「新分支（默认）/ 已有分支 / 从 PR 创建」。回归：`use-chat-sidebar.test.tsx` 的挂载/降级用例、`ai-chat-sidebar.test.tsx` 的子行 ＋ 与分组折叠用例、`tests/browser/sidebar-collapse.html`。
 - **Worktree 目录丢失与锁定要明说**：后端 `git_worktree_list` 解析 porcelain 的 `prunable` / `locked` 属性。`prunable`（目录已从磁盘消失）的子行渲染「目录已丢失」徽标（`status-rose-*`，原因进 `title`）；`locked` 的 worktree 在右键菜单里「删除 Worktree…」禁用并给出原因（对齐「禁用目标不能谎报」），删除对话框打开时同样复检。回归：`git_worktree.rs` 的 porcelain 用例。
 
 ## 4. 动作反馈
@@ -227,6 +234,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.49 | 2026-09-23 | Worktree 展开/收起补齐动效：「WORKTREES · n」分组原来是条件渲染、点击即闪现，现抽出 `SidebarDisclosure`（grid-rows 1fr⇄0fr、300ms、收起动画结束才卸载、`inert` + `aria-hidden`）供分组与线程列表共用，子行维持同一实现；新增浏览器 fixture 逐帧采样（`sidebar-collapse.html`）与 jsdom 卸载时序用例；新增 §2.4 展开/收起动效规则 |
 | v0.48 | 2026-09-23 | 修复打包版插件样式全丢：启动占位样式从 `index.html` 内联 `<style>` 移入 `public/boot.css` 外部文件（Tauri 会给内联标签加 nonce，nonce 让 `'unsafe-inline'` 失效，运行时注入的插件样式表全被拒）；`tests/platform-build.test.ts` 增加守卫（index.html 无内联 style/script + style-src 保留 'unsafe-inline'）；§5 补充规则 |
 | v0.47 | 2026-09-23 | Git worktree 子工作区全链路：workspaces 表恢复 kind/parentId 先例并迁移旧版导入；侧栏「WORKTREES · n」分组挂载子行（分支名 + PR 徽标 + 脏文件数，locked/prunable 明说）；三来源创建对话框（从 PR / 新分支 / 已有分支，PR 解析走 `pull/N/head` 不依赖 GitHub 登录，gh CLI 仅增强）即交即走 + 进度行三态可取消可重试；删除分级确认（未提交/未推送/未合入预检、默认保留分支、后台直接删）与父行移除/归档级联提示；§3、§5、§6、§7 同步 |
 | v0.46 | 2026-09-23 | 崩溃不再白屏：新增三层兜底（启动 watchdog + 全局 error/unhandledrejection 捕获 + 顶层 ErrorBoundary）与 `CrashScreen` 全屏错误页，显示具体原因、可展开技术详情与重新加载/复制/退出动作；崩溃报告本地留存供反馈；§5 补充规则 |

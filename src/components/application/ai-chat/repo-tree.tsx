@@ -423,8 +423,10 @@ function WorktreeChildRow({
 }
 
 /** 「WORKTREES · n」分组：父工作区展开区内的子工作区列表 + 进行中的创建
- *  进度行。组折叠态与各子行展开态都可持久化（后者复用侧栏的展开集）。
- *  没有 worktree 也没有进行中创建时不渲染——首个创建入口在右键菜单。 */
+ *  进度行。组折叠态与各子行展开态都可持久化（后者复用侧栏的展开集），
+ *  两层的展开/收起都走 `SidebarDisclosure` 的高度动画（不再条件渲染直接
+ *  闪现）。没有 worktree 也没有进行中创建时不渲染——首个创建入口在右键
+ *  菜单。 */
 function WorktreeGroup({
   parent,
   activeThreadId,
@@ -517,7 +519,7 @@ function WorktreeGroup({
           </button>
         )}
       </div>
-      {!collapsed && (
+      <SidebarDisclosure expanded={!collapsed}>
         <div className="flex w-full flex-col gap-0.5">
           {pending.map((p) => (
             <WorktreeProgressRow key={p.creationId} pending={p} />
@@ -553,15 +555,14 @@ function WorktreeGroup({
             );
           })}
         </div>
-      )}
+      </SidebarDisclosure>
     </div>
   );
 }
 
-/** Keep the list mounted through the close animation, then drop it so the
- *  next expand remounts at page 0. Instant unmount + opacity fade left a
- *  compositor ghost over the workspace rows below. */
-const THREAD_LIST_COLLAPSE_MS = 300;
+/** Sidebar disclosure close animation length. Content unmounts when it ends,
+ *  so the next expand remounts thread pagination at page 0. */
+const SIDEBAR_COLLAPSE_MS = 300;
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined"
@@ -569,9 +570,49 @@ function prefersReducedMotion(): boolean {
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/** The collapsible thread area under a repo row: the wrapper owns the
- *  grid-rows collapse animation. Content stays mounted while the height
- *  clips shut (no opacity fade — fading the last paint leaves a ghost). */
+/** Height disclosure shared by the sidebar's expandable regions (repo thread
+ *  lists, the WORKTREES group): the grid track goes 1fr ⇄ 0fr so the region's
+ *  real box grows and shrinks and the rows below are pushed smoothly.
+ *  Content stays mounted until the close animation ends (instant unmount
+ *  pops; unmount + opacity fade leaves a compositor ghost), then drops out of
+ *  the DOM and the a11y tree. Reduced motion cuts straight to the end. */
+function SidebarDisclosure({
+  expanded,
+  children,
+}: {
+  expanded: boolean;
+  children: ReactNode;
+}) {
+  const [mounted, setMounted] = useState(expanded);
+  useLayoutEffect(() => {
+    if (expanded) {
+      setMounted(true);
+      return;
+    }
+    if (prefersReducedMotion()) {
+      setMounted(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setMounted(false), SIDEBAR_COLLAPSE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [expanded]);
+
+  return (
+    <div
+      aria-hidden={!expanded}
+      {...(!expanded ? { inert: "" } : {})}
+      className={cx(
+        "grid transition-[grid-template-rows] duration-300 ease-in-out motion-reduce:transition-none",
+        expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+      )}
+    >
+      <div className="min-h-0 overflow-hidden">{mounted ? children : null}</div>
+    </div>
+  );
+}
+
+/** The collapsible thread area under a repo row, animated by
+ *  `SidebarDisclosure` (height clips shut, no opacity fade). */
 function RepoThreadList({
   expanded,
   threads,
@@ -593,46 +634,19 @@ function RepoThreadList({
    *  parent repo's WORKTREES group), so it folds away with the threads. */
   trailing?: ReactNode;
 }) {
-  const [mounted, setMounted] = useState(expanded);
-  useLayoutEffect(() => {
-    if (expanded) {
-      setMounted(true);
-      return;
-    }
-    if (prefersReducedMotion()) {
-      setMounted(false);
-      return;
-    }
-    const timeout = window.setTimeout(() => setMounted(false), THREAD_LIST_COLLAPSE_MS);
-    return () => window.clearTimeout(timeout);
-  }, [expanded]);
-
   return (
-    <div
-      aria-hidden={!expanded}
-      {...(!expanded ? { inert: "" } : {})}
-      className={cx(
-        "grid transition-[grid-template-rows] duration-300 ease-in-out motion-reduce:transition-none",
-        expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
-      )}
-    >
-      <div className="min-h-0 overflow-hidden">
-        {mounted ? (
-          <>
-            <PagedThreadList
-              key={expanded ? "expanded" : "collapsed"}
-              threads={threads}
-              threadLimit={threadLimit}
-              activeThreadId={activeThreadId}
-              onThreadSelect={onThreadSelect}
-              onThreadAction={onThreadAction}
-              onThreadContextMenu={onThreadContextMenu}
-            />
-            {trailing}
-          </>
-        ) : null}
-      </div>
-    </div>
+    <SidebarDisclosure expanded={expanded}>
+      <PagedThreadList
+        key={expanded ? "expanded" : "collapsed"}
+        threads={threads}
+        threadLimit={threadLimit}
+        activeThreadId={activeThreadId}
+        onThreadSelect={onThreadSelect}
+        onThreadAction={onThreadAction}
+        onThreadContextMenu={onThreadContextMenu}
+      />
+      {trailing}
+    </SidebarDisclosure>
   );
 }
 
