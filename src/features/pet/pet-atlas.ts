@@ -40,16 +40,6 @@ export interface PetAtlasPackage {
   spritesheetDataUrl: string;
 }
 
-export function atlasRow(status: PetStatus, lookDirection: number): number {
-  if (status !== "idle" && status !== "running" && status !== "waiting" && status !== "failed" && status !== "review") {
-    return PET_STATUS_ROWS.idle;
-  }
-  // Direction 0 is the v2 up-facing direction. Status rows are intentionally
-  // preferred: the standard action rows carry their own side-facing frames.
-  void lookDirection;
-  return PET_STATUS_ROWS[status];
-}
-
 export function atlasFrame(
   status: PetAnimation,
   frame: number,

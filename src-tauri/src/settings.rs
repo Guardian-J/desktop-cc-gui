@@ -255,6 +255,14 @@ fn normalize_pet_settings(settings: &mut AppSettings) {
         settings.pet_enabled = false;
         return;
     }
+    // Validate the id with the same rule the pet loader enforces: a raw
+    // is_dir check would follow ".." segments in hand-edited settings and
+    // leave pet_enabled=true behind a window that can never load a package.
+    if !crate::pets::valid_id(&id) {
+        settings.pet_id.clear();
+        settings.pet_enabled = false;
+        return;
+    }
     let imported = crate::paths::app_home().join("pets").join(&id);
     if !imported.is_dir() {
         settings.pet_id.clear();

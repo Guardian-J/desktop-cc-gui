@@ -12,7 +12,9 @@ import {
   SettingsRow,
   SettingsSectionLabel,
 } from "@/components/application/settings/settings-rows";
+import { ConfirmDialog } from "@/components/dialogs";
 import { ipc, type AppSettings, type PetSummary } from "@/lib/ipc";
+import { petErrorMessage } from "@/features/pet/pet-errors";
 import { IS_WINDOWS, pickDirectory } from "@/lib/platform";
 import { applyTheme } from "./theme";
 import { PromptHistoryManager, PromptHistoryToggleRow } from "./PromptHistorySettings";
@@ -40,6 +42,8 @@ export function GeneralSection() {
   const [decorated, setDecorated] = useState<boolean | null>(null);
   const [pets, setPets] = useState<PetSummary[]>([]);
   const [petBusy, setPetBusy] = useState(false);
+  // Pet pending destructive confirmation; null = no dialog open.
+  const [removingPet, setRemovingPet] = useState<PetSummary | null>(null);
   useEffect(() => {
     let cancelled = false;
     ipc
@@ -52,7 +56,10 @@ export function GeneralSection() {
       .catch((e) => {
         if (!cancelled) setError(String(e));
       });
-    void ipc.listPets().then(setPets).catch(() => {});
+    void ipc
+      .listPets()
+      .then(setPets)
+      .catch((e) => console.warn("[settings] pet list failed", e));
     return () => {
       cancelled = true;
     };
@@ -165,7 +172,7 @@ export function GeneralSection() {
     }
     setSettings({ ...settings, petEnabled: enabled });
     void save({ petEnabled: enabled }).then((ok) => {
-      if (ok) void ipc.setPetVisible(enabled).catch((e) => setError(String(e)));
+      if (ok) void ipc.setPetVisible(enabled).catch((e) => setError(petErrorMessage(e, t)));
     });
   };
   const onPetScaleChange = async (key: Key | null) => {
@@ -180,7 +187,7 @@ export function GeneralSection() {
       setError(null);
     } catch (e) {
       setSettings((current) => (current ? { ...current, petScale: previous } : current));
-      setError(String(e));
+      setError(petErrorMessage(e, t));
     }
   };
   const onPetChange = async (key: Key | null) => {
@@ -194,7 +201,7 @@ export function GeneralSection() {
       await ipc.setPetVisible(false);
       await ipc.setPetVisible(settings.petEnabled ?? false);
     } catch (e) {
-      setError(String(e));
+      setError(petErrorMessage(e, t));
     }
   };
   const importPet = async () => {
@@ -211,13 +218,12 @@ export function GeneralSection() {
         await ipc.setPetVisible(true);
       }
     } catch (e) {
-      setError(`${t("settings.petImportFailed")}: ${String(e)}`);
+      setError(`${t("settings.petImportFailed")}: ${petErrorMessage(e, t)}`);
     } finally {
       setPetBusy(false);
     }
   };
   const removePet = async (pet: PetSummary) => {
-    if (!window.confirm(t("settings.petRemoveConfirm"))) return;
     try {
       await ipc.removePet(pet.id);
       setPets((current) => current.filter((item) => item.id !== pet.id));
@@ -226,7 +232,7 @@ export function GeneralSection() {
         await save({ petId: "", petEnabled: false });
       }
     } catch (e) {
-      setError(String(e));
+      setError(petErrorMessage(e, t));
     }
   };
   const selectedPetId = settings?.petId?.trim() ?? "";
@@ -358,9 +364,7 @@ export function GeneralSection() {
                   <Button
                     size="small"
                     variant="ghost"
-                    onClick={() => {
-                      void removePet(selectedPet);
-                    }}
+                    onClick={() => setRemovingPet(selectedPet)}
                   >
                     {t("settings.petRemove")}
                   </Button>
@@ -424,6 +428,18 @@ export function GeneralSection() {
         </div>
       )}
       {settings && <PromptHistoryManager />}
+      {removingPet && (
+        <ConfirmDialog
+          danger
+          message={t("settings.petRemoveConfirm", { name: removingPet.displayName })}
+          onCancel={() => setRemovingPet(null)}
+          onConfirm={() => {
+            const pet = removingPet;
+            setRemovingPet(null);
+            void removePet(pet);
+          }}
+        />
+      )}
     </div>
   );
 }

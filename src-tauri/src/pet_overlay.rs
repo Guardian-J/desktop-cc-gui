@@ -24,6 +24,11 @@ const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 1.5;
 const HIT_TEST_INTERVAL_MS: u64 = 16;
 const LOOK_DIRECTION_INTERVAL_MS: u64 = 180;
+/// Poll cadence while the overlay window is destroyed: the tracker stays
+/// alive for the app lifetime but must not spin at the hit-test rate.
+const WINDOW_GONE_SLEEP_MS: u64 = 1000;
+/// Poll cadence while the overlay window exists but is not visible.
+const HIDDEN_SLEEP_MS: u64 = 500;
 
 const PET_OFFSET_X: f64 = (BUBBLE_WIDTH - WIDTH) / 2.0;
 
@@ -137,10 +142,33 @@ fn create_window() -> Result<tauri::WebviewWindow, String> {
         .set_ignore_cursor_events(true)
         .map_err(|e| format!("enable pet overlay click-through: {e}"))?;
     if let Some(position) = settings.pet_position {
-        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-            position.x - PET_OFFSET_X * scale,
-            position.y - BUBBLE_HEIGHT,
-        )));
+        let x = position.x - PET_OFFSET_X * scale;
+        let y = position.y - BUBBLE_HEIGHT;
+        // Restore only while the anchor still lands on a connected display.
+        // An off-screen transparent click-through window is unrecoverable
+        // (monitor unplugged / resolution changed), so fall back to the
+        // default placement instead.
+        let on_screen = app
+            .available_monitors()
+            .map(|monitors| {
+                monitors.iter().any(|monitor| {
+                    let factor = monitor.scale_factor();
+                    let origin = monitor.position();
+                    let size = monitor.size();
+                    let (mx, my) = (origin.x as f64 / factor, origin.y as f64 / factor);
+                    let (mw, mh) = (
+                        size.width as f64 / factor,
+                        size.height as f64 / factor,
+                    );
+                    x >= mx && x < mx + mw && y >= my && y < my + mh
+                })
+            })
+            .unwrap_or(false);
+        if on_screen {
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                x, y,
+            )));
+        }
     }
     Ok(window)
 }
@@ -161,33 +189,57 @@ fn set_visible(visible: bool) -> Result<(), String> {
     if !visible {
         let app = app()?;
         if let Some(window) = app.get_webview_window(LABEL) {
-            window.hide().map_err(|e| format!("hide pet overlay: {e}"))?;
+            // Destroy rather than hide: re-enabling rebuilds the window, so
+            // the frontend reloads the selected package and a character
+            // switch takes effect without an app restart.
+            window
+                .destroy()
+                .map_err(|e| format!("close pet overlay: {e}"))?;
         }
+        // Wake PetRuntime's petEnabled gate after a toggle-off.
+        let _ = app.emit("settings://changed", ());
         return Ok(());
     }
     let settings = crate::settings::read_settings()?;
     if settings.pet_id.trim().is_empty() {
-        return Err("请先导入 Codex 宠物文件".to_string());
+        // Stable code; the settings page maps it to a localized message.
+        return Err("pet.err.need_import".to_string());
     }
     let window = create_window()?;
     start_look_tracking();
     emit_state(&window.app_handle());
     window.show().map_err(|e| format!("show pet overlay: {e}"))?;
+    // Wake PetRuntime's petEnabled gate after a toggle-on.
+    let _ = app().map(|app| app.emit("settings://changed", ()));
     Ok(())
 }
 
+/// Cursor position in logical desktop coordinates, matching the space the
+/// hit test converts the window geometry into.
+///
+/// Windows: GetCursorPos returns physical pixels; dividing by the window's
+/// scale factor is exact whenever cursor and window share a monitor, which
+/// is the only case the hit test can match.
+///
+/// macOS/Linux: enigo reads NSEvent::mouseLocation (points) and flips it
+/// with the main display's point height — the same convention tao uses for
+/// logical window positions (`bottom_left_to_top_left`), so both sides
+/// already agree in logical space and no scale-factor conversion is needed.
+/// (Empirically CGDisplayPixelsHigh returns the mode's point height, not
+/// the backing pixel height, so enigo's x/y stay in points throughout.)
 #[cfg(windows)]
-fn cursor_position(_input: &mut Option<Enigo>) -> Option<(i32, i32)> {
+fn cursor_position(_input: &mut Option<Enigo>, dpi: f64) -> Option<(f64, f64)> {
     let mut point = POINT::default();
     // Read the desktop cursor directly. This does not require the input
     // injection permission that Enigo needs for mouse/keyboard actions.
     unsafe { GetCursorPos(&mut point).ok()? };
-    Some((point.x, point.y))
+    Some((point.x as f64 / dpi, point.y as f64 / dpi))
 }
 
 #[cfg(not(windows))]
-fn cursor_position(input: &mut Option<Enigo>) -> Option<(i32, i32)> {
-    input.as_mut()?.location().ok()
+fn cursor_position(input: &mut Option<Enigo>, _dpi: f64) -> Option<(f64, f64)> {
+    let (x, y) = input.as_mut()?.location().ok()?;
+    Some((x as f64, y as f64))
 }
 
 fn start_look_tracking() {
@@ -203,35 +255,60 @@ fn start_look_tracking() {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(HIT_TEST_INTERVAL_MS));
         let mut next_look_update = tokio::time::Instant::now();
+        let mut cursor_unavailable_warned = false;
         loop {
             interval.tick().await;
-            let Some(window) = app.get_webview_window(LABEL) else { continue };
+            let Some(window) = app.get_webview_window(LABEL) else {
+                // Window destroyed (pet disabled or app teardown): idle
+                // cheaply instead of spinning at the hit-test rate.
+                tokio::time::sleep(std::time::Duration::from_millis(WINDOW_GONE_SLEEP_MS))
+                    .await;
+                continue;
+            };
+            if !window.is_visible().unwrap_or(true) {
+                tokio::time::sleep(std::time::Duration::from_millis(HIDDEN_SLEEP_MS)).await;
+                continue;
+            }
             let Ok(position) = window.outer_position() else { continue };
             let Ok(size) = window.outer_size() else { continue };
-            let Some((mouse_x, mouse_y)) = cursor_position(&mut input) else { continue };
+            let dpi = window.scale_factor().unwrap_or(1.0);
+            let Some((mouse_x, mouse_y)) = cursor_position(&mut input, dpi) else {
+                // e.g. Linux/Wayland without a cursor source: the overlay
+                // stays click-through (non-interactive) rather than blocking
+                // the desktop with an invisible interactive region.
+                if !cursor_unavailable_warned {
+                    cursor_unavailable_warned = true;
+                    eprintln!(
+                        "[pet-overlay] cursor position unavailable on this platform; \
+                         pet overlay stays click-through"
+                    );
+                }
+                continue;
+            };
             // The native window includes transparent space above the pet for
             // the activity bubble.  Proximity and hover must use the pet's
-            // rectangle, not the full transparent window.
-            let dpi = window.scale_factor().unwrap_or(1.0);
-            let bubble_px = BUBBLE_HEIGHT * dpi;
-            let pet_height = size.height as f64 - bubble_px;
-            let pet_top = position.y as f64 + bubble_px;
-            let pet_left = position.x as f64
-                + size.width as f64 * PET_OFFSET_X / BUBBLE_WIDTH;
-            let pet_width = size.width as f64 * WIDTH / BUBBLE_WIDTH;
+            // rectangle, not the full transparent window.  Everything is
+            // computed in logical coordinates (see cursor_position).
+            let position: tauri::LogicalPosition<f64> = position.to_logical(dpi);
+            let size: tauri::LogicalSize<f64> = size.to_logical(dpi);
+            let pet_height = size.height - BUBBLE_HEIGHT;
+            let pet_top = position.y + BUBBLE_HEIGHT;
+            let pet_left = position.x
+                + size.width * PET_OFFSET_X / BUBBLE_WIDTH;
+            let pet_width = size.width * WIDTH / BUBBLE_WIDTH;
             let center_x = pet_left + pet_width / 2.0;
             let center_y = pet_top + pet_height / 2.0;
-            let dx = mouse_x as f64 - center_x;
-            let dy = mouse_y as f64 - center_y;
+            let dx = mouse_x - center_x;
+            let dy = mouse_y - center_y;
             let direction = (((dx.atan2(-dy) / std::f64::consts::TAU) * 16.0).round() as i32 + 16)
                 .rem_euclid(16) as u8;
             let distance = dx.hypot(dy);
-            let radius = PROXIMITY_PADDING * dpi + (pet_width.max(pet_height) / 2.0);
+            let radius = PROXIMITY_PADDING + (pet_width.max(pet_height) / 2.0);
             let cursor_nearby = distance <= radius;
-            let cursor_over = (mouse_x as f64) >= pet_left
-                && (mouse_x as f64) < pet_left + pet_width
-                && (mouse_y as f64) >= pet_top
-                && (mouse_y as f64) < pet_top + pet_height;
+            let cursor_over = mouse_x >= pet_left
+                && mouse_x < pet_left + pet_width
+                && mouse_y >= pet_top
+                && mouse_y < pet_top + pet_height;
             let now = tokio::time::Instant::now();
             let update_look_direction = now >= next_look_update;
             if update_look_direction {
@@ -292,13 +369,13 @@ pub fn pet_set_visible(visible: bool) -> Result<(), String> {
 #[tauri::command]
 pub fn pet_set_scale(scale: f64) -> Result<f64, String> {
     let scale = normalize_scale(scale)?;
-    let _guard = crate::settings::settings_write_lock();
-    let mut settings = crate::settings::read_settings()?;
-    let previous_render_scale = render_scale(settings.pet_scale.clamp(MIN_SCALE, MAX_SCALE));
-    settings.pet_scale = scale;
-    crate::settings::persist_settings_committed(&mut settings)?;
     let app = app()?.clone();
+    // Apply to the live window first; persist only after the resize succeeds
+    // so a windowing failure cannot strand a value on disk that the UI has
+    // already rolled back.
     if let Some(window) = app.get_webview_window(LABEL) {
+        let settings = crate::settings::read_settings()?;
+        let previous_render_scale = render_scale(settings.pet_scale.clamp(MIN_SCALE, MAX_SCALE));
         let dpi = window.scale_factor().unwrap_or(1.0);
         let pet_position = window.outer_position().ok().map(|position| {
             (
@@ -325,6 +402,14 @@ pub fn pet_set_scale(scale: f64) -> Result<f64, String> {
             .emit("pet://scale", scale)
             .map_err(|e| format!("emit pet scale: {e}"))?;
     }
+    let _guard = crate::settings::settings_write_lock();
+    let mut settings = crate::settings::read_settings()?;
+    settings.pet_scale = scale;
+    crate::settings::persist_settings_committed(&mut settings)?;
+    // pet_scale bypasses update_app_settings; tell every window its cached
+    // settings are stale so a later unrelated save cannot write the old
+    // value back over this one.
+    let _ = app.emit("settings://changed", ());
     Ok(scale)
 }
 
@@ -332,10 +417,13 @@ pub fn pet_set_scale(scale: f64) -> Result<f64, String> {
 pub fn pet_set_state<R: Runtime>(app: AppHandle<R>, next: PetStateUpdate) -> Result<(), String> {
     {
         let mut current = state().lock().map_err(|_| "pet state lock poisoned")?;
+        // look_direction is owned by the cursor tracker (proximity look);
+        // the frontend always sends 0 and must neither reset it nor
+        // participate in the no-change comparison (that flickered the
+        // direction while the cursor was nearby).
         if current.session_key == next.session_key
             && current.session_name == next.session_name
             && current.status == next.status
-            && current.look_direction == next.look_direction
             && current.activity == next.activity
         {
             return Ok(());
@@ -343,7 +431,6 @@ pub fn pet_set_state<R: Runtime>(app: AppHandle<R>, next: PetStateUpdate) -> Res
         current.session_key = next.session_key;
         current.session_name = next.session_name;
         current.status = next.status;
-        current.look_direction = next.look_direction;
         current.activity = next.activity;
         current.changed_at = next.changed_at;
     }
@@ -360,12 +447,18 @@ pub fn pet_set_state<R: Runtime>(app: AppHandle<R>, next: PetStateUpdate) -> Res
 }
 
 #[tauri::command]
-pub fn pet_save_position(position: crate::settings::PetPosition) -> Result<(), String> {
+pub fn pet_save_position<R: Runtime>(
+    app: AppHandle<R>,
+    position: crate::settings::PetPosition,
+) -> Result<(), String> {
     if !position.x.is_finite() || !position.y.is_finite() {
         return Err("pet position must be finite".to_string());
     }
     let _guard = crate::settings::settings_write_lock();
     let mut settings = crate::settings::read_settings()?;
     settings.pet_position = Some(position);
-    crate::settings::persist_settings_committed(&mut settings).map(|_| ())
+    crate::settings::persist_settings_committed(&mut settings)?;
+    // Same bypass as pet_set_scale: invalidate cached settings app-wide.
+    let _ = app.emit("settings://changed", ());
+    Ok(())
 }

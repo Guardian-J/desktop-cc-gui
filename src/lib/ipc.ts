@@ -1,5 +1,5 @@
 // Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
-import { invoke } from "./transport";
+import { invoke, listen } from "./transport";
 import type { NativePerformanceDiagnostics } from "./performance-types";
 import { withGrantRetry } from "./grant";
 
@@ -786,6 +786,12 @@ export interface CliUpdatePlan {
 // Shared in-flight/cached app-settings promise: startup, the settings page
 // and the chat store all read the same settings, so fetch once.
 let settingsPromise: Promise<AppSettings> | null = null;
+// Backend writes that bypass update_app_settings (pet scale / position /
+// visibility) broadcast this event; drop the shared cache in every window so
+// a later read-modify-write save cannot resurrect the pre-write values.
+void listen("settings://changed", () => {
+  settingsPromise = null;
+});
 
 function fetchAppSettings(): Promise<AppSettings> {
   return (settingsPromise ??= invoke<AppSettings>("get_app_settings").catch((e) => {
@@ -1025,8 +1031,12 @@ export const ipc = {
     changedAt: number;
   }) =>
     invoke<void>("pet_set_state", { next: state }),
-  savePetPosition: (position: { x: number; y: number }) =>
-    invoke<void>("pet_save_position", { position }),
+  savePetPosition: async (position: { x: number; y: number }) => {
+    await invoke<void>("pet_save_position", { position });
+    // pet_save_position persists outside update_app_settings (same bypass as
+    // setPetScale above); invalidate this window's shared read cache too.
+    settingsPromise = null;
+  },
   setWindowTheme: (dark: boolean) =>
     invoke<void>("set_window_theme", { dark }),
   /** 立即重启应用（标题栏样式等需重启生效的设置项用）。 */

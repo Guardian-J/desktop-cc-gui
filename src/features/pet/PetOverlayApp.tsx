@@ -89,7 +89,12 @@ export default function PetOverlayApp() {
       try {
         const next = await ipc.getAppSettings();
         const petId = next.petId?.trim();
-        if (!petId) throw new Error("请先导入 Codex 宠物文件");
+        // The native host only creates this window with a pet selected; with
+        // none there is nothing to render (and nothing localized to show).
+        if (!petId) {
+          console.warn("[pet-overlay] no pet selected, staying hidden");
+          return;
+        }
         const packageData = await ipc.getPetPackage(petId);
         if (cancelled) return;
         setSettings(next);
@@ -97,10 +102,9 @@ export default function PetOverlayApp() {
         const initialScale = normalizePetScale(next.petScale);
         setScale(initialScale);
         scaleRef.current = initialScale;
-        // The native host may have shown the window before React finished
-        // loading.  Showing again after the package is ready also makes the
-        // hidden-window startup path deterministic.
-        await getCurrentWindow().show();
+        // Visibility is owned by the Rust host: pet_set_visible shows the
+        // window once state is emitted. No JS show() here — the capability
+        // set deliberately does not grant it.
       } catch (error) {
         console.error("[pet-overlay] load failed", error);
       }
@@ -230,12 +234,6 @@ export default function PetOverlayApp() {
       style={{
         width: PET_BUBBLE_WIDTH * renderScale,
         height: PET_CELL_HEIGHT * renderScale + PET_BUBBLE_HEIGHT,
-      }}
-      onMouseDown={(event) => {
-        if (event.button !== 0) return;
-        void getCurrentWindow()
-          .startDragging()
-          .catch((error) => console.warn("[pet-overlay] drag start failed", error));
       }}
       onMouseUp={() => void savePosition()}
       onContextMenu={(event) => {

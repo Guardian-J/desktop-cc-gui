@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { derivePetState, derivePetStates } from "./pet-state";
+import { derivePetStates } from "./pet-state";
 
 const chat = (session: Record<string, unknown>) => ({ bySession: { current: session } }) as never;
 const mission = (runs: Record<string, unknown>) => ({ runs }) as never;
 
+const firstStatus = (
+  chatState: Parameters<typeof derivePetStates>[0],
+  missionState: Parameters<typeof derivePetStates>[1],
+) => derivePetStates(chatState, missionState)[0]?.status;
+
 describe("pet state aggregation", () => {
   it("works on the v1.0.8 session shape without PR #1266 task signals", () => {
-    const state = derivePetState(
+    const states = derivePetStates(
       chat({
         error: null,
         streaming: true,
@@ -15,13 +20,13 @@ describe("pet state aggregation", () => {
       mission({}),
     );
 
-    expect(state.status).toBe("running");
-    expect(state.activity).toBe("thinking");
+    expect(states[0]?.status).toBe("running");
+    expect(states[0]?.activity).toBe("thinking");
   });
 
   it("prioritizes terminal failures over waiting", () => {
     expect(
-      derivePetState(
+      firstStatus(
         chat({
           error: null,
           streaming: false,
@@ -30,13 +35,13 @@ describe("pet state aggregation", () => {
           tasks: [{ status: "failed" }],
         }),
         mission({}),
-      ).status,
+      ),
     ).toBe("failed");
   });
 
   it("shows resumed session activity after a child task failed", () => {
     expect(
-      derivePetState(
+      firstStatus(
         chat({
           error: null,
           streaming: true,
@@ -46,13 +51,13 @@ describe("pet state aggregation", () => {
           messages: [],
         }),
         mission({}),
-      ).status,
+      ),
     ).toBe("running");
   });
 
-  it("includes mission runs when chat is idle", () => {
+  it("includes active mission runs when chat is idle", () => {
     expect(
-      derivePetState(
+      firstStatus(
         chat({ error: null, streaming: false, backgroundActive: false, awaitingTasks: false, tasks: [] }),
         mission({
           run: {
@@ -62,8 +67,59 @@ describe("pet state aggregation", () => {
             tasks: [{ status: "waiting_human" }],
           },
         }),
-      ).status,
+      ),
     ).toBe("waiting");
+  });
+
+  it("reports a failed task inside an active mission run", () => {
+    expect(
+      firstStatus(
+        chat({ error: null, streaming: false, backgroundActive: false, awaitingTasks: false, tasks: [] }),
+        mission({
+          run: {
+            endedAt: undefined,
+            cancelled: false,
+            tasks: [{ status: "failed" }],
+          },
+        }),
+      ),
+    ).toBe("failed");
+  });
+
+  it("ignores finished mission runs instead of pinning a stale state", () => {
+    const states = derivePetStates(
+      chat({ error: null, streaming: false, backgroundActive: false, awaitingTasks: false, tasks: [] }),
+      mission({
+        failedRun: {
+          endedAt: 1000,
+          cancelled: false,
+          tasks: [{ status: "failed" }],
+        },
+        doneRun: {
+          endedAt: 2000,
+          cancelled: false,
+          tasks: [{ status: "succeeded" }],
+        },
+      }),
+    );
+
+    expect(states.every((state) => state.sessionKey !== "__mission__")).toBe(true);
+  });
+
+  it("ignores cancelled or interrupted mission runs", () => {
+    const states = derivePetStates(
+      chat({ error: null, streaming: false, backgroundActive: false, awaitingTasks: false, tasks: [] }),
+      mission({
+        interruptedRun: {
+          endedAt: 3000,
+          cancelled: true,
+          interrupted: true,
+          tasks: [{ status: "cancelled" }],
+        },
+      }),
+    );
+
+    expect(states.every((state) => state.sessionKey !== "__mission__")).toBe(true);
   });
 
   it("keeps concurrent session names attached to their own states", () => {

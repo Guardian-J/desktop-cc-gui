@@ -3,18 +3,19 @@ import { useChatStore } from "@/features/chat/store";
 import { ensureMissionPersistenceLoaded } from "@/features/mission/runtime";
 import { useMissionStore } from "@/features/mission/store";
 import { ipc } from "@/lib/ipc";
+import { listen } from "@/lib/transport";
 import { derivePetStates, type PetStateSnapshot } from "./pet-state";
 
 const DISPLAY_INTERVAL_MS = 1800;
 const COMPLETION_DISPLAY_MS = 5400;
 
 function snapshotSignature(snapshot: PetStateSnapshot): string {
+  // lookDirection is owned by the native cursor tracker, not the frontend.
   return [
     snapshot.sessionKey,
     snapshot.sessionName,
     snapshot.status,
     snapshot.activity,
-    snapshot.lookDirection,
   ].join(":");
 }
 
@@ -35,6 +36,20 @@ const IDLE_SNAPSHOT: PetStateSnapshot = {
 export function PetRuntime() {
   useEffect(() => {
     let disposed = false;
+    // State derivation walks every session on each chat-store update; skip
+    // all of it while the pet is disabled (default). pet_set_scale and
+    // pet_save_position bypass update_app_settings, so the toggle and the
+    // bypassed writes both arrive through the backend-emitted event.
+    let petEnabled = false;
+    const reloadPetEnabled = () => {
+      void ipc
+        .refreshAppSettings()
+        .then((settings) => {
+          petEnabled = settings.petEnabled ?? false;
+          publish();
+        })
+        .catch(() => {});
+    };
     ensureMissionPersistenceLoaded();
     let last = "";
     let displayedKey: string | null = null;
@@ -45,7 +60,7 @@ export function PetRuntime() {
     >();
 
     const publish = (rotate = false) => {
-      if (disposed) return;
+      if (disposed || !petEnabled) return;
       const now = Date.now();
       const current = derivePetStates(useChatStore.getState(), useMissionStore.getState());
       const currentByKey = new Map(
@@ -105,7 +120,8 @@ export function PetRuntime() {
         .catch((error) => console.warn("[pet] state publish failed", error));
     };
 
-    publish();
+    reloadPetEnabled();
+    const unlistenSettings = listen("settings://changed", reloadPetEnabled);
     const rotationTimer = window.setInterval(() => publish(true), DISPLAY_INTERVAL_MS);
     const unsubscribeChat = useChatStore.subscribe(() => publish());
     const unsubscribeMission = useMissionStore.subscribe(() => publish());
@@ -114,6 +130,7 @@ export function PetRuntime() {
       window.clearInterval(rotationTimer);
       unsubscribeChat();
       unsubscribeMission();
+      void unlistenSettings.then((dispose) => dispose());
     };
   }, []);
   return null;

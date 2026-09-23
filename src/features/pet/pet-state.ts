@@ -74,9 +74,15 @@ function runningActivity(sessions: SessionState[]): PetActivity {
   return "thinking";
 }
 
+/** Only active runs drive the pet (same idiom as runtime.ts / CanvasPane).
+ * Persisted history — finished, cancelled, or interrupted runs — must not
+ * pin the pet on a stale failed/review state forever; an interrupted run
+ * converges to cancelled on reload and is not a failure the user caused.
+ * Completion feedback is transient by design: when the last working run
+ * leaves the active set, PetRuntime shows its short "completed" snapshot. */
 function missionPetStatus(runs: Record<string, MissionRun>): PetStatus | null {
-  let hasDone = false;
   for (const run of Object.values(runs)) {
+    if (run.endedAt !== undefined || run.cancelled) continue;
     if (run.tasks.some((task) => task.status === "failed" || task.status === "cancelled")) {
       return "failed";
     }
@@ -85,9 +91,8 @@ function missionPetStatus(runs: Record<string, MissionRun>): PetStatus | null {
     if (status === "attention") return "waiting";
     if (status === "running") return "running";
     if (status === "waiting") return "waiting";
-    if (status === "done") hasDone = true;
   }
-  return hasDone ? "review" : null;
+  return null;
 }
 
 function taskIsFailed(status: string): boolean {
@@ -126,14 +131,6 @@ function stateForSession(
     return { ...base, status: "waiting", activity: "waiting" };
   }
   return null;
-}
-
-function statePriority(status: PetStatus): number {
-  if (status === "failed") return 4;
-  if (status === "waiting") return 3;
-  if (status === "running") return 2;
-  if (status === "review") return 1;
-  return 0;
 }
 
 /** Derive one status per active session so the overlay can distinguish them. */
@@ -183,20 +180,4 @@ export function derivePetStates(
     });
   }
   return states;
-}
-
-export function derivePetState(
-  chat: PetChatState,
-  mission: { runs: Record<string, MissionRun> },
-): PetStateSnapshot {
-  const states = derivePetStates(chat, mission);
-  return (
-    states.slice().sort((a, b) => statePriority(b.status) - statePriority(a.status))[0] ?? {
-      sessionKey: null,
-      sessionName: null,
-      status: "idle",
-      lookDirection: 0,
-      activity: "idle",
-    }
-  );
 }

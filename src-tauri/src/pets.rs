@@ -9,11 +9,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
+use image::ImageDecoder as _;
 use serde::{Deserialize, Serialize};
 const PETS_DIR: &str = "pets";
 const MANIFEST_FILE: &str = "pet.json";
 const ATLAS_WIDTH: u32 = 1536;
 const ATLAS_HEIGHT: u32 = 2288;
+/// pet.json is a tiny manifest; anything larger is rejected before parsing.
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// A 1536x2288 lossless webp atlas is a few MiB at most; cap reads so a
+/// hostile package cannot force huge buffered decodes.
+const MAX_SPRITESHEET_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,7 +67,7 @@ fn summary(manifest: &PetManifest, built_in: bool) -> PetSummary {
     }
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     let Some(first) = chars.next() else { return false };
     (first.is_ascii_lowercase() || first.is_ascii_digit())
@@ -70,6 +76,16 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn read_manifest(path: &Path) -> Result<PetManifest, String> {
+    let size = fs::metadata(path)
+        .map_err(|e| format!("stat {}: {e}", path.display()))?
+        .len();
+    if size > MAX_MANIFEST_BYTES {
+        return Err(format!(
+            "pet manifest {} exceeds {} bytes",
+            path.display(),
+            MAX_MANIFEST_BYTES
+        ));
+    }
     let content = fs::read_to_string(path)
         .map_err(|e| format!("read {}: {e}", path.display()))?;
     let manifest: PetManifest = serde_json::from_str(&content)
@@ -94,7 +110,16 @@ fn validate_manifest(manifest: &PetManifest) -> Result<(), String> {
     let path = Path::new(&manifest.spritesheet_path);
     if path.is_absolute()
         || path.components().any(|component| {
-            matches!(component, std::path::Component::ParentDir)
+            // ParentDir covers ".."; RootDir/Prefix only parse on Windows
+            // ("\\foo", "C:foo") and would let join() replace the target
+            // path there — reject them explicitly instead of relying on the
+            // canonicalize containment check alone.
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(..)
+            )
         })
         || path.file_name().is_none()
     {
@@ -138,20 +163,34 @@ fn package_files(root: &Path) -> Result<(PetManifest, PathBuf, Vec<u8>), String>
 }
 
 fn validate_spritesheet(path: &Path) -> Result<Vec<u8>, String> {
+    let size = fs::metadata(path)
+        .map_err(|e| format!("stat spritesheet {}: {e}", path.display()))?
+        .len();
+    if size > MAX_SPRITESHEET_BYTES {
+        return Err(format!(
+            "spritesheet {} exceeds {} bytes",
+            path.display(),
+            MAX_SPRITESHEET_BYTES
+        ));
+    }
     let reader = image::ImageReader::open(path)
         .map_err(|e| format!("open spritesheet {}: {e}", path.display()))?
         .with_guessed_format()
         .map_err(|e| format!("detect spritesheet format: {e}"))?;
-    let image = reader
-        .decode()
-        .map_err(|e| format!("decode spritesheet {}: {e}", path.display()))?;
-    if image.width() != ATLAS_WIDTH || image.height() != ATLAS_HEIGHT {
+    // Check the header dimensions before decoding: a hostile package could
+    // otherwise force a multi-hundred-MiB RGBA allocation on the main
+    // thread with a legal-but-huge image.
+    let decoder = reader
+        .into_decoder()
+        .map_err(|e| format!("init spritesheet decoder: {e}"))?;
+    let (width, height) = decoder.dimensions();
+    if width != ATLAS_WIDTH || height != ATLAS_HEIGHT {
         return Err(format!(
-            "v2 spritesheet must be {ATLAS_WIDTH}x{ATLAS_HEIGHT}, got {}x{}",
-            image.width(),
-            image.height()
+            "v2 spritesheet must be {ATLAS_WIDTH}x{ATLAS_HEIGHT}, got {width}x{height}"
         ));
     }
+    let image = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| format!("decode spritesheet {}: {e}", path.display()))?;
     if !image.color().has_alpha() {
         return Err("v2 spritesheet must contain an alpha channel".to_string());
     }
@@ -224,22 +263,23 @@ pub fn pet_import(path: String) -> Result<PetSummary, String> {
     let selected = PathBuf::from(path.trim());
     let source_root = if selected.is_file() {
         if selected.file_name().and_then(|name| name.to_str()) != Some(MANIFEST_FILE) {
-            return Err("请选择宠物目录或其中的 pet.json".to_string());
+            // Stable codes; the settings page maps them to localized text.
+            return Err("pet.err.select_dir_or_manifest".to_string());
         }
         selected
             .parent()
-            .ok_or_else(|| "pet.json 没有有效父目录".to_string())?
+            .ok_or_else(|| "pet.err.manifest_no_parent".to_string())?
             .to_path_buf()
     } else if selected.is_dir() {
         selected
     } else {
-        return Err("宠物路径不存在".to_string());
+        return Err("pet.err.path_not_found".to_string());
     };
     let source_root = fs::canonicalize(&source_root)
         .map_err(|e| format!("resolve pet directory: {e}"))?;
     let (manifest, sprite, _) = package_files(&source_root)?;
     if package_dir(&manifest.id).is_some() {
-        return Err(format!("宠物 id 已存在: {}", manifest.id));
+        return Err("pet.err.duplicate_id".to_string());
     }
     let destination = imported_root().join(&manifest.id);
     fs::create_dir_all(&destination)
@@ -289,6 +329,36 @@ mod tests {
         assert!(validate_manifest(&manifest).is_ok());
         assert!(validate_manifest(&PetManifest {
             spritesheet_path: "../outside.webp".to_string(),
+            ..manifest.clone()
+        })
+        .is_err());
+        assert!(validate_manifest(&PetManifest {
+            spritesheet_path: "/abs/outside.webp".to_string(),
+            ..manifest
+        })
+        .is_err());
+    }
+
+    /// Windows-only component classes: "C:foo" parses with a Prefix and
+    /// "\\foo" with a RootDir, and neither is caught by ParentDir.
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_prefix_and_root_components() {
+        let manifest = PetManifest {
+            id: "codex-pet".to_string(),
+            display_name: "大喵".to_string(),
+            description: String::new(),
+            sprite_version_number: 2,
+            spritesheet_path: "spritesheet.webp".to_string(),
+            extra: BTreeMap::new(),
+        };
+        assert!(validate_manifest(&PetManifest {
+            spritesheet_path: "C:evil.webp".to_string(),
+            ..manifest.clone()
+        })
+        .is_err());
+        assert!(validate_manifest(&PetManifest {
+            spritesheet_path: "\\evil.webp".to_string(),
             ..manifest
         })
         .is_err());
