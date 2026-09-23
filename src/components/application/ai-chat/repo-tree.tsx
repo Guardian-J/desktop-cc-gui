@@ -637,7 +637,7 @@ function RepoThreadList({
   return (
     <SidebarDisclosure expanded={expanded}>
       <PagedThreadList
-        key={expanded ? "expanded" : "collapsed"}
+        expanded={expanded}
         threads={threads}
         threadLimit={threadLimit}
         activeThreadId={activeThreadId}
@@ -651,10 +651,11 @@ function RepoThreadList({
 }
 
 /** Paged thread rows with the tree connector and the show-more/fewer
- *  pagination buttons. Stays mounted through the close animation; the
- *  parent keys it by the expanded flag, so collapse and every re-expand
- *  remount at page 0 — no reset effect needed. */
+ *  pagination buttons. The parent keeps this instance mounted throughout
+ *  the close animation, then unmounts it; the next expand therefore starts
+ *  at page 0 without changing page or connector height mid-collapse. */
 function PagedThreadList({
+  expanded,
   threads,
   threadLimit,
   activeThreadId,
@@ -662,6 +663,7 @@ function PagedThreadList({
   onThreadAction,
   onThreadContextMenu,
 }: {
+  expanded: boolean;
   threads: AiChatThread[];
   threadLimit?: number;
   activeThreadId?: string;
@@ -672,6 +674,9 @@ function PagedThreadList({
   const { t } = useTranslation();
   // Pagination: 0 = 初始 limit 条, 1 = +50 条, 2 = 全部。
   const [page, setPage] = useState(0);
+  useEffect(() => {
+    if (expanded) setPage(0);
+  }, [expanded]);
   const { visibleThreads, hiddenCount } = paginateThreads(threads, threadLimit, page);
   const pageButtonClasses =
     "flex w-full cursor-pointer items-center rounded-2lg py-[5px] pr-2 pl-4 text-caption-1-medium text-text-tertiary transition-colors duration-150 ease hover:bg-background-secondary-hover hover:text-text-secondary";

@@ -168,7 +168,7 @@ export function AiChatSidebar({
         {flat && <SidebarBrandRow onOpenSearch={openSearch} />}
 
         <div
-          className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto scrollbar-none"
+          className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overscroll-contain scrollbar-none"
           onContextMenu={onCreateGroup ? openBlankMenu : undefined}
         >
           <SidebarPrimaryNav

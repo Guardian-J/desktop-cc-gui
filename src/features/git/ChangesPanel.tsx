@@ -187,7 +187,7 @@ export function ChangesPanel({
       {header}
       <div
         ref={setScrollElement}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
         onScroll={(event) => { if (visible) scrollOffset.current = event.currentTarget.scrollTop; }}
       >
         <ChangesBody
@@ -341,7 +341,7 @@ const ChangesSummary = memo(function ChangesSummary({ status }: { status: GitSta
   const adds = all.reduce((n, f) => n + (f.additions ?? 0), 0);
   const dels = all.reduce((n, f) => n + (f.deletions ?? 0), 0);
   return (
-    <div className="sticky top-0 flex items-center gap-1.5 border-b border-separator-border bg-background-primary-default px-3 py-2">
+    <div className="sticky top-0 z-20 flex items-center gap-1.5 border-b border-separator-border bg-background-primary-default px-3 py-2">
       <span className="text-body-medium text-text-primary">
         {all.length} {t("git.uncommittedChanges")}
       </span>
@@ -442,7 +442,7 @@ const GroupSection = memo(function GroupSection({
     <section>
       <div
         className={cx(
-          "sticky top-0 z-10 flex items-center gap-1 bg-background-secondary-default px-3 py-1.5",
+          "sticky top-[33px] z-10 flex items-center gap-1 bg-background-secondary-default px-3 py-1.5",
           "border-b border-separator-border",
         )}
       >
@@ -611,37 +611,45 @@ const FileRow = memo(function FileRow({
         )}
       >
         {discardLabel !== undefined && onDiscard !== undefined && (
-          <button
-            type="button"
-            disabled={actionBusy}
-            onClick={() => onDiscard(entry.path)}
-            aria-label={discardLabel}
-            title={discardLabel}
-            className={cx(
-              "rounded p-0.5 text-foreground-icon-secondary",
-              "hover:bg-background-tertiary-hover disabled:text-foreground-icon-disabled",
-            )}
-          >
-            <Undo2 aria-hidden className="size-4" />
-          </button>
+          <Tooltip>
+            <Focusable>
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => onDiscard(entry.path)}
+                aria-label={discardLabel}
+                className={cx(
+                  "rounded p-0.5 text-foreground-icon-secondary",
+                  "hover:bg-background-tertiary-hover disabled:text-foreground-icon-disabled",
+                )}
+              >
+                <Undo2 aria-hidden className="size-4" />
+              </button>
+            </Focusable>
+            <TooltipContent>{discardLabel}</TooltipContent>
+          </Tooltip>
         )}
-        <button
-          type="button"
-          disabled={actionBusy}
-          onClick={() => onAction(entry.path)}
-          aria-label={actionLabel}
-          title={actionLabel}
-          className={cx(
-            "rounded p-0.5 text-foreground-icon-secondary",
-            "hover:bg-background-tertiary-hover disabled:text-foreground-icon-disabled",
-          )}
-        >
-          {actionKind === "stage" ? (
-            <Plus aria-hidden className="size-4" />
-          ) : (
-            <Minus aria-hidden className="size-4" />
-          )}
-        </button>
+        <Tooltip>
+          <Focusable>
+            <button
+              type="button"
+              disabled={actionBusy}
+              onClick={() => onAction(entry.path)}
+              aria-label={actionLabel}
+              className={cx(
+                "rounded p-0.5 text-foreground-icon-secondary",
+                "hover:bg-background-tertiary-hover disabled:text-foreground-icon-disabled",
+              )}
+            >
+              {actionKind === "stage" ? (
+                <Plus aria-hidden className="size-4" />
+              ) : (
+                <Minus aria-hidden className="size-4" />
+              )}
+            </button>
+          </Focusable>
+          <TooltipContent>{actionLabel}</TooltipContent>
+        </Tooltip>
       </div>
     </li>
   );
