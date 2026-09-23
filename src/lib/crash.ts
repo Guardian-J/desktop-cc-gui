@@ -16,6 +16,11 @@ import { isWeb } from "./transport";
  * fallback in index.html (used when React cannot render at all). Reports are
  * kept in an in-memory ring for diagnostics and mirrored to localStorage so
  * the next launch can explain a crash that happened before React mounted.
+ *
+ * Not every `window` error is a crash: browsers report their own harmless
+ * warnings through the same channel (see BENIGN_ERROR_PREFIXES). Those stop
+ * at the ring — recording them is diagnostics, surfacing them is a false
+ * alarm.
  */
 
 export type CrashSource = "render" | "error" | "unhandledrejection" | "boot";
@@ -29,6 +34,11 @@ export interface CrashReport {
   time: string;
   appVersion?: string;
   userAgent: string;
+  /**
+   * Browser noise rather than a failure: kept in the diagnostics ring, never
+   * shown as a crash screen and never mirrored to storage.
+   */
+  benign?: boolean;
 }
 
 /** Same key index.html's boot watchdog reads. Keep in sync. */
@@ -36,6 +46,24 @@ export const LAST_CRASH_STORAGE_KEY = "ccgui:last-crash";
 const MAX_KEPT = 20;
 /** De-dupe a burst of identical errors (e.g. one rejection loop). */
 const DEDUPE_WINDOW_MS = 2000;
+/**
+ * Messages the browser emits on `window` while nothing is actually broken,
+ * matched by prefix because the wording varies by engine:
+ *
+ *   - `ResizeObserver loop ...`: an observer callback changed layout in the
+ *     same frame its notifications were being delivered, so the follow-up
+ *     notification is dropped. WebKit words it "completed with undelivered
+ *     notifications", older Chromium "limit exceeded". The app keeps running;
+ *     the underlying layout feedback loop is a performance concern, not a
+ *     crash.
+ *   - `Script error`: a cross-origin script threw and the browser withheld
+ *     the details, leaving nothing actionable to show.
+ */
+const BENIGN_ERROR_PREFIXES = [
+  "ResizeObserver loop completed with undelivered notifications",
+  "ResizeObserver loop limit exceeded",
+  "Script error",
+];
 
 let seq = 0;
 let appVersion: string | undefined;
@@ -43,6 +71,9 @@ let reports: CrashReport[] = [];
 let latest: CrashReport | null = null;
 let lastSignature = "";
 let lastSignatureAt = 0;
+/** Benign signatures already kept this session, so a repeating warning cannot
+ *  crowd real reports out of the ring. */
+const keptBenign = new Set<string>();
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -100,10 +131,24 @@ function persist(report: CrashReport): void {
   }
 }
 
-/** Record a report, mirror it to storage, and wake subscribers. */
-export function publishCrash(report: CrashReport): void {
-  const now = Date.now();
+/**
+ * Append to the ring and, for a real crash, mirror the report to storage and
+ * wake subscribers. Benign noise returns after the ring: it is kept once per
+ * message per session (that it happened is the useful part, not how often) and
+ * deliberately skips `persist` so a slow next launch cannot report it as the
+ * reason the app failed to start.
+ */
+function record(report: CrashReport): void {
   const signature = `${report.source}:${report.message}`;
+
+  if (report.benign) {
+    if (keptBenign.has(signature)) return;
+    keptBenign.add(signature);
+    reports = [...reports, report].slice(-MAX_KEPT);
+    return;
+  }
+
+  const now = Date.now();
   if (signature === lastSignature && now - lastSignatureAt < DEDUPE_WINDOW_MS) return;
   lastSignature = signature;
   lastSignatureAt = now;
@@ -112,6 +157,15 @@ export function publishCrash(report: CrashReport): void {
   latest = report;
   persist(report);
   notify();
+}
+
+/** Record a report, mirror it to storage, and wake subscribers. */
+export function publishCrash(report: CrashReport): void {
+  record(report);
+}
+
+function isBenignErrorMessage(message: string): boolean {
+  return BENIGN_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
 export function reportCrash(
@@ -149,6 +203,7 @@ export function clearCrashReports(): void {
   latest = null;
   lastSignature = "";
   lastSignatureAt = 0;
+  keptBenign.clear();
   notify();
 }
 
@@ -187,7 +242,18 @@ export function installGlobalCrashHandlers(): void {
     // Resource load failures (img/script) surface as `error` events on the
     // element with no Error object — not app crashes; ignore them.
     if (!event.error && !event.message) return;
-    reportCrash("error", event.error ?? event.message);
+    const raw = event.error ?? event.message;
+
+    // Classify the event's own wording: the same text in a rejection or a
+    // render throw is an app bug and still deserves the crash screen.
+    if (isBenignErrorMessage(normalize(raw).message)) {
+      const report = createCrashReport("error", raw);
+      report.benign = true;
+      publishCrash(report);
+      return;
+    }
+
+    reportCrash("error", raw);
   });
 
   window.addEventListener("unhandledrejection", (event) => {

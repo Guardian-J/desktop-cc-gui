@@ -6,6 +6,7 @@ import {
   formatCrashReport,
   getCrashReports,
   getCrashSnapshot,
+  installGlobalCrashHandlers,
   LAST_CRASH_STORAGE_KEY,
   reportCrash,
   setCrashAppVersion,
@@ -66,5 +67,36 @@ describe("crash store", () => {
     expect(text).toContain("source:  render");
     expect(text).toContain("message: kaput");
     expect(text).toContain("at x");
+  });
+
+  it("records browser noise without surfacing it as a crash", () => {
+    installGlobalCrashHandlers();
+    const noise = () =>
+      window.dispatchEvent(
+        new ErrorEvent("error", {
+          message: "ResizeObserver loop completed with undelivered notifications.",
+        }),
+      );
+
+    noise();
+
+    // Kept for diagnostics, flagged so a future dump can explain the absence
+    // of a crash screen...
+    expect(getCrashReports()).toHaveLength(1);
+    expect(getCrashReports()[0]).toMatchObject({ source: "error", benign: true });
+    // ...but it is not a crash: no screen, nothing for the boot watchdog.
+    expect(getCrashSnapshot()).toBeNull();
+    expect(localStorage.getItem(LAST_CRASH_STORAGE_KEY)).toBeNull();
+
+    // Repeats must not crowd the ring; a real error still surfaces.
+    noise();
+    expect(getCrashReports()).toHaveLength(1);
+
+    window.dispatchEvent(
+      new ErrorEvent("error", { message: "Uncaught Error: boom", error: new Error("boom") }),
+    );
+    expect(getCrashSnapshot()?.message).toBe("boom");
+    expect(getCrashSnapshot()?.benign).toBeUndefined();
+    expect(getCrashReports()).toHaveLength(2);
   });
 });
