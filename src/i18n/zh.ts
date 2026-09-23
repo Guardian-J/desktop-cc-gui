@@ -687,6 +687,7 @@ export const zh = {
     piAuthOauthDescRadius: "Radius 账号授权",
     piAuthOauthDescKimi: "Kimi Code 订阅",
     piAuthOauthDescZai: "Z.AI GLM Coding Plan 订阅",
+    piAuthOauthDescAntigravity: "Google Antigravity 授权 (Gemini 3 / Claude)",
     piAuthOauthDescGeminiCli: "Google Code Assist 授权",
     piAuthApiKeyTitle: "API Key",
     piAuthApiKeyHint: "写入 {{path}} · 优先级高于环境变量",
