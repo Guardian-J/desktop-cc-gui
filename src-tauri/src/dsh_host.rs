@@ -107,7 +107,9 @@ impl DshHostState {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ==================== Config / status ====================
@@ -426,24 +428,73 @@ async fn host_post(origin: &str, method: &str, args: Value) -> Result<(u16, Valu
 
 /// One unary RPC round-trip, returning the server-response `result.value`.
 pub(crate) async fn host_call(origin: &str, method: &str, args: Value) -> Result<Value, String> {
-    let (status, envelope) = host_post(origin, method, args).await?;
+    host_call_rpc(origin, method, args)
+        .await
+        .map_err(|error| error.message)
+}
+
+/// RPC refusal with the gateway's structured error kept intact, so callers
+/// can classify on `code`/`details.reason` (e.g. the image-admission
+/// leftover refusal) instead of parsing a flattened message. `message`
+/// carries the same flattened text `host_call` reports; transport-level
+/// failures (401, non-envelope) use synthetic codes.
+pub(crate) struct HostRpcError {
+    pub code: String,
+    pub message: String,
+    pub details: Value,
+}
+
+/// One unary RPC round-trip, returning the server-response `result.value`.
+pub(crate) async fn host_call_rpc(
+    origin: &str,
+    method: &str,
+    args: Value,
+) -> Result<Value, HostRpcError> {
+    let flattened = match host_post(origin, method, args).await {
+        Ok(pair) => pair,
+        Err(message) => {
+            return Err(HostRpcError {
+                code: "transport".to_string(),
+                message,
+                details: Value::Null,
+            })
+        }
+    };
+    let (status, envelope) = flattened;
     if status == 401 {
-        return Err(format!(
-            "{method} 未授权（401）：host 凭据缺失或已失效，请在设置里重新启动 DSH host。"
-        ));
+        return Err(HostRpcError {
+            code: "unauthorized".to_string(),
+            message: format!(
+                "{method} 未授权（401）：host 凭据缺失或已失效，请在设置里重新启动 DSH host。"
+            ),
+            details: Value::Null,
+        });
     }
     if envelope.get("type").and_then(Value::as_str) != Some("server-response") {
-        return Err(format!("{method} 响应格式不正确（非 server-response）"));
+        return Err(HostRpcError {
+            code: "bad-envelope".to_string(),
+            message: format!("{method} 响应格式不正确（非 server-response）"),
+            details: Value::Null,
+        });
     }
     let result = envelope.get("result").cloned().unwrap_or(Value::Null);
     if result.get("ok").and_then(Value::as_bool) == Some(true) {
         return Ok(result.get("value").cloned().unwrap_or(Value::Null));
     }
-    let message = result
-        .pointer("/error/message")
+    let error = result.get("error").cloned().unwrap_or(Value::Null);
+    let message = error
+        .get("message")
         .and_then(Value::as_str)
         .unwrap_or("未知错误");
-    Err(format!("{method} 被拒绝：{message}"))
+    Err(HostRpcError {
+        code: error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        message: format!("{method} 被拒绝：{message}"),
+        details: error.get("details").cloned().unwrap_or(Value::Null),
+    })
 }
 
 /// Liveness classification for the describe probe. `Unauthorized` means the
@@ -501,9 +552,9 @@ fn normalize_describe(value: &Value) -> Value {
         .get("namespaces")
         .and_then(Value::as_array)
         .and_then(|namespaces| {
-            namespaces
-                .iter()
-                .find(|entry| entry.get("ns").and_then(Value::as_str) == Some("agent-default-model"))
+            namespaces.iter().find(|entry| {
+                entry.get("ns").and_then(Value::as_str) == Some("agent-default-model")
+            })
         });
     let inner = entry.and_then(|entry| entry.get("value")).cloned();
     let mut view = Map::new();
@@ -527,9 +578,7 @@ fn dsh_bin(settings: &AppSettings) -> String {
         let trimmed = custom.trim();
         if !trimmed.is_empty() {
             match crate::settings::validate_bin_override(trimmed) {
-                Ok(path) => {
-                    return resolve::resolve_launchable_cli_binary(&path.to_string_lossy())
-                }
+                Ok(path) => return resolve::resolve_launchable_cli_binary(&path.to_string_lossy()),
                 Err(reason) => {
                     eprintln!("[dsh] ignoring invalid dsh bin override: {reason}");
                 }
@@ -598,7 +647,10 @@ pub(crate) async fn ensure_host(
     // BrowserAuth: a listener rejecting our cookie is alive but locked.
     // Local ports are ours to reclaim — stop the listener and spawn with our
     // own token chain; remote origins can't be adopted.
-    if matches!(probe_describe(&cfg.origin).await, ProbeOutcome::Unauthorized) {
+    if matches!(
+        probe_describe(&cfg.origin).await,
+        ProbeOutcome::Unauthorized
+    ) {
         if !is_local_host(&cfg.host) {
             return Err(format!(
                 "DSH host 已在 {} 运行但缺少凭据（401）。远程 host 无法自动接管，请在设置里改用本机地址。",
@@ -753,7 +805,10 @@ async fn status_snapshot(host_state: &DshHostState, settings: &AppSettings) -> D
         ProbeOutcome::Live(value) => (Some(normalize_describe(&value)), None),
         ProbeOutcome::Unauthorized => (
             None,
-            Some("host 已运行但凭据无效（401）。点「立即启动」重新拉起，凭据会随之更新。".to_string()),
+            Some(
+                "host 已运行但凭据无效（401）。点「立即启动」重新拉起，凭据会随之更新。"
+                    .to_string(),
+            ),
         ),
         ProbeOutcome::Down(error) => (None, Some(error)),
     };
@@ -777,7 +832,9 @@ async fn status_snapshot(host_state: &DshHostState, settings: &AppSettings) -> D
 // ==================== Commands ====================
 
 #[tauri::command]
-pub async fn dsh_host_status(state: tauri::State<'_, crate::AppState>) -> Result<DshHostStatus, String> {
+pub async fn dsh_host_status(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<DshHostStatus, String> {
     let settings = crate::settings::read_settings().unwrap_or_default();
     Ok(status_snapshot(&state.dsh_host, &settings).await)
 }
@@ -947,7 +1004,8 @@ mod tests {
 
     #[test]
     fn launch_token_is_extracted_from_web_url_line() {
-        let line = "dsh web: http://127.0.0.1:3080/?token=RmF6KLIdrmQlbogo4A_StSQsyzSCzn79Et8S0CVjpUE";
+        let line =
+            "dsh web: http://127.0.0.1:3080/?token=RmF6KLIdrmQlbogo4A_StSQsyzSCzn79Et8S0CVjpUE";
         assert_eq!(
             extract_launch_token(line).as_deref(),
             Some("RmF6KLIdrmQlbogo4A_StSQsyzSCzn79Et8S0CVjpUE")

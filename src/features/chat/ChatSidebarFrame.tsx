@@ -33,6 +33,8 @@ export function ChatSidebarFrame({
   onNewSessionInWorkspace,
   onNewSession,
   onNewBrowser,
+  onOpenPlugins,
+  onOpenMission,
   onReorderWorkspaces,
   onDropWorkspaceToSection,
   onCreateGroup,
@@ -60,6 +62,10 @@ export function ChatSidebarFrame({
   onNewSession: () => void;
   /** 新建浏览器 nav entry (desktop only; omitted in web-access mode). */
   onNewBrowser?: () => void;
+  /** 插件入口（原生插件中心中心页签）。 */
+  onOpenPlugins?: () => void;
+  /** 任务工作台入口（原生中心页签）。 */
+  onOpenMission?: () => void;
   onReorderWorkspaces: (orderedIds: string[]) => void;
   /** Workspace row dropped onto a group / 已归档 / ungrouped container. */
   onDropWorkspaceToSection: (workspaceId: string, targetSectionId: string | null) => void;
@@ -101,6 +107,8 @@ export function ChatSidebarFrame({
         onNewSessionInWorkspace={onNewSessionInWorkspace}
         onNewSession={onNewSession}
         onNewBrowser={onNewBrowser}
+        onOpenPlugins={onOpenPlugins}
+        onOpenMission={onOpenMission}
         onReorderWorkspaces={onReorderWorkspaces}
         onDropWorkspaceToSection={onDropWorkspaceToSection}
         onCreateGroup={onCreateGroup}

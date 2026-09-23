@@ -22,6 +22,23 @@ export interface ExternalSessionRow {
   remotePath?: string;
 }
 
+export type PluginConversationProps = {
+  conversationId: string;
+  workspacePath: string;
+  language: string;
+  onExit: () => void;
+  setExitBlocked?: (blocked: boolean) => void;
+};
+
+export interface PluginAgentCatalogEntry {
+  engine: string;
+  label: string;
+  available: boolean;
+  readOnly: boolean;
+  providers: { id: string; label: string }[];
+  models: { id: string; label: string }[];
+}
+
 export interface PluginContext {
   pluginId: string;
   version: string;
@@ -31,6 +48,11 @@ export interface PluginContext {
    *  ctx.react 容器（双段挂载模式，import-map 共享是 P0-3 后续）。 */
   react: typeof React;
   ui: {
+    registerConversationMode(def: {
+      key?: string;
+      label: () => string;
+      component: ComponentType<PluginConversationProps>;
+    }): Disposer;
     registerSettingsSection(def: {
       /** Optional sub-key; the settings page key becomes
        *  `plugin:<id>` or `plugin:<id>:<key>`. */
@@ -56,8 +78,10 @@ export interface PluginContext {
       component: ComponentType;
       order?: number;
     }): Disposer;
-    /** Chat right-panel tab; renders with the active workspace path
-     *  (plan §4.2 #4). */
+    /** Chat right-panel tab (plan §4.2 #4); renders with the active
+     *  workspace path. The strip renders plugin tabs icon-only, so `icon` is
+     *  the visible identity — without one the tab falls back to the plugin's
+     *  artwork / letter tile, and the label stays a title/accessible name. */
     registerPanelTab(def: {
       key?: string;
       label: () => string;
@@ -115,14 +139,38 @@ export interface PluginContext {
       title: () => string;
       component: ComponentType;
     }): Disposer;
-    /** Renderer for a plugin-defined chat timeline row kind (plan §4.2 #5).
-     *  The row payload is plugin-defined and typed loosely — blob bundles
-     *  can't share the host's TimelineRow type identity. */
+        /** Renderer for a plugin-defined chat timeline row kind (plan §4.2 #5).
+     * The row payload is plugin-defined and typed loosely — blob bundles
+     * can't share the host's TimelineRow type identity. */
     registerTimelineRowRenderer(def: {
       kind: string;
       key?: string;
       component: ComponentType<{ row: { kind: string } }>;
     }): Disposer;
+    /** Home sidebar nav entry under the builtin 自动化 row (permission
+     *  `ui:sidebar-entry`, 0.3.12). `onOpen` usually opens the plugin's
+     *  center tab via openCenterTab. */
+    registerSidebarNav(def: {
+      key?: string;
+      label: () => string;
+      icon?: ComponentType<{ className?: string }>;
+      order?: number;
+      onOpen: () => void;
+    }): Disposer;
+    /** Center-area tab definition (permission `ui:center-tab`, 0.3.12):
+     *  renders in the center tab strip like session/file/browser tabs.
+     *  Opening goes through openCenterTab; multiple keys = multiple tabs. */
+    registerCenterTab(def: {
+      key?: string;
+      title: () => string;
+      icon?: ComponentType<{ className?: string }>;
+      component: ComponentType;
+      order?: number;
+    }): Disposer;
+    /** Open (or focus) one of this plugin's registered center tabs
+     *  (permission `ui:center-tab`, 0.3.12). Throws when the tab was never
+     *  registered — open failures must be visible, not silent. */
+    openCenterTab(key?: string): void;
   };
   theme: {
     /** Inject a stylesheet scoped to this plugin; removed on unload.
@@ -184,8 +232,33 @@ export interface PluginContext {
       list: () => Promise<ExternalSessionRow[]>;
     }): Disposer;
   };
+  /** Agent 轮次（权限 `agent`，0.3.13 起）：经宿主引擎管线拉起 agent
+   *  进程——渠道注入、进程注册与聊天发送同构。事件走独立的
+   *  `agent://<pluginId>` 总线话题（ctx.events.on 订阅；payload 为引擎
+   *  事件信封 { runId, sessionId, engine, seq, kind, data, ts }，kind ∈
+   *  delta | tool | usage | done | error …）。桌面专属（isWeb 下不可用的
+   *  插件要自呈现）。 */
+  agent: {
+    catalog(workspacePath: string): Promise<PluginAgentCatalogEntry[]>;
+    /** 启动一个 agent 轮次；返回的 runId 用于事件过滤与 interrupt。 */
+    start(def: {
+      engine: string;
+      prompt: string;
+      /** agent 进程的工作目录（绝对路径）。 */
+      workspacePath: string;
+      model?: string;
+      /** 缺省 = 引擎当前渠道（与聊天发送同一解析）。 */
+      providerId?: string;
+      /** 引擎相关的会话续接 id（如 pi 的 --session-id）：同一 id 续上轮。 */
+      sessionId?: string;
+      readOnly?: boolean;
+      requestId?: string;
+    }): Promise<{ runId: string; sessionId: string | null }>;
+    /** 中断本插件启动的 run（run id 属主前缀由宿主强制）。 */
+    interrupt(runId: string): Promise<boolean>;
+  };
   /** 通用能力出口（0.3.0 起；旧的 `cmd:<command>` 逐命令授权机制已删除）。
-   *  仅四条命令，`pluginId` 由宿主自动注入（插件无需也不能传）：
+   *  仅下列命令，`pluginId` 由宿主自动注入（插件无需也不能传）：
    *
    *  - `plugin_http_request` `{ method, url, headers?, body? }` →
    *    `{ status, body }`：url 限 http/https，host(+端口) 须命中 manifest 的
@@ -199,6 +272,9 @@ export interface PluginContext {
    *    附属进程，宿主跟踪，插件禁用/卸载时自动 kill。
    *  - `plugin_exec_kill` `{}` → `{ killed: number }`：kill 本插件全部
    *    lifecycle="plugin" 子进程（配置变更改名重启用；需任意 exec: 授权）。
+   *  - `plugin_agent_start` / `plugin_agent_interrupt`（0.3.13 起）：
+   *    与 `ctx.agent` 同一能力（需 `agent` 授权）——引擎管线由宿主接管，
+   *    run id 属主前缀在 Rust 侧强制。
    *
    *  授权未命中的调用在 JS 侧即 reject（不打 IPC）；Rust 侧对授权与插件
    *  启用态另有强制（纵深防御）。 */

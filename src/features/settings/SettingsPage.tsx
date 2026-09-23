@@ -1,17 +1,17 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import Puzzle from "lucide-react/dist/esm/icons/puzzle";
 import {
-  SettingsModal,
+  SettingsShell,
   type SettingsNavGroup,
-} from "@/components/application/settings/settings-modal";
+} from "@/components/application/settings/settings-shell";
 import {
   pluginIdFromRegistryKey,
   settingsRegistry,
   useRegistry,
 } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
+import { pluginSettingsNavIcon } from "@/features/plugins/hub/PluginSettingsNavIcon";
 import { useChatStore } from "@/features/chat/store";
 import { ENGINE_IDS, type EngineId } from "./providers";
 import { CliHeaderActions } from "./CliHeaderActions";
@@ -26,8 +26,12 @@ import "./sections";
 /** A nav group plus its rail order, sorted before handing to the modal. */
 type RailGroup = SettingsNavGroup & { order: number };
 const GROUP_META: Record<string, { labelKey: string; order: number }> = {
-  settings: { labelKey: "settings.title", order: 0 },
-  cli: { labelKey: "settings.cliManage", order: 1 },
+  system: { labelKey: "settings.groupSystem", order: 0 },
+  plugins: { labelKey: "settings.groupPlugins", order: 1 },
+  cli: { labelKey: "settings.cliManage", order: 2 },
+  capabilities: { labelKey: "settings.groupCapabilities", order: 3 },
+  workspace: { labelKey: "settings.groupWorkspace", order: 4 },
+  misc: { labelKey: "settings.groupMisc", order: 5 },
 };
 const KNOWN_GROUP_COUNT = Object.keys(GROUP_META).length;
 /** localStorage key for the user's CLI 管理 rail order (section keys). */
@@ -81,7 +85,7 @@ const renderHeaderActions = (key: string) => {
 };
 
 /**
- * Settings route: overlay for the BoardUI settings modal. ChatPage itself is mounted once
+ * Settings route: fullscreen settings shell. ChatPage itself is mounted once
  * by App on every route, so opening and closing settings never rebuilds
  * the chat tree.
  *
@@ -130,7 +134,7 @@ export default function SettingsPage() {
       const item = {
         key: def.key,
         label: def.label(),
-        icon: def.icon ?? Puzzle,
+        icon: pluginSettingsNavIcon(def),
       };
       const bucket = byGroup.get(def.group);
       if (bucket) bucket.push(item);
@@ -152,12 +156,21 @@ export default function SettingsPage() {
         const meta = GROUP_META[group];
         const order = meta?.order ?? KNOWN_GROUP_COUNT + index;
         if (group !== "cli") {
-          return [{ label: meta ? t(meta.labelKey) : group, order, items }];
+          // Every rail group is a static Codex-style section (muted heading,
+          // always-visible items) — no collapse state to carry.
+          return [
+            {
+              id: group,
+              label: meta ? t(meta.labelKey) : group,
+              order,
+              items,
+            },
+          ];
         }
         const ordered = orderByStoredKeys(items, orderedCliKeys);
-        // CLIs whose binary isn't installed drop into a collapsed 未安装
-        // bucket with grayed icons, CLIs the user turned off into the
-        // collapsed 未启用 bucket. Both buckets only exist once the engine
+        // CLIs whose binary isn't installed drop into a 未安装 bucket with
+        // grayed icons, CLIs the user turned off into the 未启用 bucket.
+        // Both buckets only exist once the engine
         // probe has landed and at least one CLI qualifies.
         // Plugin sections in this rail have no `cli:` key — no engine state,
         // they always stay in the main group.
@@ -193,9 +206,15 @@ export default function SettingsPage() {
             : installedItems;
         const rail: RailGroup[] = [
           {
+            id: "cli",
             label: meta ? t(meta.labelKey) : group,
             order,
             items: enabledItems,
+            // The rail, the 未安装 bucket and the 未启用 bucket fold; the two
+            // buckets start folded so the installed-and-enabled CLIs stay in
+            // view, while the main rail starts open.
+            collapsible: true,
+            defaultExpanded: true,
             // The CLI 管理 rail is drag-sortable; the order persists across
             // sessions (localStorage) and new engines append at the end. A
             // reorder only covers the enabled rows — the stored list keeps
@@ -212,20 +231,28 @@ export default function SettingsPage() {
             dragHandleLabel: t("settings.cliDrag"),
           },
         ];
-        if (disabledItems.length > 0) {
-          rail.push({
-            label: t("settings.cliDisabledGroup"),
-            order: order + 0.5,
-            collapsible: true,
-            items: disabledItems,
-          });
-        }
+        // Bucket order: 未安装 sorts before 未启用; both are folded buckets
+        // that unfold on click (and stay visible on the mobile rail, which
+        // has no headings to toggle). `nested` tucks each bucket under the
+        // CLI 管理 rail with a tighter gap than a full section gets.
         if (uninstalledItems.length > 0) {
           rail.push({
+            id: "cli-missing",
             label: t("settings.cliNotInstalledGroup"),
-            order: order + 0.6,
-            collapsible: true,
+            order: order + 0.5,
             items: uninstalledItems,
+            collapsible: true,
+            nested: true,
+          });
+        }
+        if (disabledItems.length > 0) {
+          rail.push({
+            id: "cli-disabled",
+            label: t("settings.cliDisabledGroup"),
+            order: order + 0.6,
+            items: disabledItems,
+            collapsible: true,
+            nested: true,
           });
         }
         return rail;
@@ -242,8 +269,8 @@ export default function SettingsPage() {
   }, [sections, i18n.language]);
 
   return (
-    <SettingsModal
-      isOpen
+    <SettingsShell
+      key={pageParam}
       onClose={() => navigate("/")}
       defaultPage={pageParam}
       ariaLabel={t("settings.title")}

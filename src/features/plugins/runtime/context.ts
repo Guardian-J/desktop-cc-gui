@@ -17,17 +17,23 @@ import {
   statusBarRegistry,
   composerStatusRegistry,
   timelineRowRegistry,
+  sidebarNavRegistry,
+  centerTabRegistry,
+  conversationModeRegistry,
 } from "@ccgui/plugin-sdk";
 import type {
   Disposer,
+  PluginAgentCatalogEntry,
   MarkdownRendererDef,
   PluginContext,
   PluginManifest,
 } from "@ccgui/plugin-sdk";
 import { assertPluginEmitTopic, pluginBus } from "./events";
 import { setActiveComposerDraft } from "./composer-draft";
+import { dismissCenterSurfaces } from "@/features/chat/center-surfaces";
 import { addPluginWorkspace, openPluginSession } from "./workspace-bridge";
 import { registerSessionSource } from "./session-source";
+import { usePluginTabsStore } from "./center-tabs";
 import { runAsPlugin } from "./hardening";
 
 /** Storage transport the context talks to; the loader binds the IPC-backed
@@ -42,6 +48,7 @@ export interface PluginStorageBackend {
  *  (grant-checked below, then routed through the host's transport by the
  *  loader's IPC-backed implementation). */
 export interface PluginContextBackend extends PluginStorageBackend {
+  agentCatalog?(workspacePath: string): Promise<PluginAgentCatalogEntry[]>;
   bridgeInvoke(command: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -60,9 +67,11 @@ const REMOTE_CSS = /@import|url\(\s*['"]?https?:/i;
 /** Shared stylesheet mount: tagged `<style data-plugin=id>` in <head>,
  *  disposer removes it. Remote references rejected (plan §8 gate rule).
  *
- *  `layered` wraps the css in `@layer ccgui-plugins` — declared ahead of
- *  Tailwind's theme/base/components/utilities in index.css — so host rules
- *  win every specificity tie against bundle CSS. Without it, a bundle that
+ *  `layered` wraps the css in `@layer ccgui-plugins` — declared between
+ *  Tailwind's base and components layers in index.css (after base, so
+ *  preflight resets can't erase plugin borders/paddings/backgrounds) — so
+ *  host component and utility rules still win every specificity tie
+ *  against bundle CSS. Without it, a bundle that
  *  accidentally ships its own Tailwind build lands after the host
  *  stylesheet, and its later, equal-specificity `.w-full`/`.hidden` defeat
  *  host responsive variants like `md:w-[254px]` (the settings modal once
@@ -134,6 +143,14 @@ export function createPluginContext(
     version: manifest.version,
     react: React,
     ui: {
+      registerConversationMode(def) {
+        requirePermission("ui:conversation-mode");
+        return track(conversationModeRegistry.register({
+          id: scopedPluginId(id, def.key),
+          label: () => runAsPlugin(def.label),
+          component: def.component,
+        }));
+      },
       registerSettingsSection(def) {
         requirePermission("ui:settings-section");
         const key = scopedPluginId(id, def.key);
@@ -143,7 +160,7 @@ export function createPluginContext(
             key,
             label: def.label,
             icon: def.icon,
-            group: "settings",
+            group: "plugins",
             order: 1000,
             component: def.component,
           }),
@@ -265,6 +282,41 @@ export function createPluginContext(
           }),
         );
       },
+      registerSidebarNav(def) {
+        requirePermission("ui:sidebar-entry");
+        return track(
+          sidebarNavRegistry.register({
+            id: scopedPluginId(id, def.key),
+            label: def.label,
+            icon: def.icon,
+            order: def.order,
+            onOpen: () => runAsPlugin(def.onOpen),
+          }),
+        );
+      },
+      registerCenterTab(def) {
+        requirePermission("ui:center-tab");
+        return track(
+          centerTabRegistry.register({
+            id: scopedPluginId(id, def.key),
+            title: def.title,
+            icon: def.icon,
+            component: def.component,
+            order: def.order,
+          }),
+        );
+      },
+      openCenterTab(key) {
+        requirePermission("ui:center-tab");
+        const tabId = scopedPluginId(id, key);
+        if (!centerTabRegistry.get(tabId)) {
+          throw new Error(`[plugins] "${id}" opened unregistered center tab ${tabId}`);
+        }
+        // 插件页签置前：其他中心面（浏览器/文件/插件中心/工作台/差异）让位；
+        // 否则经由插件侧栏入口打开时，页签开了、画面还停在原地。
+        dismissCenterSurfaces();
+        usePluginTabsStore.getState().openTab(tabId);
+      },
     },
     theme: {
       injectCss(css) {
@@ -375,6 +427,34 @@ export function createPluginContext(
         );
       },
     },
+    agent: {
+      async catalog(workspacePath) {
+        requirePermission("agent");
+        if (!backend.agentCatalog) throw new Error("Plugin agent catalog is unavailable on this host");
+        return backend.agentCatalog(workspacePath);
+      },
+      start(def) {
+        requirePermission("agent");
+        if (def.requestId !== undefined && !/^[a-fA-F0-9]{32}$/.test(def.requestId)) {
+          throw new Error("Plugin agent requestId must contain exactly 32 hexadecimal characters");
+        }
+        return backend.bridgeInvoke("plugin_agent_start", {
+          pluginId: id,
+          engine: def.engine,
+          prompt: def.prompt,
+          workspacePath: def.workspacePath,
+          model: def.model ?? null,
+          providerId: def.providerId ?? null,
+          sessionId: def.sessionId ?? null,
+          readOnly: def.readOnly ?? false,
+          requestId: def.requestId ?? null,
+        }) as Promise<{ runId: string; sessionId: string | null }>;
+      },
+      async interrupt(runId) {
+        requirePermission("agent");
+        return await backend.bridgeInvoke("plugin_agent_interrupt", { pluginId: id, runId }) as boolean;
+      },
+    },
     bridge: {
       invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
         // JS 侧预检（DX；真边界是 Rust 侧的服务端强制）：授权未命中即
@@ -405,10 +485,18 @@ export function createPluginContext(
               new Error(`[plugins] "${id}" used plugin_exec_kill without any exec: grant`),
             );
           }
+        } else if (command === "plugin_agent_start" || command === "plugin_agent_interrupt") {
+          // 通用出口与 ctx.agent 同一能力：引擎管线走宿主（渠道/注册表/
+          // 事件流）；run id 的属主前缀在 Rust 侧强制。
+          if (!manifest.permissions.includes("agent")) {
+            return Promise.reject(
+              new Error(`[plugins] "${id}" used ${command} without declaring "agent" in permissions`),
+            );
+          }
         } else {
           return Promise.reject(
             new Error(
-              `[plugins] unknown bridge command "${command}" (available: plugin_http_request / plugin_exec_run / plugin_exec_spawn / plugin_exec_kill)`,
+              `[plugins] unknown bridge command "${command}" (available: plugin_http_request / plugin_exec_run / plugin_exec_spawn / plugin_exec_kill / plugin_agent_start / plugin_agent_interrupt)`,
             ),
           );
         }

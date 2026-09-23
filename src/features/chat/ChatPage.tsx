@@ -7,6 +7,7 @@ import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-ch
 import { AppStatusBar } from "@/components/application/app-status-bar/app-status-bar";
 import { isWeb } from "@/lib/platform";
 import { useTitlebarStyle } from "@/features/settings/titlebar";
+import { useBetaFeature } from "@/features/settings/beta-features";
 import PanelLeftOpen from "lucide-react/dist/esm/icons/panel-left-open";
 import { TerminalDock } from "@/features/terminal/TerminalDock";
 import { useTerminalStore } from "@/features/terminal/store";
@@ -27,6 +28,7 @@ import { PANEL_TOGGLE_CLASSES } from "./panel-toggle-classes";
 import { ChatSidebarFrame } from "./ChatSidebarFrame";
 import { ChatSidePanel } from "./ChatSidePanel";
 import { ChatCenterPane } from "./ChatCenterPane";
+import { resolvePanelLayout } from "./panel-layout";
 // Side-effect import: registers the builtin files/changes tabs into
 // panelTabRegistry (plan §4.2 #4).
 import "./panel-tabs";
@@ -43,8 +45,6 @@ const NEEDS_TITLEBAR_HAIRLINE =
 // both be comfortable, so the panel defaults to collapsed there. It stays
 // expandable: the titlebar toggle renders at every width.
 const PANEL_MEDIA = "(max-width: 1279px)";
-// Floor reserved for the chat column when clamping the panel width.
-const CHAT_MIN_WIDTH = 320;
 
 export default function ChatPage() {
   const { t } = useTranslation();
@@ -95,9 +95,7 @@ export default function ChatPage() {
     if (narrowPanel) setNarrowPanelExpanded((prev) => !prev);
     else togglePanelCollapsed();
   }, [narrowPanel, togglePanelCollapsed]);
-  // The persisted width can exceed what is left beside the sidebar, so clamp
-  // it for rendering only: storage keeps the user's width, and drags still
-  // mutate style.width imperatively against the real min/max. Measured off
+  // Panel width is clamped against the row actually available. Measured off
   // the center row rather than window.innerWidth because the sidebar overlays
   // the content below md instead of taking layout space.
   const centerRowRef = useRef<HTMLDivElement>(null);
@@ -111,12 +109,16 @@ export default function ChatPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  // Before the first measurement centerRowWidth is 0; fall back to the stored
-  // width so the panel does not flash collapsed on mount.
-  const panelWidthEffective =
-    centerRowWidth > 0
-      ? Math.min(panelWidth, Math.max(0, centerRowWidth - CHAT_MIN_WIDTH))
-      : panelWidth;
+  // The persisted width can exceed what is available in the current row.
+  // Wide and native layouts reserve a readable chat column; a narrow remote
+  // browser overlays the panel instead so its contents are never halved.
+  const { panelWidth: panelWidthEffective, overlay: panelOverlay } =
+    resolvePanelLayout({
+      storedWidth: panelWidth,
+      centerRowWidth,
+      narrowPanel,
+      isWeb,
+    });
 
   useLayoutCommands(handleTogglePanel, toggleSidebarCollapsed);
   const {
@@ -133,6 +135,14 @@ export default function ChatPage() {
     activeFilePath,
     browserTabs,
     activeBrowserId,
+    pluginTabs,
+    activePluginTabId,
+    pluginHubOpen,
+    pluginHubActive,
+    missionOpen,
+    missionActive,
+    notesOpen,
+    notesActive,
     diffView,
     closeDiff,
   } = useChatTabs({ setDialog });
@@ -156,6 +166,8 @@ export default function ChatPage() {
     handleNewSession,
     handleNewSessionInWorkspace,
     handleNewBrowser,
+    handleOpenPlugins,
+    handleOpenMission,
     handleReorderWorkspaces,
     handleDropWorkspaceToSection,
     handleCreateGroup,
@@ -166,6 +178,10 @@ export default function ChatPage() {
     composerInputRef,
     setDialog,
   });
+
+  // 内测功能（设置 → 其他 → 内测功能，默认关闭）：入口按开关显示/隐藏。
+  const betaNewBrowser = useBetaFeature("newBrowser");
+  const betaMissionWorkbench = useBetaFeature("missionWorkbench");
 
   useChatPageLifecycle(init, gitRefresh, active?.workspacePath);
   useChatShortcutHandlers(
@@ -211,7 +227,9 @@ export default function ChatPage() {
         archivedRepos={archivedRepos}
         onNewSessionInWorkspace={handleNewSessionInWorkspace}
         onNewSession={handleNewSession}
-        onNewBrowser={isWeb ? undefined : handleNewBrowser}
+        onNewBrowser={!isWeb && betaNewBrowser ? handleNewBrowser : undefined}
+        onOpenPlugins={handleOpenPlugins}
+        onOpenMission={betaMissionWorkbench ? handleOpenMission : undefined}
         onReorderWorkspaces={handleReorderWorkspaces}
         onDropWorkspaceToSection={handleDropWorkspaceToSection}
         onCreateGroup={handleCreateGroup}
@@ -227,7 +245,7 @@ export default function ChatPage() {
           closeLabel={t("common.close")}
           onReorder={handleTabReorder}
           onNew={handleNewSession}
-          onNewBrowser={isWeb ? undefined : handleNewBrowser}
+          onNewBrowser={!isWeb && betaNewBrowser ? handleNewBrowser : undefined}
           trafficLightInset={sidebarCollapsed && !isWeb}
           leading={
             sidebarCollapsed ? (
@@ -282,6 +300,14 @@ export default function ChatPage() {
             activeFilePath={activeFilePath}
             browserTabs={browserTabs}
             activeBrowserId={activeBrowserId}
+            pluginTabs={pluginTabs}
+            activePluginTabId={activePluginTabId}
+            pluginHubOpen={pluginHubOpen}
+            pluginHubActive={pluginHubActive}
+            missionOpen={missionOpen}
+            missionActive={missionActive}
+            notesOpen={notesOpen}
+            notesActive={notesActive}
             diffView={diffView}
             diffStatus={diffStatus}
             closeDiff={closeDiff}
@@ -294,6 +320,7 @@ export default function ChatPage() {
             dragging={dragging}
             panelTab={panelTab}
             onResizeStart={handleResizeStart("panel")}
+            overlay={panelOverlay}
           />
         </div>
         {active && <TerminalDock workspacePath={active.workspacePath} />}

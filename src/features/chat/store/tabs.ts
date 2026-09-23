@@ -8,6 +8,7 @@ import {
 } from "./persistence";
 import { moveStreamingFlag } from "./stream";
 import { emitSessionActivated } from "@/features/plugins/runtime/events";
+import { getConversationModeState } from "@/features/plugins/conversation/state";
 import type { ChatStore } from "./types";
 import type { StoreGet, StoreSet } from "./context";
 
@@ -140,6 +141,7 @@ export function createTabActions(
     sessionId: string | null,
     workspacePath: string,
   ) {
+    if (getConversationModeState().isTabCloseBlocked(sessionKey(engine, sessionId, workspacePath), workspacePath)) return;
     const s = get();
     const idx = s.openTabs.findIndex((t) =>
       sameTab(t, engine, sessionId, workspacePath),
@@ -220,7 +222,25 @@ export function createTabActions(
     },
 
     setActiveEngine: (engine) => {
+      const current = get().active;
+      if (current && getConversationModeState().isTabCloseBlocked(
+        sessionKey(current.engine, current.sessionId, current.workspacePath), current.workspacePath,
+      )) return;
       writeStored(ENGINE_PREF_KEY, engine);
+      // Plugins follow the active engine through `session://activated`; the
+      // picker is one of the ways it changes. Only the retarget below actually
+      // changes what the active tab runs (a tab with a real session keeps its
+      // own engine, and a first turn still in flight is left alone), so that
+      // is exactly what gets announced.
+      const before = get();
+      const beforeActive = before.active;
+      const retargets =
+        !!beforeActive &&
+        beforeActive.sessionId === null &&
+        beforeActive.engine !== engine &&
+        !before.bySession[
+          sessionKey(beforeActive.engine, null, beforeActive.workspacePath)
+        ]?.streaming;
       set((s) => {
         const active = s.active;
         // A pending (never-sent) tab has no backend session yet, so it
@@ -298,6 +318,7 @@ export function createTabActions(
           streamingByKey: moveStreamingFlag(s.streamingByKey, oldKey, newKey),
         };
       });
+      if (retargets) emitSessionActivated(engine, null);
     },
   };
 }

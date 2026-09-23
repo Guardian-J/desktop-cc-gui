@@ -1,6 +1,6 @@
 use super::{
-    command_for_binary, parse_tool_args_value, safe_prompt_arg, tool_call_message, tool_result_patch,
-    BuiltCommand, Engine, EngineEvent, SendRequest,
+    command_for_binary, parse_tool_args_value, safe_prompt_arg, tool_call_message,
+    tool_result_patch, BuiltCommand, Engine, EngineEvent, SendRequest,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -46,6 +46,9 @@ impl Engine for AgyEngine {
     fn supports_images(&self) -> bool {
         false
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
 
     fn supported_permissions(&self) -> &'static [&'static str] {
         &["auto", "plan", "bypass"]
@@ -74,7 +77,12 @@ impl Engine for AgyEngine {
             }
         }
 
-        if let Some(model) = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        if let Some(model) = req
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
             cmd.arg("--model");
             cmd.arg(model);
             if let Some(effort) = effort_flag(req.effort.as_deref(), model) {
@@ -103,7 +111,11 @@ impl Engine for AgyEngine {
             cmd.arg(dir);
         }
 
-        if let Some(session_id) = req.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        if let Some(session_id) = req
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
         {
             cmd.arg("--conversation");
             cmd.arg(session_id);
@@ -119,6 +131,7 @@ impl Engine for AgyEngine {
             stdin_payload: None,
             keep_stdin_open: false,
             cleanup_files: Vec::new(),
+            mcp_restore: None,
             preassigned_session_id: None,
         })
     }
@@ -146,15 +159,10 @@ impl Engine for AgyEngine {
 }
 
 /// `--effort` only when the request names one and the model slug does not
-/// already encode it (`gemini-3.8-flash-high`). Narrower than the composer
-/// knob: agy accepts low|medium|high only.
-fn effort_flag(requested: Option<&str>, model: &str) -> Option<&'static str> {
-    let effort = match requested? {
-        "low" => "low",
-        "medium" => "medium",
-        "high" | "xhigh" | "max" | "ultra" => "high",
-        _ => return None,
-    };
+/// already encode it (`gemini-3.8-flash-high`). The requested string is passed
+/// through unchanged.
+fn effort_flag<'a>(requested: Option<&'a str>, model: &str) -> Option<&'a str> {
+    let effort = requested.map(str::trim).filter(|e| !e.is_empty())?;
     if model_encodes_effort(model) {
         return None;
     }
@@ -220,12 +228,17 @@ fn parse_step_update(step: &Value, out: &mut Vec<EngineEvent>) {
 
 fn parse_result(result: &Value, out: &mut Vec<EngineEvent>) {
     push_conversation_id(result, out);
-    let usage = result.get("usage").and_then(parse_tool_args_value).map(attach_context_window);
+    let usage = result
+        .get("usage")
+        .and_then(parse_tool_args_value)
+        .map(attach_context_window);
     if let Some(usage) = usage.clone() {
         out.push(EngineEvent::Usage(usage));
     }
     let status = string_field(result, "status").unwrap_or("");
-    let ok = status.is_empty() || status.eq_ignore_ascii_case("success") || status.eq_ignore_ascii_case("ok");
+    let ok = status.is_empty()
+        || status.eq_ignore_ascii_case("success")
+        || status.eq_ignore_ascii_case("ok");
     if !ok {
         let message = string_field(result, "error")
             .or_else(|| string_field(result, "message"))
@@ -259,6 +272,8 @@ mod tests {
             permission: permission.map(str::to_string),
             additional_dirs: Vec::new(),
             provider_id: None,
+            computer_use: None,
+            allowed_tools: None,
         }
     }
 
@@ -283,7 +298,9 @@ mod tests {
         let args = argv(&req(Some("auto")));
         assert_eq!(args[args.len() - 2], "--print");
         assert_eq!(args[args.len() - 1], "hi");
-        assert!(args.windows(2).any(|w| w == ["--output-format", "stream-json"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]));
         assert!(args.windows(2).any(|w| w == ["--print-timeout", "60m"]));
         assert!(args.windows(2).any(|w| w == ["--mode", "accept-edits"]));
         assert!(args.windows(2).any(|w| w == ["--add-dir", "/tmp/ws"]));
@@ -309,16 +326,15 @@ mod tests {
         request.effort = Some("high".into());
         request.additional_dirs = vec!["/tmp/ws".into(), "/extra".into()];
         let args = argv(&request);
-        assert!(args.windows(2).any(|w| {
-            w == ["--conversation", "45d30962-3fae-4b48-8de5-0ed0edf5b9cb"]
-        }));
-        assert!(args.windows(2).any(|w| w == ["--model", "gemini-3.8-flash-high"]));
+        assert!(args
+            .windows(2)
+            .any(|w| { w == ["--conversation", "45d30962-3fae-4b48-8de5-0ed0edf5b9cb"] }));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--model", "gemini-3.8-flash-high"]));
         // Slug already encodes effort — do not send a redundant flag.
         assert!(!args.contains(&"--effort".to_string()));
-        assert_eq!(
-            args.iter().filter(|a| *a == "--add-dir").count(),
-            2
-        );
+        assert_eq!(args.iter().filter(|a| *a == "--add-dir").count(), 2);
         assert!(args.windows(2).any(|w| w == ["--add-dir", "/extra"]));
     }
 
@@ -328,14 +344,12 @@ mod tests {
         request.model = Some("claude-sonnet-4-6".into());
         request.effort = Some("xhigh".into());
         let args = argv(&request);
-        assert!(args.windows(2).any(|w| w == ["--effort", "high"]));
+        assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
     }
 
     #[test]
     fn parses_init_delta_tool_and_result() {
-        let init = events(
-            r#"{"event":"init","init":{"conversation_id":"abc-1"}}"#,
-        );
+        let init = events(r#"{"event":"init","init":{"conversation_id":"abc-1"}}"#);
         match &init[..] {
             [EngineEvent::SessionId(id)] => assert_eq!(id, "abc-1"),
             other => panic!("unexpected init: {other:?}"),
@@ -359,13 +373,19 @@ mod tests {
         ));
         assert!(matches!(
             &tool[1],
-            EngineEvent::Message { result: Some(_), patch: true, .. }
+            EngineEvent::Message {
+                result: Some(_),
+                patch: true,
+                ..
+            }
         ));
 
         let done = events(
             r#"{"event":"result","result":{"status":"SUCCESS","conversation_id":"abc-1","usage":{"input_tokens":3,"output_tokens":4}}}"#,
         );
-        assert!(done.iter().any(|e| matches!(e, EngineEvent::SessionId(id) if id == "abc-1")));
+        assert!(done
+            .iter()
+            .any(|e| matches!(e, EngineEvent::SessionId(id) if id == "abc-1")));
         assert!(done.iter().any(|e| matches!(e, EngineEvent::Usage(_))));
         assert!(done.iter().any(|e| matches!(
             e,

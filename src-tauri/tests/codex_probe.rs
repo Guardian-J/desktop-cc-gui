@@ -14,6 +14,11 @@
 //! crates into the test exe, which then fails to load on Windows without a
 //! comctl32 v6 manifest (0xc0000139) - the app exe gets one from tauri-build,
 //! a bare `cargo test` binary does not.
+//!
+//! Windows-only: the fake CLI is a .cmd shim resolved via the %APPDATA%\npm
+//! probe path, which does not exist on unix — there the real codex install
+//! would be spawned instead. The whole target is gated accordingly.
+#![cfg(target_os = "windows")]
 
 use ccgui_next_lib::db::Db;
 use ccgui_next_lib::engine::{self, ProcessRegistry};
@@ -39,11 +44,8 @@ impl Emit for Capture {
 }
 
 fn temp_home(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "ccgui-codex-probe-{}-{}",
-        tag,
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("ccgui-codex-probe-{}-{}", tag, std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -66,11 +68,7 @@ fn write_fake_codex(home: &std::path::Path) {
     let bin_dir = home.join("appdata").join("npm");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let cmd = bin_dir.join("codex.cmd");
-    std::fs::write(
-        &cmd,
-        "@echo off\r\nnode \"%~dp0fake-codex.js\" %*\r\n",
-    )
-    .unwrap();
+    std::fs::write(&cmd, "@echo off\r\nnode \"%~dp0fake-codex.js\" %*\r\n").unwrap();
     let js = bin_dir.join("fake-codex.js");
     // Scenario via env: the test process sets it per run. The script reads
     // all of stdin (prompt), then writes the NDJSON events. In the "long"
@@ -142,11 +140,18 @@ fn build_state(home: &std::path::Path) -> (AppState, Arc<Capture>) {
         web: ccgui_next_lib::web::WebAccessState::default(),
         relay: ccgui_next_lib::relay::RelayState::default(),
         dsh_host: Arc::new(ccgui_next_lib::dsh_host::DshHostState::default()),
+        opencode_server: std::sync::Arc::new(
+            ccgui_next_lib::engine::opencode_server::OpencodeServerState::default(),
+        ),
     };
     (state, capture)
 }
 
-async fn send_codex_and_wait(state: &AppState, events: &Arc<Capture>, deadline_ms: u64) -> Vec<Value> {
+async fn send_codex_and_wait(
+    state: &AppState,
+    events: &Arc<Capture>,
+    deadline_ms: u64,
+) -> Vec<Value> {
     let workspace = std::env::temp_dir().join(format!("ccgui-codex-ws-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).unwrap();
     let result = engine::send_message_inner(
@@ -161,6 +166,7 @@ async fn send_codex_and_wait(state: &AppState, events: &Arc<Capture>, deadline_m
         None,
         None,
         Some("run-client-probe".into()),
+        None,
     )
     .await
     .expect("send_message must succeed");
@@ -185,7 +191,9 @@ async fn send_codex_and_wait(state: &AppState, events: &Arc<Capture>, deadline_m
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     let collected = events.0.lock().unwrap().clone();
-    assert!(collected.iter().all(|event| event["runId"] == "run-client-probe"));
+    assert!(collected
+        .iter()
+        .all(|event| event["runId"] == "run-client-probe"));
     collected
 }
 
@@ -193,7 +201,11 @@ fn collected_text(events: &[Value]) -> String {
     events
         .iter()
         .filter(|e| e.get("kind").and_then(Value::as_str) == Some("message"))
-        .filter_map(|e| e.get("data").and_then(|d| d.get("text")).and_then(Value::as_str))
+        .filter_map(|e| {
+            e.get("data")
+                .and_then(|d| d.get("text"))
+                .and_then(Value::as_str)
+        })
         .collect()
 }
 

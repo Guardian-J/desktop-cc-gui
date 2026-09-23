@@ -7,6 +7,7 @@ import CloudDownload from "lucide-react/dist/esm/icons/cloud-download";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import CloudUpload from "lucide-react/dist/esm/icons/cloud-upload";
+import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
 import { Button } from "@/components/base/buttons/button";
 import { IconButton } from "@/components/base/buttons/icon-button";
 import {
@@ -22,6 +23,10 @@ import { useGitStore } from "./store";
 
 interface ChangesPanelHeaderProps {
   workspacePath: string;
+  /** Set when the panel follows the file tree's selection into a repository
+   *  other than the workspace root: rendered as a badge so the user can see
+   *  which repo stage/commit/pull/push will act on. */
+  followedRepoPath?: string;
   notRepo: boolean;
   branch: string | undefined;
   /** Commits ahead of / behind the upstream; undefined hides the indicator. */
@@ -38,6 +43,7 @@ interface ChangesPanelHeaderProps {
 /** Title row with refresh/pull/push, the branch picker, and the new-branch form. */
 export function ChangesPanelHeader({
   workspacePath,
+  followedRepoPath,
   notRepo,
   branch,
   ahead,
@@ -53,6 +59,28 @@ export function ChangesPanelHeader({
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
+  // Spin → check → idle click feedback for refresh; check flash only for
+  // pull/push (a spinning cloud reads as a glitch, not progress).
+  const refreshAction = useActionFeedback({ spin: true });
+  const pullAction = useActionFeedback();
+  const pushAction = useActionFeedback();
+
+  const handleRefresh = () => {
+    if (refreshAction.feedback === "running") return;
+    run("refresh", () =>
+      // refresh() reports failure through store state instead of throwing.
+      refreshAction.start(
+        () => useGitStore.getState().refresh(workspacePath, true),
+        () => {
+          const state = useGitStore.getState();
+          return (
+            state.errorByWorkspace[workspacePath] != null ||
+            state.notRepoByWorkspace[workspacePath] === true
+          );
+        },
+      ),
+    );
+  };
 
   // Stale filter text must not survive into the next open.
   useEffect(() => {
@@ -70,6 +98,14 @@ export function ChangesPanelHeader({
     <div className="flex flex-col gap-2 border-b border-separator-border px-3 py-2.5">
       <div className="flex items-center gap-1.5">
         <span className="text-body-medium text-text-primary">{t("git.changes")}</span>
+        {followedRepoPath && (
+          <span
+            className="max-w-32 truncate rounded-md bg-background-secondary-default px-1.5 py-0.5 text-caption-1-regular text-text-tertiary"
+            title={followedRepoPath}
+          >
+            {followedRepoPath.split(/[\\/]/).filter(Boolean).at(-1) ?? followedRepoPath}
+          </span>
+        )}
         {ahead !== undefined && behind !== undefined && (
           <span className="text-xs text-text-tertiary">
             ↑{ahead} ↓{behind}
@@ -82,31 +118,55 @@ export function ChangesPanelHeader({
             aria-label={t("common.refresh")}
             title={t("common.refresh")}
             disabled={pending.refresh === true}
-            onClick={() =>
-              run("refresh", () => useGitStore.getState().refresh(workspacePath, true))
-            }
-          />
+            onClick={handleRefresh}
+          >
+            <ActionFeedbackIcon
+              icon={RefreshCw}
+              feedback={refreshAction.feedback}
+              spin
+            />
+          </IconButton>
           <IconButton
             icon={CloudDownload}
             size="small"
             aria-label={t("git.pull")}
             title={t("git.pull")}
             disabled={notRepo || pending.pull === true}
-            onClick={() => run("pull", () => useGitStore.getState().pull(workspacePath))}
-          />
+            onClick={() =>
+              run("pull", () =>
+                pullAction.start(() => useGitStore.getState().pull(workspacePath)),
+              )
+            }
+          >
+            <ActionFeedbackIcon icon={CloudDownload} feedback={pullAction.feedback} />
+          </IconButton>
           <IconButton
             icon={CloudUpload}
             size="small"
             aria-label={t("git.push")}
             title={t("git.push")}
             disabled={notRepo || pending.push === true}
-            onClick={() => run("push", () => useGitStore.getState().push(workspacePath))}
-          />
+            onClick={() =>
+              run("push", () =>
+                pushAction.start(() => useGitStore.getState().push(workspacePath)),
+              )
+            }
+          >
+            <ActionFeedbackIcon icon={CloudUpload} feedback={pushAction.feedback} />
+          </IconButton>
         </div>
       </div>
       {!notRepo && (
         <div className="flex items-center gap-1">
-          <Dropdown isOpen={branchOpen} onOpenChange={setBranchOpen}>
+          <Dropdown
+            isOpen={branchOpen}
+            onOpenChange={(open) => {
+              setBranchOpen(open);
+              // The cached list goes stale when branches change outside the
+              // app (CLI checkout/switch); reload on every open.
+              if (open) void useGitStore.getState().loadBranches(workspacePath);
+            }}
+          >
             <DropdownTrigger
               className={cx(
                 "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border-button-default",
@@ -151,11 +211,14 @@ export function ChangesPanelHeader({
               {filteredBranches.map((b) => (
                 <DropdownItem
                   key={b.name}
-                  selected={b.isCurrent}
+                  selected={b.name === branch}
                   className="px-2 py-1.5"
                   onSelect={() => {
                     setBranchOpen(false);
-                    if (!b.isCurrent) {
+                    // "Current" must come from the same source as the trigger
+                    // label (status.branch): the cached list's isCurrent lags
+                    // behind external checkouts and would no-op the click.
+                    if (b.name !== branch) {
                       run("checkout", () =>
                         useGitStore.getState().checkout(workspacePath, b.name),
                       );

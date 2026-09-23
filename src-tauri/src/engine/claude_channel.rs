@@ -53,10 +53,7 @@ pub(super) fn resolve_model(
     let raw = selected.strip_suffix("[1m]").unwrap_or(selected);
     let resolved = match raw {
         "opus" | "sonnet" | "haiku" | "fable" => env
-            .get(&format!(
-                "ANTHROPIC_DEFAULT_{}_MODEL",
-                raw.to_uppercase()
-            ))
+            .get(&format!("ANTHROPIC_DEFAULT_{}_MODEL", raw.to_uppercase()))
             .map(String::as_str)
             .unwrap_or(raw),
         _ => raw,
@@ -165,6 +162,7 @@ mod tests {
             stdin_payload: None,
             keep_stdin_open: false,
             cleanup_files: Vec::new(),
+            mcp_restore: None,
             preassigned_session_id: None,
         }
     }
@@ -196,7 +194,10 @@ mod tests {
         // No selection and no configured channel model: nothing to pass —
         // the send goes out without --model (stage masks the native key).
         assert_eq!(resolve_model(None, Some(&empty), &HashMap::new()), None);
-        assert_eq!(resolve_model(Some("default"), Some(&empty), &HashMap::new()), None);
+        assert_eq!(
+            resolve_model(Some("default"), Some(&empty), &HashMap::new()),
+            None
+        );
         assert_eq!(
             resolve_model(Some("sonnet"), Some(&empty), &HashMap::new()).as_deref(),
             Some("sonnet")

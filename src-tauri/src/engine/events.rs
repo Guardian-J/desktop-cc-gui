@@ -31,6 +31,11 @@ pub enum EngineEvent {
     SessionId(String),
     /// Token usage snapshot from the engine.
     Usage(Value),
+    /// Throughput accounting marker (never streamed to the UI): a model
+    /// response's stream opened (`active: true`) or closed (`active: false`).
+    /// `reader.rs` folds the spans into the next usage report's `genMs` wire
+    /// field, which plugins use to compute generation speed.
+    Generation { active: bool },
     /// Engine-reported error.
     Error(String),
     /// Non-terminal engine notice (e.g. an upstream 429 the CLI is
@@ -71,6 +76,19 @@ pub enum EngineEvent {
     /// A parked question no longer needs an answer (the CLI cancelled it or
     /// the run settled): the UI resolves the card without a choice.
     QuestionSettled { request_id: String },
+    /// Context compaction started/ended (omp `auto_compaction_start/end`,
+    /// forwarded by rpc-ui). Not terminal: the turn keeps running after the
+    /// summary swap. The UI shows a live "compacting" indicator; `reason`
+    /// carries the CLI's trigger label when it reports one.
+    Compaction {
+        active: bool,
+        reason: Option<String>,
+    },
+    /// pi rpc 模式的完全落定信号(omp 用 isTerminal agent_end;pi 的
+    /// agent_end 没有 isTerminal,结果在 print 模式里本来到 EOF 才定论,而
+    /// rpc 长驻进程没有 EOF)。语义等价 EOF 收尾:有未恢复的尝试错误按
+    /// Error 落定,否则 Done —— 由 dispatch 侧读 TurnState 决定。
+    AgentSettled,
     /// A control-protocol permission ask for any other tool. This client has
     /// no approval UI, so the runner denies it in place — the same net
     /// behavior as before the control protocol (headless cannot prompt).
@@ -85,6 +103,17 @@ pub enum EngineEvent {
     },
     /// Actual model ID emitted by the engine or resolved at launch.
     Model(String),
+    /// Reasoning effort level requested at launch, then the level the engine actually reported.
+    Effort(String),
+    /// MCP servers the CLI reported as loaded for this session (claude
+    /// `system/init`): `(name, status)` pairs plus the session's tool names
+    /// (used to attribute `mcp__<server>__<tool>` tools back to their server).
+    /// Consumed by the MCP settings page's runtime section; not streamed to
+    /// the chat UI.
+    McpServers {
+        servers: Vec<(String, Option<String>)>,
+        tools: Vec<String>,
+    },
 }
 /// One todo entry carried to the frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -127,7 +156,8 @@ pub(crate) fn parse_tool_args_value(value: &Value) -> Option<Value> {
                 return None;
             }
             match serde_json::from_str::<Value>(trimmed) {
-                Ok(parsed) => parse_tool_args_value(&parsed).or_else(|| Some(Value::String(trimmed.to_string()))),
+                Ok(parsed) => parse_tool_args_value(&parsed)
+                    .or_else(|| Some(Value::String(trimmed.to_string()))),
                 Err(_) => Some(Value::String(trimmed.to_string())),
             }
         }
@@ -370,7 +400,11 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
         }),
         "append" => {
             let items = match args.get("items").and_then(Value::as_array) {
-                Some(items) => items.iter().filter_map(Value::as_str).map(pending_item).collect(),
+                Some(items) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(pending_item)
+                    .collect(),
                 None => phase_items(args),
             };
             Some(TodosPayload {

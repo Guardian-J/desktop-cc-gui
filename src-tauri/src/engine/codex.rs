@@ -1,11 +1,13 @@
 use super::{
     command_for_binary, images, push_session_id, BuiltCommand, Engine, EngineEvent, SendRequest,
+    Transport,
 };
 use serde_json::Value;
 
-/// Codex one-shot: `codex exec --json` (verified against codex CLI live).
-/// The legacy app used the persistent app-server JSON-RPC; exec mode gives
-/// the same session files and item.completed messages without a daemon.
+/// Codex child transport: `codex exec --json` (verified against codex CLI
+/// live). A local workspace sends through the app-server instead — only that
+/// protocol carries the model's question tool (`item/tool/requestUserInput`);
+/// `codex exec` answers every question itself.
 pub struct CodexEngine;
 
 /// Process-scoped equivalents of the provider keys formerly written into
@@ -161,14 +163,69 @@ impl Engine for CodexEngine {
         "codex"
     }
 
+    /// Codex's app-server is the only transport that can hand the user a
+    /// question: `codex exec` declares `request_user_input is not supported in
+    /// exec mode` and picks the answers itself.
+    fn drives_own_transport(&self) -> bool {
+        true
+    }
+
+    /// A remote workspace keeps the CLI child path: the app-server driver
+    /// spawns the CLI locally and has no ssh path into the distro.
+    fn transport_for(&self, wsl: bool) -> Transport {
+        if wsl {
+            Transport::Child
+        } else {
+            Transport::Own
+        }
+    }
+
+    /// The command the driver spawns. Model/effort/provider flags land on it
+    /// from [`apply_channel`] like any child; only the switch that enables the
+    /// question tool has to be here.
+    fn host_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
+        let mut cmd = command_for_binary(bin);
+        cmd.arg("app-server");
+        // Without this the model never asks: it emits a plain agent message
+        // (plus a sleep item) instead of a client request.
+        cmd.arg("--enable");
+        cmd.arg("default_mode_request_user_input");
+        // Fast mode is Codex's service_tier=priority; the driver's thread/start
+        // carries model and sandbox, but not the tier.
+        if let Some(tier) = req.service_tier.as_deref() {
+            if !matches!(tier, "default" | "priority") {
+                return Err("Invalid Codex service tier".to_string());
+            }
+            cmd.arg("-c");
+            cmd.arg(format!("service_tier=\"{tier}\""));
+        }
+        Ok(BuiltCommand {
+            command: cmd,
+            stdin_payload: None,
+            // The driver answers parked questions on this pipe.
+            keep_stdin_open: true,
+            cleanup_files: Vec::new(),
+            mcp_restore: None,
+            // The app-server assigns the thread id; a resume passes
+            // thread/resume with the id the conversation already holds.
+            preassigned_session_id: None,
+        })
+    }
+
     fn supports_images(&self) -> bool {
         true // -i/--image FILE
+    }
+    fn supports_effort(&self) -> bool {
+        true
     }
     fn supported_permissions(&self) -> &'static [&'static str] {
         &["auto", "manual", "bypass"]
     }
 
     fn build_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String> {
+        if super::codex_read_only::requested(req) {
+            return Err("Codex read-only planning requires the local app-server; exec/WSL fallback is forbidden".into());
+        }
         let mut cmd = command_for_binary(bin);
         cmd.arg("exec");
         let mut preassigned = None;
@@ -237,6 +294,7 @@ impl Engine for CodexEngine {
             stdin_payload: Some(req.prompt.clone()),
             keep_stdin_open: false,
             cleanup_files: Vec::new(),
+            mcp_restore: None,
             preassigned_session_id: preassigned,
         })
     }
@@ -315,9 +373,11 @@ impl Engine for CodexEngine {
                 // other line) stays a non-terminal notice — only turn.failed
                 // ends the turn.
                 match parse_reconnect_notice(&value) {
-                    Some((attempt, max, message)) => {
-                        out.push(EngineEvent::Retry { attempt, max, message })
-                    }
+                    Some((attempt, max, message)) => out.push(EngineEvent::Retry {
+                        attempt,
+                        max,
+                        message,
+                    }),
                     None => out.push(EngineEvent::Warn(error_message(&value))),
                 }
             }
@@ -465,6 +525,8 @@ mod tests {
             permission: Some("auto".into()),
             additional_dirs: Vec::new(),
             provider_id: None,
+            computer_use: None,
+            allowed_tools: None,
         }
     }
 
@@ -562,7 +624,10 @@ mod tests {
         let command = channel_command(&provider, &base_req());
         let config = overrides(&command);
         assert_eq!(config["model_context_window"].as_integer(), Some(1_000_000));
-        assert_eq!(config["model_auto_compact_token_limit"].as_integer(), Some(900_000));
+        assert_eq!(
+            config["model_auto_compact_token_limit"].as_integer(),
+            Some(900_000)
+        );
     }
 
     #[test]

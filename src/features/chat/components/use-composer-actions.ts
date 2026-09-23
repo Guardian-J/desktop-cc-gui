@@ -5,6 +5,8 @@ import type { ComposerInputHandle } from "@/components/application/ai-chat/ai-ch
 import { mentionToken } from "@/components/application/ai-chat/file-tags";
 import { pickFiles } from "@/lib/platform";
 import { useChatStore, type ActiveSession } from "../store";
+import { matchAppCommand } from "@/components/application/ai-chat/app-commands";
+import { useMcpPanel } from "@/features/mcp/panel";
 import { recordPrompt } from "../prompt-history";
 import { IMAGE_EXTENSIONS } from "./use-composer-images";
 
@@ -37,6 +39,8 @@ export function useComposerActions({
     send,
     queueMessage,
     interrupt,
+    startNewChat,
+    compactContext,
   } = useChatStore(
     useShallow((s) => ({
       setDraft: s.setDraft,
@@ -44,6 +48,8 @@ export function useComposerActions({
       send: s.send,
       queueMessage: s.queueMessage,
       interrupt: s.interrupt,
+      startNewChat: s.startNewChat,
+      compactContext: s.compactContext,
     })),
   );
 
@@ -53,6 +59,25 @@ export function useComposerActions({
       recordPrompt(value);
       setDraft(sessionKey, "");
       clearImages();
+      // App-level commands ("/new", "/compact", "/mcp") never reach the
+      // engine — headless/protocol launches can't interpret them. A
+      // user-defined catalog command of the same name takes precedence
+      // (matchAppCommand).
+      if (images.length === 0) {
+        const command = matchAppCommand(value, active.workspacePath);
+        if (command === "new") {
+          startNewChat(active.workspacePath);
+          return;
+        }
+        if (command === "compact" && active.sessionId && !streaming) {
+          void compactContext();
+          return;
+        }
+        if (command === "mcp") {
+          useMcpPanel.getState().openPanel();
+          return;
+        }
+      }
       // A turn is in flight: park the message in the session's queue; the
       // store drains it FIFO when the turn ends.
       if (streaming) {
@@ -61,7 +86,7 @@ export function useComposerActions({
       }
       void send(value, images);
     },
-    [active, images, streaming, sessionKey, setDraft, clearImages, send, queueMessage],
+    [active, images, streaming, sessionKey, setDraft, clearImages, send, queueMessage, startNewChat, compactContext],
   );
 
   // File-tree "+" asks the composer to insert an @path mention at the caret.

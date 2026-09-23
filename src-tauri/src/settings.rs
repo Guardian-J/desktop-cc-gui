@@ -104,6 +104,8 @@ pub struct AppSettings {
     pub command_palette_shortcut: Option<String>,
     #[serde(default = "default_sidebar_search_shortcut")]
     pub sidebar_search_shortcut: Option<String>,
+    #[serde(default = "default_chat_search_shortcut")]
+    pub chat_search_shortcut: Option<String>,
     #[serde(default = "default_toggle_terminal_shortcut")]
     pub toggle_terminal_shortcut: Option<String>,
     #[serde(default = "default_toggle_sidebar_shortcut")]
@@ -125,6 +127,10 @@ pub struct AppSettings {
     /// until the user folds it (设置 → 通用 → 行为 → 思考过程).
     #[serde(default)]
     pub thinking_auto_collapse: Option<bool>,
+    /// Beta entry points (设置 → 其他 → 内测功能): feature id -> enabled.
+    /// Empty/missing = the entry stays hidden; every id is off by default.
+    #[serde(default)]
+    pub beta_features: HashMap<String, bool>,
     /// Terminal shell override; None/empty = auto-detect from $SHELL/COMSPEC.
     /// Validated with the same spawn-target rules as bin overrides.
     #[serde(default)]
@@ -175,6 +181,9 @@ fn default_command_palette_shortcut() -> Option<String> {
 fn default_sidebar_search_shortcut() -> Option<String> {
     Some("cmd+l".to_string())
 }
+fn default_chat_search_shortcut() -> Option<String> {
+    Some("cmd+f".to_string())
+}
 fn default_toggle_terminal_shortcut() -> Option<String> {
     Some("cmd+j".to_string())
 }
@@ -217,6 +226,15 @@ pub fn generate_pair_key() -> String {
 
 impl Default for AppSettings {
     fn default() -> Self {
+        let mut default_efforts = HashMap::new();
+        // 为所有引擎设置默认推理强度为 "medium"
+        for engine in &[
+            "claude", "pi", "omp", "agy", "codex", "grok", "opencode", "kimi", "dsh", "qoder",
+            "qoder-cn",
+        ] {
+            default_efforts.insert(engine.to_string(), "medium".to_string());
+        }
+
         Self {
             theme: default_theme(),
             titlebar: default_titlebar(),
@@ -232,7 +250,7 @@ impl Default for AppSettings {
             language: default_language(),
             default_models: HashMap::new(),
             custom_models: HashMap::new(),
-            default_efforts: HashMap::new(),
+            default_efforts,
             omp_openai_service_tier: None,
             codex_service_tier: None,
             codex_home: None,
@@ -242,6 +260,7 @@ impl Default for AppSettings {
             interrupt_shortcut: None,
             command_palette_shortcut: default_command_palette_shortcut(),
             sidebar_search_shortcut: default_sidebar_search_shortcut(),
+            chat_search_shortcut: default_chat_search_shortcut(),
             toggle_terminal_shortcut: default_toggle_terminal_shortcut(),
             toggle_sidebar_shortcut: default_toggle_sidebar_shortcut(),
             toggle_side_panel_shortcut: default_toggle_side_panel_shortcut(),
@@ -251,6 +270,7 @@ impl Default for AppSettings {
             decrease_ui_scale_shortcut: default_decrease_ui_scale_shortcut(),
             reset_ui_scale_shortcut: default_reset_ui_scale_shortcut(),
             thinking_auto_collapse: None,
+            beta_features: HashMap::new(),
             terminal_shell_path: None,
             dsh_host: None,
             dsh_port: None,
@@ -1033,7 +1053,9 @@ mod tests {
         );
         let mac: AppSettings = serde_json::from_str(r#"{"titlebar":"mac"}"#).unwrap();
         assert_eq!(mac.titlebar, "mac");
-        assert!(serde_json::to_string(&mac).unwrap().contains("\"titlebar\":\"mac\""));
+        assert!(serde_json::to_string(&mac)
+            .unwrap()
+            .contains("\"titlebar\":\"mac\""));
     }
 
     #[test]
@@ -1081,7 +1103,10 @@ mod tests {
         } else {
             "/opt/ccgui-codex-home-probe"
         };
-        assert_eq!(validate_home_override(ok).unwrap(), std::path::PathBuf::from(ok));
+        assert_eq!(
+            validate_home_override(ok).unwrap(),
+            std::path::PathBuf::from(ok)
+        );
         assert!(validate_home_override("/tmp/codex-home").is_err());
         assert!(validate_home_override("relative/codex").is_err());
     }
@@ -1121,10 +1146,7 @@ mod tests {
     }
 }
 #[tauri::command]
-pub fn set_window_theme(
-    app: tauri::AppHandle,
-    dark: bool,
-) -> Result<(), String> {
+pub fn set_window_theme(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
     // Only Windows consumes these; reference unconditionally so macOS/Linux
     // builds don't warn.
     let _ = (&app, dark);
@@ -1132,11 +1154,7 @@ pub fn set_window_theme(
     {
         use tauri::{Manager, Theme};
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_theme(Some(if dark {
-                Theme::Dark
-            } else {
-                Theme::Light
-            }));
+            let _ = window.set_theme(Some(if dark { Theme::Dark } else { Theme::Light }));
         }
     }
     Ok(())

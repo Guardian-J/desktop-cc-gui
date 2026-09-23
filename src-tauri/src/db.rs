@@ -29,6 +29,12 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // ON DELETE CASCADE keeps session_messages/messages_fts and
+        // fts_state in step with every sessions-row delete path (session
+        // delete, stale pruning, workspace removal) without each site
+        // remembering the index tables. No pre-existing table declares an
+        // FK, so enabling enforcement changes nothing else.
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&conn)?;
         Ok(Self(Mutex::new(conn)))
     }
@@ -549,6 +555,56 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             updated_at INTEGER NOT NULL,
             PRIMARY KEY(engine, session_id)
         );
+        -- Message bodies for full-text search. The transcript files stay
+        -- the source of truth; this table is a derived index rebuilt by
+        -- history::search::index_pending whenever a file's stat moves.
+        CREATE TABLE IF NOT EXISTS session_messages(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engine TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            text TEXT NOT NULL,
+            ts_ms INTEGER,
+            UNIQUE(engine, session_id, seq),
+            FOREIGN KEY(engine, session_id)
+                REFERENCES sessions(engine, session_id) ON DELETE CASCADE
+        );
+        -- External-content FTS5: text lives once in session_messages, the
+        -- FTS table is index-only and the triggers sync both in the same
+        -- transaction. trigram because unicode61 (agentsview's choice) has
+        -- no CJK substring capability: a run of Chinese is one token there,
+        -- while trigram gives substring match for Chinese and English alike.
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            text,
+            content='session_messages',
+            content_rowid='id',
+            tokenize='trigram'
+        );
+        CREATE TRIGGER IF NOT EXISTS session_messages_ai AFTER INSERT ON session_messages BEGIN
+            INSERT INTO messages_fts(rowid, text) VALUES(new.id, new.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS session_messages_ad AFTER DELETE ON session_messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS session_messages_au AFTER UPDATE ON session_messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
+            INSERT INTO messages_fts(rowid, text) VALUES(new.id, new.text);
+        END;
+        -- Per-session index stamp: a session re-parses only when its file
+        -- stat or the index derivation version moved. Cascade-kept with the
+        -- sessions row like session_messages.
+        CREATE TABLE IF NOT EXISTS fts_state(
+            engine TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            file_mtime_ms INTEGER NOT NULL,
+            version TEXT NOT NULL,
+            indexed_at INTEGER NOT NULL,
+            PRIMARY KEY(engine, session_id),
+            FOREIGN KEY(engine, session_id)
+                REFERENCES sessions(engine, session_id) ON DELETE CASCADE
+        );
         ",
     )?;
     // NB: no `cache_version` meta row — it was written but never read; cache
@@ -658,7 +714,8 @@ mod tests {
         };
         assert_eq!(read(), None, "no record yet");
 
-        db.remember_session_effort("omp", "s1", "xhigh", 10).unwrap();
+        db.remember_session_effort("omp", "s1", "xhigh", 10)
+            .unwrap();
         assert_eq!(read().as_deref(), Some("xhigh"), "the level survives");
 
         db.remember_session_effort("omp", "s1", "low", 20).unwrap();
@@ -753,10 +810,16 @@ mod tests {
         assert!(db.web_device_approve("d1", 2_000).unwrap());
         let approved = db.web_device_get("d1").unwrap().unwrap();
         assert_eq!(approved.approved_at, Some(2_000));
-        assert_eq!(approved.created_at, 1_000, "approval keeps the first-seen time");
+        assert_eq!(
+            approved.created_at, 1_000,
+            "approval keeps the first-seen time"
+        );
 
         assert!(db.web_device_revoke("d1").unwrap());
-        assert!(db.web_device_get("d1").unwrap().is_none(), "revoked = forgotten");
+        assert!(
+            db.web_device_get("d1").unwrap().is_none(),
+            "revoked = forgotten"
+        );
     }
 
     #[test]
@@ -887,11 +950,15 @@ mod tests {
         let db = Db::open_at(&scratch.path("app.db")).unwrap();
         assert_eq!(db.plugin_kv_get("p1", "k").unwrap(), None);
 
-        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 1})).unwrap();
-        db.plugin_kv_set("p1", "other", &serde_json::json!("s")).unwrap();
-        db.plugin_kv_set("p2", "k", &serde_json::json!(true)).unwrap();
+        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 1}))
+            .unwrap();
+        db.plugin_kv_set("p1", "other", &serde_json::json!("s"))
+            .unwrap();
+        db.plugin_kv_set("p2", "k", &serde_json::json!(true))
+            .unwrap();
         // Same key under another plugin is an independent row; overwrite wins.
-        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 2})).unwrap();
+        db.plugin_kv_set("p1", "k", &serde_json::json!({"n": 2}))
+            .unwrap();
         assert_eq!(
             db.plugin_kv_get("p1", "k").unwrap(),
             Some(serde_json::json!({"n": 2}))

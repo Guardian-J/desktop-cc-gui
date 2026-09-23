@@ -1,5 +1,6 @@
 import { listen } from "./transport";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { performanceRecorder } from "./performance-diagnostics";
 
 export interface EngineEventPayload {
   runId: string;
@@ -15,22 +16,49 @@ export interface EngineEventPayload {
     | "error"
     | "warn"
     | "retry"
+    | "compaction"
     | "permission_denied"
     | "question"
     | "question_settled"
     | "done"
-    | "model";
+    | "model"
+    | "effort";
   data: unknown;
   /** Emit-side timestamp (Unix ms), stamped in TurnState::push. Absent from
    *  payloads produced before SDK 0.3.8. */
   ts?: number;
+  /** Host-measured generation window (ms) for `usage`/`done` reports: the
+   *  model's actual stream span (first delta / message_start → message_stop
+   *  / usage), with tool execution and idle time excluded. Absent when the
+   *  report could not be timed; consumers fall back to report-to-report
+   *  timing. Since SDK 0.3.15. */
+  genMs?: number;
 }
 
 /** Batched engine events arrive as an array under a single event name. */
 export function listenEngineEvents(
   cb: (events: EngineEventPayload[]) => void,
 ): Promise<UnlistenFn> {
-  return listen<EngineEventPayload[]>("engine://event", (e) => cb(e.payload));
+  return listen<EngineEventPayload[]>("engine://event", (event) => {
+    if (!performanceRecorder.isEnabled()) { cb(event.payload); return; }
+    const startedAt = performance.now();
+    performanceRecorder.count("engineEvents", event.payload.length);
+    for (const item of event.payload) {
+      if (item.kind === "delta" || item.kind === "thinking") performanceRecorder.count("textEvents", 1);
+      if (item.kind === "message" && item.data && typeof item.data === "object" && "role" in item.data &&
+        (item.data.role === "tool" || item.data.role === "tool_result")) performanceRecorder.count("toolEvents", 1);
+    }
+    try { cb(event.payload); }
+    finally { performanceRecorder.duration("engineBatch", performance.now() - startedAt); }
+  });
+}
+
+/** 任务工作台 agent 节点的事件流（mission::mission_agent_start）：
+ *  与聊天/插件流隔离，前端 mission runtime 按 run id 路由。 */
+export function listenMissionAgentEvents(
+  cb: (events: EngineEventPayload[]) => void,
+): Promise<UnlistenFn> {
+  return listen<EngineEventPayload[]>("mission-agent://event", (e) => cb(e.payload));
 }
 
 export function listenSessionsChanged(cb: () => void): Promise<UnlistenFn> {

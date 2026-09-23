@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import Globe from "lucide-react/dist/esm/icons/globe";
+import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid";
 import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import PanelLeft from "lucide-react/dist/esm/icons/panel-left";
 import ScanSearch from "lucide-react/dist/esm/icons/scan-search";
@@ -25,6 +26,7 @@ import { cx } from "@/utils/cx";
 import { needsWindowControls, useTitlebarStyle } from "@/features/settings/titlebar";
 import { WindowControls } from "@/components/application/window-controls";
 import { useRemoteControl } from "@/hooks/use-remote-control";
+import { compareByOrder, sidebarNavRegistry, useRegistry } from "@ccgui/plugin-sdk";
 
 type IconComponent = ComponentType<{
   className?: string;
@@ -68,7 +70,7 @@ function NavItem({
  *  InfoTip: outside press, Escape, scroll, or a second click closes it). The
  *  button stays enabled so the tip stays reachable; `aria-disabled` carries
  *  the unavailable state. */
-function DisabledNavItem({
+export function DisabledNavItem({
   icon: Icon,
   label,
   tip,
@@ -139,8 +141,9 @@ function SearchPaletteButton({ onOpen }: { onOpen?: () => void }) {
 }
 
 /** Window drag strip reaching the overlay titlebar: macOS traffic lights
- *  float over its left edge, action icons pin right. Windows 仿 mac 模式在
- *  这里放自绘三色按钮。 */
+ *  float over its left edge, action icons pin right. "deep" lets the container wrappers
+ *  (icon gaps) drag/zoom too; the icon buttons stay clickable. Windows
+ *  仿 mac 模式在这里放自绘三色按钮。 */
 export function SidebarDragStrip({
   onClose,
   onOpenSearch,
@@ -152,7 +155,7 @@ export function SidebarDragStrip({
   const titlebarStyle = useTitlebarStyle();
   return (
     <div
-      data-tauri-drag-region
+      data-tauri-drag-region="deep"
       className="flex h-10 w-full shrink-0 items-center justify-between gap-1 border-b border-separator-border px-3"
     >
       <div className="flex min-w-0 items-center">
@@ -187,26 +190,39 @@ export function SidebarBrandRow({ onOpenSearch }: { onOpenSearch?: () => void })
   );
 }
 
-/** Primary actions: 新建会话/浏览器 (会话搜索在顶栏图标 + ⌘L 弹窗). */
+/** Primary actions: 新建会话/插件/浏览器/任务工作台 (会话搜索在顶栏图标 + ⌘L 弹窗),
+ *  其后是插件注册的导航项（SDK 0.3.12 ui:sidebar-entry）。 */
 export function SidebarPrimaryNav({
   onNewSession,
   onNewBrowser,
+  onOpenPlugins,
+  onOpenMission,
 }: {
   onNewSession?: () => void;
   onNewBrowser?: () => void;
+  onOpenPlugins?: () => void;
+  onOpenMission?: () => void;
 }) {
   const { t } = useTranslation();
+  const pluginEntries = [...useRegistry(sidebarNavRegistry)].sort(compareByOrder);
   return (
     <nav className="flex w-full shrink-0 flex-col gap-1">
       <NavItem icon={MessageSquarePlus} label={t("chat.newSession")} onClick={onNewSession} />
+      <NavItem icon={LayoutGrid} label={t("plugins.hub.title")} onClick={onOpenPlugins} />
       {onNewBrowser && (
         <NavItem icon={Globe} label={t("chat.newBrowser")} onClick={onNewBrowser} />
       )}
-      <DisabledNavItem
-        icon={Workflow}
-        label={t("chat.automation")}
-        tip={t("chat.automationComingSoon")}
-      />
+      {onOpenMission && (
+        <NavItem icon={Workflow} label={t("mission.title")} onClick={onOpenMission} />
+      )}
+      {pluginEntries.map((entry) => (
+        <NavItem
+          key={entry.id}
+          icon={(entry.icon ?? LayoutGrid) as IconComponent}
+          label={entry.label()}
+          onClick={entry.onOpen}
+        />
+      ))}
     </nav>
   );
 }

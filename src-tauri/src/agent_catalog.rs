@@ -490,10 +490,7 @@ pub(crate) async fn set_built_in_agent_division_enabled(
             .iter()
             .any(|division| division.id == division_id)
         {
-            return Err(format!(
-                "unknown built-in agent division `{}`",
-                division_id
-            ));
+            return Err(format!("unknown built-in agent division `{}`", division_id));
         }
         let division_agent_ids: HashSet<&str> = catalog
             .agents
@@ -572,10 +569,8 @@ mod tests {
     impl ScratchHome {
         fn new(name: &str) -> Self {
             let guard = crate::paths::HOME_ENV_LOCK.lock();
-            let dir = std::env::temp_dir().join(format!(
-                "ccgui-agent-catalog-{name}-{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("ccgui-agent-catalog-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             let previous = std::env::var_os("HOME");
@@ -685,10 +680,16 @@ mod tests {
 
     #[test]
     fn prompt_resolution_checks_hash() {
+        // Every bundled prompt must match its pinned hash — a single drifted
+        // file (e.g. CRLF checkout on Windows) breaks only that agent at
+        // runtime, so sampling agents[0] is not enough.
         let catalog = load_catalog_from_root(default_catalog_root()).expect("catalog");
-        let (agent, prompt) = resolve_prompt(&catalog, &catalog.agents[0].id.clone()).expect("prompt");
-        assert!(!prompt.trim().is_empty());
-        assert_eq!(agent.prompt_hash.len(), 64);
+        for agent in &catalog.agents {
+            let (resolved, prompt) = resolve_prompt(&catalog, &agent.id)
+                .unwrap_or_else(|error| panic!("prompt `{}` must resolve: {error}", agent.id));
+            assert!(!prompt.trim().is_empty());
+            assert_eq!(resolved.prompt_hash.len(), 64);
+        }
     }
 
     #[test]
@@ -734,7 +735,11 @@ mod tests {
         assert_eq!(view.provider.license, "MIT");
         assert_eq!(view.divisions.len(), 17);
         assert_eq!(view.agents.len(), 248);
-        let enabled_view = view.agents.iter().find(|a| a.id == agent.id).expect("agent view");
+        let enabled_view = view
+            .agents
+            .iter()
+            .find(|a| a.id == agent.id)
+            .expect("agent view");
         assert!(enabled_view.enabled);
         assert_eq!(enabled_view.name, agent.name.zh_cn);
         let division = view
@@ -743,7 +748,17 @@ mod tests {
             .find(|d| d.id == agent.division_id)
             .expect("division view");
         assert_eq!(division.enabled_count, 1);
-        assert_eq!(division.label, catalog.manifest.divisions.iter().find(|d| d.id == agent.division_id).expect("division").label.zh_cn);
+        assert_eq!(
+            division.label,
+            catalog
+                .manifest
+                .divisions
+                .iter()
+                .find(|d| d.id == agent.division_id)
+                .expect("division")
+                .label
+                .zh_cn
+        );
     }
 
     #[test]
@@ -757,7 +772,10 @@ mod tests {
             .map(|agent| agent.id.as_str())
             .collect();
         let division_size = division_agent_ids.len();
-        assert!(division_size > 1, "fixture division should hold several agents");
+        assert!(
+            division_size > 1,
+            "fixture division should hold several agents"
+        );
 
         // Enabling a division enables exactly its agents; disabling one agent
         // inside it leaves the rest; disabling the division clears them all

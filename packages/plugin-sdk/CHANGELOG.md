@@ -1,5 +1,49 @@
 # @ccgui/plugin-sdk changelog
 
+## 0.3.15 — 2026-09-23
+- **payload 增强**：引擎事件 wire payload 新增 `genMs`（宿主实测生成窗口毫秒数）——只出现在 `usage` / `done` 事件上，计量该报告对应的模型
+  真实生成时间：从响应流打开（引擎 message_start，或首个文本/思考 delta）
+  到流关闭，工具执行、用户等待与轮间隔全部排除。插件用它算 tok/s
+  （output token ÷ 生成窗口）即得不含工具等待的生成速度；字段缺失时
+  回退旧的相邻报告 `ts` 间隔。首个消费者：token-meter 插件。
+
+## 0.3.14 — 2026-09-23
+- `ui:conversation-mode` / `ctx.ui.registerConversationMode({ key?, label, component })`
+  注册当前会话内的替代界面。`PluginConversationProps` 提供稳定的 `conversationId`、
+  `workspacePath`、`language` 与 `onExit`；普通会话发送中或队列非空时不可进入。
+- `PluginConversationProps.setExitBlocked?(blocked)` 供插件在 layout effect 中报告
+  忙碌/恢复状态；锁定时宿主禁用退出按钮且拒绝 `onExit()`。锁按会话挂载隔离，
+  切换会话后旧回调不能退出新界面；空闲状态下仍可从崩溃边界返回普通对话。
+- `ctx.agent.catalog(workspacePath)`（`agent` 权限）只返回引擎可用性、只读能力、
+  渠道与模型的 ID/显示名，不返回配置、认证或环境变量。模型探测不可用时为 `[]`，
+  引擎与配置读取失败仍会 reject。禁用的引擎不出现在列表中。
+- `ctx.agent.start` 新增可选 `readOnly`；只读能力以 native 实现为准，目前仅 Pi
+  支持隔离只读调用；Codex 不宣称支持。未提供时保留既有行为。
+- `start({ requestId? })` 接受 32 位十六进制请求标识，native 生成
+  `pa-{pluginId}-{requestId}`；插件可在启动前持久化预期 run id 来恢复早到事件。
+  `interrupt(runId): Promise<boolean>` 保留 native 返回值：`true` 为已路由中断
+  （仍需等待终态事件），`false` 为没有匹配的活动 run。
+
+## 0.3.13 — 2026-09-21
+- **新增能力 `agent`**：`ctx.agent.start/interrupt` 让插件经宿主引擎管线
+  运行 agent 轮次——与聊天发送共用 spawn/reader/registry（渠道注入、进程
+  注册、中断），事件走独立的 `plugin-agent://event` 流，前端按 run id
+  属主前缀路由到 `agent://<pluginId>` 总线话题。插件 run 不会进 chat
+  store，也不被 chat 的 Stop 误杀。桌面专属。
+- 权限单一事实源新增 `agent`；通用 bridge 白名单同步放开
+  `plugin_agent_start` / `plugin_agent_interrupt`。
+
+## 0.3.12 — 2026-09-21
+- **新增扩展点 `ui:sidebar-entry`**：`ctx.ui.registerSidebarNav` 在首页侧栏
+  内建「自动化」入口之下注册导航项（label/icon/order/onOpen），经宿主
+  `sidebarNavRegistry` 渲染，与内建导航同一 chrome。
+- **新增扩展点 `ui:center-tab`**：`ctx.ui.registerCenterTab` 注册中心页签
+  定义（title/icon/component），`ctx.ui.openCenterTab(key?)` 打开或聚焦——
+  页签与会话/文件/浏览器共享中部页签条，组件渲染在 PluginBoundary 内。
+  打开未注册的页签会抛错（失败必须可见）。
+- 权限单一事实源 `spec/permissions.json` 新增上述两项；TS/Rust/模板校验
+  全部自动派生。
+
 ## 0.3.11 — 2026-09-18
 - **修复权限漂移**：`registerComposerSlot` 运行时一直校验 `ui:composer`，
   但该字符串在 0.3.9 改名为 `ui:composer-status` 时未同步更新

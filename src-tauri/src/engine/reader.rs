@@ -1,22 +1,23 @@
 //! Stdout reader and per-turn streaming state: the capped line reader,
 //! event dispatch core, and settle/cleanup path for engine process runs.
 
-use super::events::EngineEvent;
 use super::codex_usage;
-use super::registry::{ProcessRegistry, kill_process_group};
-use super::Engine;
-#[cfg(windows)]
-use super::job;
+use super::events::EngineEvent;
 #[cfg(test)]
 use super::grok;
+#[cfg(windows)]
+use super::job;
+use super::registry::{kill_process_group, ProcessRegistry};
+use super::Engine;
 use crate::event_sink;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdout};
 #[cfg(test)]
 use tokio::process::Command;
+use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::Mutex as TokioMutex;
 
 /// Grace between a Stop kill and force-aborting the reader task. A healthy
@@ -110,7 +111,7 @@ pub(crate) fn spawn_stderr_capture(stderr: ChildStderr) -> Arc<Mutex<String>> {
 
 /// Engine stderr can echo the channel credentials from the CLI's own config files; redact credential
 /// shapes before the tail is shown to the user in an error banner.
-fn redact_secrets(text: &str) -> String {
+pub(super) fn redact_secrets(text: &str) -> String {
     use std::sync::LazyLock;
     static PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         [
@@ -142,6 +143,16 @@ pub(crate) struct TurnState {
     // engines (omp --print, codex exec); a future multi-turn-per-process
     // engine must reset this per turn instead.
     saw_any_output: bool,
+    pending_terminal: Option<(String, Value)>,
+    exit_confirmed: bool,
+    /// Start of the model-generation window currently open, if any.
+    gen_open_since: Option<Instant>,
+    /// The open window was opened by an explicit start marker
+    /// (`Generation{active:true}`), so only an explicit end / usage report
+    /// may close it — tool rows stream inside such a response.
+    gen_explicit: bool,
+    /// Generation milliseconds closed but not yet attached to a usage report.
+    gen_ms: u64,
 }
 impl TurnState {
     pub(crate) fn new(preassigned: Option<String>) -> Self {
@@ -152,6 +163,11 @@ impl TurnState {
             saw_error: false,
             attempt_error: None,
             saw_any_output: false,
+            pending_terminal: None,
+            exit_confirmed: false,
+            gen_open_since: None,
+            gen_explicit: false,
+            gen_ms: 0,
         }
     }
 
@@ -163,8 +179,41 @@ impl TurnState {
         kind: &str,
         data: Value,
     ) {
+        self.push_meta(sink, run_id, engine_id, kind, data, None)
+    }
+
+    /// Push a usage/done report carrying the measured generation window.
+    fn push_with_gen_ms(
+        &mut self,
+        sink: &Arc<event_sink::EventSink>,
+        run_id: &str,
+        engine_id: &str,
+        kind: &str,
+        data: Value,
+        gen_ms: Option<u64>,
+    ) {
+        self.push_meta(sink, run_id, engine_id, kind, data, gen_ms)
+    }
+
+    fn push_meta(
+        &mut self,
+        sink: &Arc<event_sink::EventSink>,
+        run_id: &str,
+        engine_id: &str,
+        kind: &str,
+        data: Value,
+        gen_ms: Option<u64>,
+    ) {
+        if !self.exit_confirmed
+            && run_id.starts_with("pa-")
+            && matches!(engine_id, "pi" | "codex")
+            && matches!(kind, "done" | "error")
+        {
+            self.pending_terminal = Some((kind.to_string(), data));
+            return;
+        }
         self.seq += 1;
-        sink.push(serde_json::json!({
+        let mut payload = serde_json::json!({
             "runId": run_id,
             "sessionId": self.native_session_id,
             "engine": engine_id,
@@ -177,7 +226,49 @@ impl TurnState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0),
-        }));
+        });
+        if let Some(gen_ms) = gen_ms {
+            // Measured generation window (stream open → close, tool execution
+            // excluded) for the report that just landed. Absent on every
+            // report the host could not time; consumers fall back to
+            // consecutive-report timing in that case.
+            payload["genMs"] = Value::from(gen_ms);
+        }
+        sink.push(payload);
+    }
+
+    /// Mark the model as generating: opens the window when none is open.
+    /// `explicit` records an engine-provided start marker (message_start),
+    /// which only an explicit end or a usage report may close.
+    fn gen_begin(&mut self, explicit: bool) {
+        if self.gen_open_since.is_none() {
+            self.gen_open_since = Some(Instant::now());
+            self.gen_explicit = explicit;
+        }
+    }
+
+    /// Close the open window, accumulating its span.
+    fn gen_end(&mut self) {
+        if let Some(since) = self.gen_open_since.take() {
+            self.gen_ms += since.elapsed().as_millis() as u64;
+        }
+        self.gen_explicit = false;
+    }
+
+    /// Close the open window and consume the accumulated span as this
+    /// report's `genMs`. None when nothing measurable was collected, so the
+    /// consumer keeps its report-to-report fallback.
+    fn take_gen_ms(&mut self) -> Option<u64> {
+        self.gen_end();
+        let ms = std::mem::take(&mut self.gen_ms);
+        (ms > 0).then_some(ms)
+    }
+
+    pub(crate) fn confirm_exit(&mut self, core: &TurnCore) {
+        self.exit_confirmed = true;
+        if let Some((kind, data)) = self.pending_terminal.take() {
+            self.push(&core.sink, &core.run_id, &core.engine_id, &kind, data);
+        }
     }
 }
 /// Event-routing core shared by process runs ([`RunContext`]) and virtual
@@ -220,20 +311,34 @@ impl TurnCore {
             return;
         }
         match event {
-            EngineEvent::Delta(text) => state.push(
-                &self.sink,
-                &self.run_id,
-                &self.engine_id,
-                "delta",
-                Value::String(text),
-            ),
-            EngineEvent::Thinking(text) => state.push(
-                &self.sink,
-                &self.run_id,
-                &self.engine_id,
-                "thinking",
-                Value::String(text),
-            ),
+            EngineEvent::Delta(text) => {
+                state.gen_begin(false);
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "delta",
+                    Value::String(text),
+                )
+            }
+            EngineEvent::Thinking(text) => {
+                state.gen_begin(false);
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "thinking",
+                    Value::String(text),
+                )
+            }
+            EngineEvent::Generation { active } => {
+                // Internal marker: never streamed, only folded into genMs.
+                if active {
+                    state.gen_begin(true);
+                } else {
+                    state.gen_end();
+                }
+            }
             EngineEvent::Message {
                 role,
                 text,
@@ -243,6 +348,17 @@ impl TurnCore {
                 result,
                 patch,
             } => {
+                // A tool row opening (or its arg patch), or a completed
+                // assistant snapshot (codex/kimi report whole messages), ends
+                // the response stream that preceded it. Windows opened by an
+                // explicit start marker keep running: claude streams tool
+                // arguments inside the same response and closes it at
+                // message_stop.
+                let response_end = role == "assistant"
+                    || (role == "tool" && result.is_none());
+                if response_end && !state.gen_explicit {
+                    state.gen_end();
+                }
                 let mut payload = serde_json::json!({ "role": role, "text": text });
                 if let Some(path) = path {
                     payload["path"] = Value::String(path);
@@ -272,10 +388,20 @@ impl TurnCore {
             EngineEvent::AttemptEnd { error } => state.attempt_error = error,
             EngineEvent::SessionId(id) => self.adopt_session_id(state, &id, true),
             EngineEvent::Usage(usage) => {
-                state.push(&self.sink, &self.run_id, &self.engine_id, "usage", usage)
+                let gen_ms = state.take_gen_ms();
+                state.push_with_gen_ms(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "usage",
+                    usage,
+                    gen_ms,
+                )
             }
             EngineEvent::Error(error) => {
+                state.gen_end();
                 state.saw_error = true;
+                crate::mcp::mark_run_ended(&self.run_id);
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -299,9 +425,23 @@ impl TurnCore {
                 let run_id = self.run_id.clone();
                 tokio::task::spawn_blocking(move || registry.kill(&run_id));
             }
+            EngineEvent::Compaction { active, reason } => {
+                // Not terminal: compaction is a mid-turn pause while the CLI
+                // summarizes; the UI swaps its status label until the end
+                // event (or turn settle) clears it.
+                state.gen_end();
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "compaction",
+                    serde_json::json!({ "active": active, "reason": reason }),
+                );
+            }
             EngineEvent::Warn(error) => {
                 // Not terminal: no saw_error — EOF settle still decides the
                 // turn's fate if the CLI gives up after this notice.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -319,6 +459,7 @@ impl TurnCore {
                 // request. The frontend renders it as live progress in the
                 // run status line (not as an error banner) and clears it on
                 // the next content event.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -334,6 +475,7 @@ impl TurnCore {
             } => {
                 // Not terminal either: the CLI works around the denial and
                 // the turn continues — the UI offers the grant alongside.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -350,6 +492,7 @@ impl TurnCore {
                 // Park the ask: the answer command rebuilds updatedInput from
                 // this exact input (the control protocol wants the full tool
                 // input back, with the answers merged in).
+                state.gen_end();
                 if let Some(entry) = self.registry.get(&self.run_id) {
                     if let Ok(mut questions) = entry.questions.lock() {
                         questions.insert(request_id.clone(), input.clone());
@@ -366,6 +509,19 @@ impl TurnCore {
                         "input": input,
                     }),
                 );
+            }
+            EngineEvent::AgentSettled => {
+                // 等价一次性模式的 EOF 收尾(见下方 finalize):未恢复的尝试
+                // 错误按 Error 落定,否则正常 Done。Done 分支会关掉 stdin,
+                // rpc 进程随之 drain 退出,EOF 收尾看到 saw_done 自然空转。
+                let event = match state.attempt_error.take() {
+                    Some(error) => EngineEvent::Error(error),
+                    None => EngineEvent::Done {
+                        session_id: None,
+                        usage: None,
+                    },
+                };
+                self.dispatch_event(state, event);
             }
             EngineEvent::QuestionSettled { request_id } => {
                 if let Some(entry) = self.registry.get(&self.run_id) {
@@ -419,20 +575,42 @@ impl TurnCore {
                     Value::String(model),
                 );
             }
+            EngineEvent::Effort(effort) => {
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "effort",
+                    Value::String(effort),
+                );
+            }
+            EngineEvent::McpServers { servers, tools } => {
+                // Not a chat event: the MCP settings page reads this snapshot
+                // (workspace-scoped, timestamped) instead of the stream.
+                crate::mcp::record_from_run(
+                    &self.run_id,
+                    state.native_session_id.as_deref(),
+                    servers,
+                    tools,
+                );
+            }
             EngineEvent::Done { session_id, usage } => {
+                let gen_ms = state.take_gen_ms();
                 state.saw_done = true;
+                crate::mcp::mark_run_ended(&self.run_id);
                 if let Some(id) = session_id {
                     self.adopt_session_id(state, &id, false);
                 }
                 // The turn is over: EOF the interactive stdin so the CLI
                 // exits instead of waiting for a next message forever.
                 self.registry.close_stdin(&self.run_id);
-                state.push(
+                state.push_with_gen_ms(
                     &self.sink,
                     &self.run_id,
                     &self.engine_id,
                     "done",
                     serde_json::json!({ "usage": usage }),
+                    gen_ms,
                 );
             }
         }
@@ -446,9 +624,13 @@ pub(crate) struct RunContext {
     /// Session id fixed before spawn (grok `-s`); seeds TurnState.
     pub(crate) preassigned_session_id: Option<String>,
     pub(crate) initial_model: Option<String>,
+    pub(crate) initial_effort: Option<String>,
     pub(crate) child: Arc<TokioMutex<Child>>,
     pub(crate) killed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) cleanup_files: Vec<PathBuf>,
+    /// omp computer-use workspace injection; restored with the same
+    /// lifetime as cleanup_files (every exit path funnels through here).
+    pub(crate) mcp_restore: Option<crate::computer_use::McpRestore>,
     pub(crate) stderr_buf: Arc<Mutex<String>>,
     /// Off-protocol stdout lines (plain text from CLI startup failures,
     /// wrapper errors, node crashes): parse_line drops non-JSON lines, so
@@ -464,6 +646,20 @@ impl Drop for RunContext {
     fn drop(&mut self) {
         // Also runs when the reader is aborted during interrupt or shutdown.
         cleanup_staged_files(&self.cleanup_files);
+        if let Some(restore) = &self.mcp_restore {
+            restore.restore();
+        }
+        // Last line of defence for the run's concurrency slot. The settle
+        // path removes keys by name and `kill`'s abort backstop drains them
+        // by run id, but a reader that dies any other way (a panic inside
+        // dispatch, a task dropped without either path running) never
+        // reaches those — and nothing sweeps dead pids, so the slot would
+        // stay pinned until app exit and sending would eventually wedge on
+        // "too many concurrent runs". Idempotent: on a healthy settle the
+        // keys are already gone and this finds nothing.
+        self.core
+            .registry
+            .remove_run_if_pid(&self.core.run_id, self.pid);
     }
 }
 impl RunContext {
@@ -471,13 +667,41 @@ impl RunContext {
         self.core.dispatch_event(state, event);
     }
 }
+/// Abort-safe registry cleanup for virtual (host-stream) runs, which own no
+/// [`RunContext`]: their settle code sits at the end of the transport task,
+/// so an abort (`kill`'s force-abort, shutdown) or a panic inside the turn
+/// would strand their keys and pin a concurrency slot until app exit. Held
+/// by the task for its whole life; idempotent on a healthy settle.
+pub(crate) struct VirtualRunGuard {
+    registry: Arc<ProcessRegistry>,
+    run_id: String,
+    virtual_pid: u32,
+}
+
+impl VirtualRunGuard {
+    pub(crate) fn new(registry: Arc<ProcessRegistry>, run_id: String, virtual_pid: u32) -> Self {
+        Self {
+            registry,
+            run_id,
+            virtual_pid,
+        }
+    }
+}
+
+impl Drop for VirtualRunGuard {
+    fn drop(&mut self) {
+        self.registry
+            .remove_run_if_pid(&self.run_id, self.virtual_pid);
+    }
+}
+
 /// Remove leftover channel staging dirs (`claude-staging`/`grok-staging`
 /// under app_home) from a crashed run: they hold per-send credentials and
 /// must not linger on disk. Live runs recreate them per send, so sweeping
 /// at startup is safe. Only these two known names are touched.
 pub fn sweep_staging_dirs() {
     let home = crate::paths::app_home();
-    for name in ["claude-staging", "grok-staging"] {
+    for name in ["claude-staging", "grok-staging", "codex-plan-staging"] {
         let dir = home.join(name);
         if dir.exists() {
             if let Err(error) = std::fs::remove_dir_all(&dir) {
@@ -491,10 +715,17 @@ pub fn sweep_staging_dirs() {
 }
 pub(crate) fn cleanup_staged_files(paths: &[PathBuf]) {
     for path in paths {
-        let result = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
         if let Err(error) = result {
             if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("[engine] failed to remove staging path {}: {error}", path.display());
+                eprintln!(
+                    "[engine] failed to remove staging path {}: {error}",
+                    path.display()
+                );
             }
         }
     }
@@ -556,6 +787,9 @@ pub(crate) async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
     let mut state = TurnState::new(ctx.preassigned_session_id.clone());
     if let Some(model) = ctx.initial_model.clone() {
         ctx.dispatch_event(&mut state, EngineEvent::Model(model));
+    }
+    if let Some(effort) = ctx.initial_effort.clone() {
+        ctx.dispatch_event(&mut state, EngineEvent::Effort(effort));
     }
     // codex reports usage into its own session log instead of the stdout
     // stream (the stream only carries it with `turn.completed`), so a long
@@ -665,13 +899,17 @@ pub(crate) async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
             // Flush the final rollout records BEFORE done/error. Sending them
             // afterwards made observers adopt the already-finished run again.
             if matches!(event, EngineEvent::Done { .. } | EngineEvent::Error(_))
-                && !state.saw_done && !state.saw_error
+                && !state.saw_done
+                && !state.saw_error
             {
                 if let Some(tail) = usage_tail.as_mut() {
                     for usage in tail.poll() {
                         ctx.dispatch_event(&mut state, EngineEvent::Usage(usage));
                     }
-                    if let EngineEvent::Done { usage: Some(usage), .. } = &mut event {
+                    if let EngineEvent::Done {
+                        usage: Some(usage), ..
+                    } = &mut event
+                    {
                         *usage = tail.with_window(usage);
                     }
                 }
@@ -708,9 +946,12 @@ pub(crate) async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
     }
     // Pending questions die with the run: settle their cards so the UI never
     // leaves an answerable question pointing at a dead process.
-    for key in [state.native_session_id.clone(), Some(ctx.core.run_id.clone())]
-        .into_iter()
-        .flatten()
+    for key in [
+        state.native_session_id.clone(),
+        Some(ctx.core.run_id.clone()),
+    ]
+    .into_iter()
+    .flatten()
     {
         for request_id in ctx.core.registry.take_questions(&key) {
             ctx.dispatch_event(&mut state, EngineEvent::QuestionSettled { request_id });
@@ -805,11 +1046,16 @@ pub(crate) async fn run_reader(stdout: ChildStdout, ctx: RunContext) {
             );
         }
     }
+    if status.is_some() {
+        state.confirm_exit(&ctx.core);
+    }
     ctx.core.sink.flush();
 }
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    use crate::engine::ChildEntry;
+    use std::collections::HashMap;
 
     /// The ring truncates by byte count: a naive drain start can land
     /// mid-CJK and panic (killing the stderr capture task silently).
@@ -832,30 +1078,162 @@ mod staging_tests {
     #[tokio::test]
     async fn reader_context_cleans_private_configs_on_completion_and_abort() {
         for abort in [false, true] {
-            let directory = std::env::temp_dir().join(format!("ccgui-reader-cleanup-{}", uuid::Uuid::new_v4()));
+            let directory =
+                std::env::temp_dir().join(format!("ccgui-reader-cleanup-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(directory.join("config.toml"), "temporary credential").unwrap();
-            let mut command = Command::new(if cfg!(windows) {"cmd.exe"} else {"sh"});
-            command.args(if cfg!(windows) {["/c", "exit 0"]} else {["-c", "exit 0"]});
+            let mut command = Command::new(if cfg!(windows) { "cmd.exe" } else { "sh" });
+            command.args(if cfg!(windows) {
+                ["/c", "exit 0"]
+            } else {
+                ["-c", "exit 0"]
+            });
             let mut child = command.spawn().unwrap();
             child.wait().await.unwrap();
             let ctx = RunContext {
-                core: TurnCore {sink: event_sink::EventSink::new(Arc::new(Noop)), registry: Arc::new(ProcessRegistry::default()), engine_id: "grok".into(), run_id: "test".into()},
-                engine_impl: Box::new(grok::GrokEngine), pid: 0,
-                preassigned_session_id: None, initial_model: None,
-                child: Arc::new(TokioMutex::new(child)), killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                cleanup_files: vec![directory.clone()], stderr_buf: Arc::new(Mutex::new(String::new())),
+                core: TurnCore {
+                    sink: event_sink::EventSink::new(Arc::new(Noop)),
+                    registry: Arc::new(ProcessRegistry::default()),
+                    engine_id: "grok".into(),
+                    run_id: "test".into(),
+                },
+                engine_impl: Box::new(grok::GrokEngine),
+                pid: 0,
+                preassigned_session_id: None,
+                initial_model: None,
+                initial_effort: None,
+                child: Arc::new(TokioMutex::new(child)),
+                killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                cleanup_files: vec![directory.clone()],
+                mcp_restore: None,
+                stderr_buf: Arc::new(Mutex::new(String::new())),
                 stdout_plain_buf: Arc::new(Mutex::new(String::new())),
+                // Upstream's own constructor omits this Windows-only guard
+                // field (E0063 on Windows); a plain test child owns no job.
+                #[cfg(windows)]
+                _tree_guard: None,
             };
             let task = tokio::spawn(async move {
-                if abort { std::future::pending::<()>().await; }
+                if abort {
+                    std::future::pending::<()>().await;
+                }
                 drop(ctx);
             });
-            if abort { task.abort(); }
+            if abort {
+                task.abort();
+            }
             let result = task.await;
             assert_eq!(result.is_err(), abort);
             assert!(!directory.exists());
         }
+    }
+
+    /// Slot accounting must survive a reader that dies without reaching
+    /// either settle path (abort here; a panic inside dispatch is the same
+    /// shape). Nothing sweeps dead pids, so a stranded key pins a
+    /// concurrency slot until app exit and sending eventually wedges on
+    /// "too many concurrent runs".
+    #[tokio::test]
+    async fn dropping_a_run_context_frees_the_runs_concurrency_slot() {
+        let mut command = Command::new(if cfg!(windows) { "cmd.exe" } else { "sh" });
+        command.args(if cfg!(windows) {
+            ["/c", "exit 0"]
+        } else {
+            ["-c", "exit 0"]
+        });
+        let mut child = command.spawn().unwrap();
+        child.wait().await.unwrap();
+        let registry = Arc::new(ProcessRegistry::default());
+        let entry = ChildEntry {
+            child: None,
+            pid: 4242,
+            run_id: "run-abort".into(),
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reader_abort: Arc::new(std::sync::OnceLock::new()),
+            stdin: None,
+            questions: Arc::new(Mutex::new(HashMap::new())),
+        };
+        registry.insert("run-abort".into(), entry.clone());
+        registry.insert_alias("session-abort".into(), entry);
+        let ctx = RunContext {
+            core: TurnCore {
+                sink: event_sink::EventSink::new(Arc::new(Noop)),
+                registry: Arc::clone(&registry),
+                engine_id: "grok".into(),
+                run_id: "run-abort".into(),
+            },
+            engine_impl: Box::new(grok::GrokEngine),
+            pid: 4242,
+            preassigned_session_id: None,
+            initial_model: None,
+            initial_effort: None,
+            child: Arc::new(TokioMutex::new(child)),
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cleanup_files: Vec::new(),
+            mcp_restore: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            stdout_plain_buf: Arc::new(Mutex::new(String::new())),
+            #[cfg(windows)]
+            _tree_guard: None,
+        };
+        let task = tokio::spawn(async move {
+            let _held = ctx;
+            std::future::pending::<()>().await;
+        });
+        task.abort();
+        assert!(task.await.is_err());
+
+        assert!(
+            registry.get("run-abort").is_none(),
+            "run-id key survived the abort"
+        );
+        assert!(
+            registry.get("session-abort").is_none(),
+            "session alias survived the abort"
+        );
+    }
+
+    /// Virtual (host-stream) runs own no RunContext: the guard is what frees
+    /// their keys when the transport task is aborted instead of settling.
+    #[tokio::test]
+    async fn dropping_a_virtual_run_guard_frees_every_key_of_that_run() {
+        let registry = Arc::new(ProcessRegistry::default());
+        let entry = ChildEntry {
+            child: None,
+            pid: 5150,
+            run_id: "run-v".into(),
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reader_abort: Arc::new(std::sync::OnceLock::new()),
+            stdin: None,
+            questions: Arc::new(Mutex::new(HashMap::new())),
+        };
+        registry.insert("run-v".into(), entry.clone());
+        registry.insert_alias("session-v".into(), entry);
+        // Another run's entry must be left alone.
+        registry.insert(
+            "run-other".into(),
+            ChildEntry {
+                child: None,
+                pid: 5151,
+                run_id: "run-other".into(),
+                killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                reader_abort: Arc::new(std::sync::OnceLock::new()),
+                stdin: None,
+                questions: Arc::new(Mutex::new(HashMap::new())),
+            },
+        );
+
+        {
+            let _guard = VirtualRunGuard::new(Arc::clone(&registry), "run-v".into(), 5150);
+            assert!(registry.get("run-v").is_some());
+        }
+
+        assert!(registry.get("run-v").is_none());
+        assert!(registry.get("session-v").is_none());
+        assert!(
+            registry.get("run-other").is_some(),
+            "unrelated run was swept"
+        );
     }
 }
 #[cfg(test)]
@@ -866,8 +1244,104 @@ mod terminal_event_tests {
     struct Collector(Mutex<Vec<Value>>);
     impl event_sink::Emit for Collector {
         fn emit_json(&self, _: &str, raw: &str) {
-            self.0.lock().unwrap().extend(serde_json::from_str::<Vec<Value>>(raw).unwrap());
+            self.0
+                .lock()
+                .unwrap()
+                .extend(serde_json::from_str::<Vec<Value>>(raw).unwrap());
         }
+    }
+
+    #[tokio::test]
+    async fn plugin_pi_and_codex_terminals_wait_for_confirmed_exit() {
+        for engine in ["pi", "codex"] {
+            for fail in [false, true] {
+                let collector = Arc::new(Collector::default());
+                let core = TurnCore {
+                    sink: event_sink::EventSink::with_name(
+                        collector.clone(),
+                        event_sink::PLUGIN_AGENT_EVENT_NAME,
+                    ),
+                    registry: Arc::new(ProcessRegistry::default()),
+                    engine_id: engine.into(),
+                    run_id: "pa-relay-test".into(),
+                };
+                let mut state = TurnState::new(None);
+                core.dispatch_event(
+                    &mut state,
+                    if fail {
+                        EngineEvent::Error("failed".into())
+                    } else {
+                        EngineEvent::Done {
+                            session_id: None,
+                            usage: None,
+                        }
+                    },
+                );
+                core.sink.flush();
+                assert!(collector.0.lock().unwrap().is_empty());
+                state.confirm_exit(&core);
+                state.confirm_exit(&core);
+                core.sink.flush();
+                let events = collector.0.lock().unwrap();
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0]["kind"], if fail { "error" } else { "done" });
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_reports_carry_the_measured_generation_window() {
+        let collector = Arc::new(Collector::default());
+        let core = TurnCore {
+            sink: event_sink::EventSink::new(collector.clone()),
+            registry: Arc::new(ProcessRegistry::default()),
+            engine_id: "pi".into(),
+            run_id: "gen-ms-test".into(),
+        };
+        let mut state = TurnState::new(Some("session".into()));
+        let tool_start = || EngineEvent::Message {
+            role: "tool".into(),
+            text: "read".into(),
+            path: None,
+            todos: None,
+            args: None,
+            result: None,
+            patch: false,
+        };
+
+        // Explicit window: a mid-response tool row (claude streams tool args
+        // inside the same message) must not close it.
+        core.dispatch_event(&mut state, EngineEvent::Generation { active: true });
+        core.dispatch_event(&mut state, EngineEvent::Delta("hi".into()));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        core.dispatch_event(&mut state, tool_start());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        core.dispatch_event(
+            &mut state,
+            EngineEvent::Usage(serde_json::json!({"output_tokens": 3})),
+        );
+
+        // Implicit (delta-opened) window: the tool row closes it, so the
+        // next usage report only measures what ran before the tool.
+        core.dispatch_event(&mut state, EngineEvent::Delta("mid".into()));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        core.dispatch_event(&mut state, tool_start());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        core.dispatch_event(
+            &mut state,
+            EngineEvent::Usage(serde_json::json!({"output_tokens": 3})),
+        );
+
+        core.sink.flush();
+        let events = collector.0.lock().unwrap();
+        let usages: Vec<u64> = events
+            .iter()
+            .filter(|event| event["kind"] == "usage")
+            .filter_map(|event| event.get("genMs").and_then(Value::as_u64))
+            .collect();
+        assert_eq!(usages.len(), 2, "both usage reports carry genMs");
+        assert!(usages[0] >= 200, "explicit window ignored the tool row: {usages:?}");
+        assert!(usages[1] < 200, "implicit window closed at the tool row: {usages:?}");
     }
 
     #[tokio::test]
@@ -877,21 +1351,152 @@ mod terminal_event_tests {
             let core = TurnCore {
                 sink: event_sink::EventSink::new(collector.clone()),
                 registry: Arc::new(ProcessRegistry::default()),
-                engine_id: "codex".into(), run_id: "terminal-test".into(),
+                engine_id: "codex".into(),
+                run_id: "terminal-test".into(),
             };
             let mut state = TurnState::new(Some("session".into()));
             core.dispatch_event(&mut state, EngineEvent::Delta("完成中文与 emoji 🐎".into()));
-            core.dispatch_event(&mut state, EngineEvent::Usage(serde_json::json!({"input_tokens": 90000, "model_context_window":1000000})));
-            core.dispatch_event(&mut state, if fail { EngineEvent::Error("failed".into()) }
-                else { EngineEvent::Done { session_id: None, usage: None } });
-            core.dispatch_event(&mut state, EngineEvent::Usage(serde_json::json!({"input_tokens":90000})));
+            core.dispatch_event(
+                &mut state,
+                EngineEvent::Usage(
+                    serde_json::json!({"input_tokens": 90000, "model_context_window":1000000}),
+                ),
+            );
+            core.dispatch_event(
+                &mut state,
+                if fail {
+                    EngineEvent::Error("failed".into())
+                } else {
+                    EngineEvent::Done {
+                        session_id: None,
+                        usage: None,
+                    }
+                },
+            );
+            core.dispatch_event(
+                &mut state,
+                EngineEvent::Usage(serde_json::json!({"input_tokens":90000})),
+            );
             core.dispatch_event(&mut state, EngineEvent::Delta("late".into()));
-            core.dispatch_event(&mut state, EngineEvent::Done { session_id: None, usage: None });
+            core.dispatch_event(
+                &mut state,
+                EngineEvent::Done {
+                    session_id: None,
+                    usage: None,
+                },
+            );
             core.sink.flush();
             let events = collector.0.lock().unwrap();
-            let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
-            assert_eq!(kinds, ["delta", "usage", if fail {"error"} else {"done"}]);
+            let kinds: Vec<_> = events
+                .iter()
+                .map(|event| event["kind"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                kinds,
+                ["delta", "usage", if fail { "error" } else { "done" }]
+            );
             assert_eq!(events[0]["data"], "完成中文与 emoji 🐎");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plugin_pi_interrupt_emits_terminal_only_after_child_exit() {
+        for early_done in [false, true] {
+            let mut command = Command::new("sh");
+            let delta = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"ready"}}"#;
+            let done = if early_done {
+                r#"printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}';"#
+            } else {
+                ""
+            };
+            command.args([
+                "-c",
+                &format!("printf '%s\\n' '{delta}'; {done} exec sleep 30"),
+            ]);
+            command
+                .stdout(std::process::Stdio::piped())
+                .process_group(0)
+                .kill_on_drop(true);
+            let mut child = command.spawn().unwrap();
+            let pid = child.id().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let child = Arc::new(TokioMutex::new(child));
+            let collector = Arc::new(Collector::default());
+            let sink = event_sink::EventSink::with_name(
+                collector.clone(),
+                event_sink::PLUGIN_AGENT_EVENT_NAME,
+            );
+            let registry = Arc::new(ProcessRegistry::default());
+            let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let run_id = "pa-relay-interrupt";
+            registry.insert(
+                run_id.into(),
+                crate::engine::ChildEntry {
+                    child: Some(child.clone()),
+                    pid,
+                    run_id: run_id.into(),
+                    killed: killed.clone(),
+                    reader_abort: Arc::new(std::sync::OnceLock::new()),
+                    stdin: None,
+                    questions: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                },
+            );
+            let context = RunContext {
+                core: TurnCore {
+                    sink: sink.clone(),
+                    registry: registry.clone(),
+                    engine_id: "pi".into(),
+                    run_id: run_id.into(),
+                },
+                engine_impl: Box::new(crate::engine::pi_family::pi()),
+                pid,
+                preassigned_session_id: None,
+                initial_model: None,
+                initial_effort: None,
+                child: child.clone(),
+                killed,
+                cleanup_files: vec![],
+                mcp_restore: None,
+                stderr_buf: Arc::new(Mutex::new(String::new())),
+                stdout_plain_buf: Arc::new(Mutex::new(String::new())),
+            };
+            let reader = tokio::spawn(run_reader(stdout, context));
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    sink.flush();
+                    if !collector.0.lock().unwrap().is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            sink.flush();
+            assert!(!collector
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event["kind"].as_str(), Some("done" | "error"))));
+            assert!(registry.kill(run_id));
+            tokio::time::timeout(std::time::Duration::from_secs(3), reader)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(child.lock().await.try_wait().unwrap().is_some());
+            assert_eq!(registry.active_run_count(), 0);
+            let events = collector.0.lock().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event["kind"].as_str(), Some("done" | "error")))
+                    .count(),
+                1
+            );
+            assert_eq!(events.last().unwrap()["kind"], "done");
         }
     }
 }

@@ -2,46 +2,52 @@ pub mod agy;
 pub mod claude;
 mod claude_channel;
 pub mod codex;
+mod codex_app;
 mod codex_provider_env;
+mod codex_read_only;
 mod codex_usage;
+pub mod dsh;
+mod dsh_images;
+mod dsh_session;
+mod events;
+pub mod grok;
+mod grok_acp;
+pub mod images;
 #[cfg(windows)]
 pub(crate) mod job;
-pub mod dsh;
-mod dsh_session;
-pub mod grok;
-pub mod images;
 pub mod kimi;
+mod kimi_acp;
 pub mod models;
 pub mod opencode;
+pub mod opencode_server;
+mod opencode_session;
 pub mod pi_family;
-pub mod wsl_transport;
 pub mod pi_family_auth;
 pub mod qoder;
 mod qoder_session;
-pub mod resolve;
-mod events;
 mod reader;
 mod registry;
+pub mod resolve;
+pub mod wsl_transport;
 
 pub(crate) use resolve::command_for_binary;
 
 // Event types and tool-call/todo payload helpers (events.rs).
-pub use events::{EngineEvent, TodoItem, TodosPayload};
 pub(crate) use events::{
     assistant_message, parse_todo_args, parse_tool_args_value, push_session_id, safe_prompt_arg,
     tool_call_message, tool_call_patch, tool_path_arg, tool_result_patch,
 };
+pub use events::{EngineEvent, TodoItem, TodosPayload};
 // Live child-process registry (registry.rs).
-pub use registry::{ChildEntry, ProcessRegistry};
 pub(crate) use registry::{kill_process_group, next_virtual_pid};
+pub use registry::{ChildEntry, ProcessRegistry};
 // Stdout reader / per-turn streaming plumbing (reader.rs).
 pub use reader::sweep_staging_dirs;
 pub(crate) use reader::{
-    LineRead, MAX_LINE_BYTES, RunContext, TurnCore, TurnState, cleanup_staged_files,
-    read_line_capped, run_reader, spawn_stderr_capture, spawn_stdin_writer,
+    cleanup_staged_files, read_line_capped, run_reader, spawn_stderr_capture, spawn_stdin_writer,
+    LineRead, RunContext, TurnCore, TurnState, VirtualRunGuard, MAX_LINE_BYTES,
 };
 
-#[cfg(test)]
 use crate::event_sink;
 use serde::Serialize;
 use serde_json::Value;
@@ -60,6 +66,7 @@ pub(crate) fn hide_console(command: &mut Command) {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.creation_flags(CREATE_NO_WINDOW);
 }
+#[derive(Clone)]
 pub struct SendRequest {
     pub session_id: Option<String>,
     pub workspace: PathBuf,
@@ -67,7 +74,7 @@ pub struct SendRequest {
     pub images: Vec<String>,
     pub model: Option<String>,
     /// Reasoning effort ("low" | "medium" | "high" | "xhigh" | "max" | "ultra"); engines without an
-    /// effort knob ignore it, engines with a narrower knob clamp.
+    /// effort knob ignore it. Engines that accept a level pass the requested string through.
     pub effort: Option<String>,
     /// OpenAI service tier override (OMP `--service-tier` / Codex `-c service_tier`),
     /// independent of reasoning effort.
@@ -84,6 +91,13 @@ pub struct SendRequest {
     /// Session-scoped channel id. Official / empty injects nothing; spawn
     /// falls back to the engine's `current` when this is None.
     pub provider_id: Option<String>,
+    /// Computer use: expose the app's screenshot/input driver to the agent
+    /// as an MCP server (see computer_use.rs). Engines without an
+    /// MCP-config launch flag ignore it.
+    pub computer_use: Option<bool>,
+    /// 逐次调用的工具白名单（任务工作台只读节点）：引擎必须真正把它兑现
+    /// 为运行时约束，否则 prepare_launch 直接拒绝——不允许用节点名假装。
+    pub allowed_tools: Option<Vec<String>>,
 }
 pub struct BuiltCommand {
     pub command: Command,
@@ -95,12 +109,43 @@ pub struct BuiltCommand {
     pub keep_stdin_open: bool,
     /// Private staging files/directories to remove once the process exits.
     pub cleanup_files: Vec<PathBuf>,
+    /// omp computer-use injection into the workspace's `.omp/mcp.json`;
+    /// restored once the process exits (same funnel as cleanup_files).
+    pub mcp_restore: Option<crate::computer_use::McpRestore>,
     /// Session id assigned before spawn (grok `-s <uuid>`).
     pub preassigned_session_id: Option<String>,
 }
+/// Which transport one send uses. On `Own` the app spawns no engine child:
+/// the host driver task owns the process (or the connection) and settles the
+/// turn itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// The app spawns the CLI and reads its stdout.
+    Child,
+    /// The engine drives its own transport (host session, ACP, app-server).
+    Own,
+}
+
 pub trait Engine: Send + Sync {
     fn id(&self) -> &'static str;
     fn build_command(&self, req: &SendRequest, bin: &str) -> Result<BuiltCommand, String>;
+    /// The command a host-transport driver spawns, for engines whose `Own`
+    /// transport is a process of their own (codex app-server, grok ACP). The
+    /// driver spawns it verbatim, so channel flags/env land here exactly as
+    /// they do for a child command.
+    ///
+    /// Default: the placeholder a driver that spawns no local child (qoder,
+    /// dsh, opencode) never touches.
+    fn host_command(&self, _req: &SendRequest, _bin: &str) -> Result<BuiltCommand, String> {
+        Ok(BuiltCommand {
+            command: Command::new("unused-virtual-engine"),
+            stdin_payload: None,
+            keep_stdin_open: false,
+            cleanup_files: Vec::new(),
+            mcp_restore: None,
+            preassigned_session_id: None,
+        })
+    }
     /// Parse one NDJSON stdout line into zero or more events.
     fn parse_line(&self, line: &str, out: &mut Vec<EngineEvent>);
     /// True when the engine drives its own transport (e.g. a host WS session)
@@ -110,8 +155,36 @@ pub trait Engine: Send + Sync {
     fn drives_own_transport(&self) -> bool {
         false
     }
+    /// Transport for one send. Default: an engine that drives its own
+    /// transport keeps it for every workspace, so a WSL one has to be
+    /// rejected — the driver spawns locally and its session has no remote
+    /// path. codex and grok override this: their native harness protocol
+    /// carries the question channel for a local workspace, while a remote one
+    /// keeps today's one-shot CLI child, which the ssh wrapper owns.
+    fn transport_for(&self, _wsl: bool) -> Transport {
+        if self.drives_own_transport() {
+            Transport::Own
+        } else {
+            Transport::Child
+        }
+    }
     /// Whether this engine accepts image attachments.
     fn supports_images(&self) -> bool;
+    /// Whether the engine can hand the agent the app's computer-use driver
+    /// (requires an MCP-server launch flag the CLI honors).
+    fn supports_computer_use(&self) -> bool {
+        false
+    }
+    /// Whether this engine supports reasoning effort configuration.
+    fn supports_effort(&self) -> bool {
+        false
+    }
+    /// Whether this engine can enforce a per-call tool whitelist (mission
+    /// read-only nodes). Engines that return false are rejected before
+    /// spawn rather than silently running without the constraint.
+    fn supports_tool_constraints(&self) -> bool {
+        false
+    }
     /// Permission modes this engine can honor at spawn ("auto" | "manual" |
     /// "plan" | "bypass"). These are one-shot headless launches that cannot
     /// ask mid-turn, so most engines support only a subset; the UI greys out
@@ -216,6 +289,14 @@ pub struct EngineInfo {
     /// from pickers and history lists rather than erroring on launch.
     pub enabled: bool,
     pub supports_images: bool,
+    /// Drives the composer's computer-use toggle: engines without an
+    /// MCP-config launch flag cannot receive the driver.
+    pub supports_computer_use: bool,
+    /// Whether this engine supports reasoning effort configuration.
+    pub supports_effort: bool,
+    /// Whether this engine can enforce a per-call tool whitelist (mission
+    /// read-only nodes); the workbench blocks read-only nodes otherwise.
+    pub supports_tool_constraints: bool,
     /// Permission modes the engine honors at spawn; drives the composer
     /// picker's disabled options.
     pub permissions: Vec<String>,
@@ -266,7 +347,13 @@ pub(crate) fn engine_bin(settings: &crate::settings::AppSettings, engine_id: &st
     resolve::resolve_launchable_cli_binary(cli_binary_name(engine_id))
 }
 #[tauri::command]
-pub fn list_engines() -> Vec<EngineInfo> {
+pub async fn list_engines() -> Result<Vec<EngineInfo>, String> {
+    tauri::async_runtime::spawn_blocking(list_engines_blocking)
+        .await
+        .map_err(|error| format!("engine detection task failed: {error}"))
+}
+
+fn list_engines_blocking() -> Vec<EngineInfo> {
     let settings = crate::settings::read_settings().unwrap_or_default();
     let config = crate::config::read_config().unwrap_or_default();
     crate::config::ENGINES
@@ -286,6 +373,9 @@ pub fn list_engines() -> Vec<EngineInfo> {
                 enabled: config.section(id).and_then(|s| s.current.as_deref())
                     != Some(crate::config::DISABLED_PROVIDER_ID),
                 supports_images: engine.supports_images(),
+                supports_computer_use: engine.supports_computer_use(),
+                supports_effort: engine.supports_effort(),
+                supports_tool_constraints: engine.supports_tool_constraints(),
                 permissions: engine
                     .supported_permissions()
                     .iter()
@@ -319,11 +409,34 @@ fn prepare_launch(
     permission: Option<String>,
     additional_dirs: Vec<String>,
     provider_id: Option<String>,
+    computer_use: Option<bool>,
+    allowed_tools: Option<Vec<String>>,
+    wsl: bool,
 ) -> Result<Launch, String> {
     let engine_impl = engine_by_id(engine).ok_or_else(|| format!("unknown engine: {engine}"))?;
     // 停用 still gates sending. Channel settings apply to this child below;
     // native CLI files remain the official configuration.
     crate::config::ensure_engine_enabled(engine)?;
+    // 工具白名单是硬约束：引擎不能兑现就直接拒绝启动（不降级为无约束）。
+    let allowed_tools = match allowed_tools {
+        Some(tools) if !tools.is_empty() => {
+            if !engine_impl.supports_tool_constraints() {
+                return Err(format!(
+                    "engine {engine} does not support per-call tool constraints"
+                ));
+            }
+            Some(
+                tools
+                    .into_iter()
+                    .map(|tool| tool.trim().to_string())
+                    .filter(|tool| !tool.is_empty())
+                    .take(32)
+                    .collect::<Vec<_>>(),
+            )
+        }
+        Some(_) => return Err("tool constraints must not be empty".into()),
+        None => None,
+    };
     let provider_id = provider_id.filter(|s| !s.trim().is_empty());
     let provider = crate::config::resolve_provider(engine, provider_id.as_deref())?;
     let channel_env = provider
@@ -367,19 +480,20 @@ fn prepare_launch(
             .take(32)
             .collect(),
         provider_id,
+        // Only honored by engines that can actually mount the driver.
+        computer_use: computer_use.filter(|on| *on && engine_impl.supports_computer_use()),
+        allowed_tools,
     };
     let bin = engine_bin(&settings, engine);
-    // Host-stream engines never spawn: hand back a placeholder command so
-    // prepare_launch stays shape-compatible; send_message branches to the
-    // virtual path before anything would touch it.
-    let mut built = if engine_impl.drives_own_transport() {
-        BuiltCommand {
-            command: Command::new("unused-virtual-engine"),
-            stdin_payload: None,
-            keep_stdin_open: false,
-            cleanup_files: Vec::new(),
-            preassigned_session_id: None,
-        }
+    // Host-transport engines spawn through their driver instead: codex/grok
+    // hand back the real app-server / ACP command the driver spawns verbatim
+    // (channel flags and env land on it below, as for any child), while the
+    // session-only engines keep the placeholder their driver never touches.
+    let mut built = if engine_impl.transport_for(wsl) == Transport::Own {
+        let mut own = engine_impl.host_command(&req, &bin)?;
+        // The driver spawns this command with the workspace as its cwd.
+        own.command.current_dir(&req.workspace);
+        own
     } else if engine == "kimi" && provider.is_some() {
         kimi::build_channel_command(&req, &bin)?
     } else {
@@ -388,15 +502,30 @@ fn prepare_launch(
     for (key, value) in &channel_env {
         built.command.env(key, value);
     }
+    if engine == "codex" && codex_read_only::requested(&req) {
+        codex_read_only::stage(
+            &req,
+            &mut built,
+            &codex_home(),
+            &crate::paths::app_home().join("codex-plan-staging"),
+        )?;
+    }
     let configured = match (engine, provider.as_ref()) {
-        ("claude", Some(provider)) => claude_channel::apply(&mut built, provider, &channel_env, &req),
+        ("claude", Some(provider)) => {
+            claude_channel::apply(&mut built, provider, &channel_env, &req)
+        }
         ("kimi", Some(_)) => kimi::apply_channel(&mut built.command, &channel_env, &req),
-        ("codex", Some(provider)) => codex::apply_channel(&mut built.command, provider, &channel_env, &req),
+        ("codex", Some(provider)) => {
+            codex::apply_channel(&mut built.command, provider, &channel_env, &req)
+        }
         ("grok", Some(provider)) => grok::isolate_channel(&mut built, provider, &req),
         _ => Ok(()),
     };
     if let Err(error) = configured {
         cleanup_staged_files(&built.cleanup_files);
+        if let Some(restore) = &built.mcp_restore {
+            restore.restore();
+        }
         return Err(error);
     }
     Ok(Launch {
@@ -406,6 +535,7 @@ fn prepare_launch(
         engine_impl,
     })
 }
+
 #[tauri::command]
 pub async fn send_message(
     state: tauri::State<'_, crate::AppState>,
@@ -419,6 +549,7 @@ pub async fn send_message(
     permission: Option<String>,
     provider_id: Option<String>,
     run_id: Option<String>,
+    computer_use: Option<bool>,
 ) -> Result<SendResult, String> {
     send_message_inner(
         &state,
@@ -432,6 +563,7 @@ pub async fn send_message(
         permission,
         provider_id,
         run_id,
+        computer_use,
     )
     .await
 }
@@ -439,6 +571,106 @@ pub async fn send_message(
 /// tests drive the real spawn/read pipeline without a Tauri app (the mock
 /// runtime links the GUI crates into the test exe, which then cannot load
 /// without a comctl32 v6 manifest).
+/// 插件 agent 轮次入口（plugin_caps::plugin_agent_start 调用）：与聊天发送
+/// 共用同一条 spawn/reader/registry 管线，但事件走独立的
+/// `plugin-agent://event` 流（绝不进 engine://event——chat store 会把未知
+/// runId 当孤儿会话收养）。effort/permission/computer_use/图片暂不开放，
+/// provider_id 缺省 = 引擎当前渠道（与聊天发送同一解析）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn plugin_agent_send(
+    state: &crate::AppState,
+    engine: String,
+    workspace_path: String,
+    session_id: Option<String>,
+    prompt: String,
+    model: Option<String>,
+    provider_id: Option<String>,
+    run_id: String,
+    read_only: Option<bool>,
+) -> Result<SendResult, String> {
+    let allowed_tools = plugin_agent_tools(&engine, read_only)?;
+    let session_id = codex_read_only::fresh_plugin_session(&engine, read_only, session_id);
+    let permission = (engine == "codex" && read_only == Some(true))
+        .then(|| codex_read_only::PERMISSION.to_string());
+    send_message_inner_with_sink(
+        state,
+        Arc::clone(&state.plugin_sink),
+        engine,
+        workspace_path,
+        session_id,
+        prompt,
+        None,
+        model,
+        None,
+        permission,
+        provider_id,
+        Some(run_id),
+        None,
+        allowed_tools,
+    )
+    .await
+}
+
+fn plugin_agent_tools(
+    engine: &str,
+    read_only: Option<bool>,
+) -> Result<Option<Vec<String>>, String> {
+    if read_only != Some(true) {
+        return Ok(None);
+    }
+    if engine == "codex" {
+        return Ok(None);
+    }
+    if engine != "pi" {
+        return Err(format!(
+            "engine {engine} does not support isolated plugin read-only runs; only Pi and audited local Codex planning are supported"
+        ));
+    }
+    Ok(Some(
+        ["read", "grep", "find", "ls"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    ))
+}
+
+/// 任务工作台 agent 节点入口（mission::mission_agent_start 调用）：同一条
+/// spawn/reader/registry 管线，事件走独立的 `mission-agent://event` 流。
+/// `allowed_tools` 是逐节点工具白名单（只读约束）；引擎不能兑现时
+/// prepare_launch 直接拒绝，而不是静默降级。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mission_agent_send(
+    state: &crate::AppState,
+    engine: String,
+    workspace_path: String,
+    session_id: Option<String>,
+    prompt: String,
+    model: Option<String>,
+    effort: Option<String>,
+    provider_id: Option<String>,
+    run_id: String,
+    allowed_tools: Option<Vec<String>>,
+) -> Result<SendResult, String> {
+    send_message_inner_with_sink(
+        state,
+        Arc::clone(&state.mission_sink),
+        engine,
+        workspace_path,
+        session_id,
+        prompt,
+        None,
+        model,
+        effort,
+        None,
+        provider_id,
+        Some(run_id),
+        None,
+        allowed_tools,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message_inner(
     state: &crate::AppState,
     engine: String,
@@ -451,10 +683,50 @@ pub async fn send_message_inner(
     permission: Option<String>,
     provider_id: Option<String>,
     run_id: Option<String>,
+    computer_use: Option<bool>,
+) -> Result<SendResult, String> {
+    send_message_inner_with_sink(
+        state,
+        Arc::clone(&state.sink),
+        engine,
+        workspace_path,
+        session_id,
+        prompt,
+        image_paths,
+        model,
+        effort,
+        permission,
+        provider_id,
+        run_id,
+        computer_use,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_message_inner_with_sink(
+    state: &crate::AppState,
+    sink: Arc<event_sink::EventSink>,
+    engine: String,
+    workspace_path: String,
+    session_id: Option<String>,
+    prompt: String,
+    image_paths: Option<Vec<String>>,
+    model: Option<String>,
+    effort: Option<String>,
+    permission: Option<String>,
+    provider_id: Option<String>,
+    run_id: Option<String>,
+    computer_use: Option<bool>,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<SendResult, String> {
     let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    if run_id.is_empty() || run_id.len() > 128
-        || !run_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    if run_id.is_empty()
+        || run_id.len() > 128
+        || !run_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
     {
         return Err("invalid run id".into());
     }
@@ -494,6 +766,7 @@ pub async fn send_message_inner(
     let reserved = run_id.clone();
     let result = send_reserved(
         state,
+        sink,
         engine,
         workspace_path,
         session_id,
@@ -506,6 +779,8 @@ pub async fn send_message_inner(
         run_id,
         killed,
         reader_abort,
+        computer_use,
+        allowed_tools,
     )
     .await;
     if result.is_err() {
@@ -520,6 +795,7 @@ pub async fn send_message_inner(
 #[allow(clippy::too_many_arguments)]
 async fn send_reserved(
     state: &crate::AppState,
+    sink: Arc<event_sink::EventSink>,
     engine: String,
     workspace_path: String,
     session_id: Option<String>,
@@ -532,8 +808,12 @@ async fn send_reserved(
     run_id: String,
     killed: Arc<std::sync::atomic::AtomicBool>,
     reader_abort: Arc<std::sync::OnceLock<tokio::task::AbortHandle>>,
+    computer_use: Option<bool>,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<SendResult, String> {
-    let launch = prepare_launch(
+    // WSL 远程工作区:引擎进程经 ssh 在发行版内执行(见 wsl_transport)。
+    let wsl_tp = wsl_transport::transport_for_workspace(&state.db, &workspace_path);
+    let mut launch = prepare_launch(
         &engine,
         &workspace_path,
         session_id,
@@ -547,21 +827,35 @@ async fn send_reserved(
         // (each send is a fresh process).
         state.db.granted_roots().unwrap_or_default(),
         provider_id,
+        computer_use,
+        allowed_tools,
+        wsl_tp.is_some(),
     )?;
-
-    // WSL 远程工作区:引擎进程经 ssh 在发行版内执行(见 wsl_transport)。
-    let wsl_tp = wsl_transport::transport_for_workspace(&state.db, &workspace_path);
     // Host-stream engines drive their own transport: no child process — the
-    // registry entry only routes interrupts to the transport task. 远程
-    // 工作区下没有可包装的子进程,本机 host 又对远端路径无意义,显式拒绝。
-    if launch.engine_impl.drives_own_transport() {
+    // registry entry only routes interrupts to the transport task. Their
+    // drivers spawn locally, so a remote workspace either keeps the CLI
+    // transport (codex/grok) or has no path at all — 显式拒绝。
+    if launch.engine_impl.transport_for(wsl_tp.is_some()) == Transport::Own {
+        // 本机驱动没有远端路径:远程工作区显式拒绝(与旧行为一致),而不是
+        // 静默起一个连不上远端工作区的本地会话。codex/grok 在上面退回 child。
         if wsl_tp.is_some() {
             return Err(format!("引擎 {engine} 不支持远程工作区(WSL)"));
+        }
+        // The child path resolves codex's provider credentials further down;
+        // the app-server driver owns its own process, so it needs them here.
+        if engine == "codex" && !codex_read_only::requested(&launch.req) {
+            codex_provider_env::apply(&mut launch.built.command).await;
         }
         return send_host_stream(state, launch, engine, run_id, killed, reader_abort).await;
     }
     let (mut command, extra_cleanup, skip_local_cwd) = match &wsl_tp {
         Some(tp) => {
+            // 操作电脑注入的是本机 .omp/mcp.json 与本机 exe:WSL 远端 omp 都
+            // 用不上,先恢复再拒绝,不留下被改过的工作区文件。
+            if let Some(restore) = &launch.built.mcp_restore {
+                restore.restore();
+                return Err("操作电脑不支持远程工作区(WSL):注入的是本机驱动".into());
+            }
             // 依赖本机 staging 文件的引擎(grok 等 cleanup_files 非空):
             // 远端 CLI 读不到本机文件,直接拒绝而非跑出莫名其妙的失败;
             // 已写盘的 staging 文件顺手清掉,不 strand。
@@ -574,7 +868,11 @@ async fn send_reserved(
                 ));
             }
             match wsl_transport::wrap(launch.built.command, tp).await {
-                Ok(wrapped) => (wrapped.command, wrapped.cleanup_files, wrapped.skip_local_cwd),
+                Ok(wrapped) => (
+                    wrapped.command,
+                    wrapped.cleanup_files,
+                    wrapped.skip_local_cwd,
+                ),
                 Err(error) => {
                     // wrap 失败(ssh 上传失败等)同样不许 strand staging 文件。
                     for path in &launch.built.cleanup_files {
@@ -598,11 +896,13 @@ async fn send_reserved(
         codex_provider_env::apply(&mut command).await;
     }
     command
-        .stdin(if launch.built.stdin_payload.is_some() || launch.built.keep_stdin_open {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        })
+        .stdin(
+            if launch.built.stdin_payload.is_some() || launch.built.keep_stdin_open {
+                std::process::Stdio::piped()
+            } else {
+                std::process::Stdio::null()
+            },
+        )
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     // 远程工作区路径在本机不存在 → cwd 落本地当前目录(wsl.exe/ssh 不关心)。
@@ -623,6 +923,9 @@ async fn send_reserved(
         Err(error) => {
             // Never strand the staging files build_command wrote (grok).
             cleanup_staged_files(&cleanup_files);
+            if let Some(restore) = &launch.built.mcp_restore {
+                restore.restore();
+            }
             return Err(format!("failed to spawn {}: {error}", launch.bin));
         }
     };
@@ -653,6 +956,9 @@ async fn send_reserved(
             None => {
                 let _ = child.start_kill();
                 cleanup_staged_files(&cleanup_files);
+                if let Some(restore) = &launch.built.mcp_restore {
+                    restore.restore();
+                }
                 return Err("missing stdout/stderr pipe after spawn".to_string());
             }
         }
@@ -696,9 +1002,13 @@ async fn send_reserved(
     } else {
         launch.req.model.clone()
     };
+    let initial_effort = launch.req.effort.clone().filter(|e| !e.trim().is_empty());
+    // MCP runtime snapshots are workspace-scoped; the event dispatcher only
+    // has the run id, so remember the mapping for the run's lifetime.
+    crate::mcp::register_run(&run_id, &launch.req.workspace.to_string_lossy());
     let ctx = RunContext {
         core: TurnCore {
-            sink: Arc::clone(&state.sink),
+            sink: Arc::clone(&sink),
             registry: Arc::clone(&state.processes),
             engine_id: engine.clone(),
             run_id: run_id.clone(),
@@ -707,9 +1017,11 @@ async fn send_reserved(
         pid,
         preassigned_session_id: launch.built.preassigned_session_id.clone(),
         initial_model,
+        initial_effort,
         child,
         killed,
         cleanup_files,
+        mcp_restore: launch.built.mcp_restore,
         stderr_buf,
         stdout_plain_buf: Arc::new(Mutex::new(String::new())),
         #[cfg(windows)]
@@ -770,8 +1082,30 @@ async fn send_host_stream(
             killed,
             pid,
         )),
+        "opencode" => tokio::spawn(opencode_session::run_server_turn(
+            core,
+            launch.req,
+            launch.bin,
+            state.opencode_server.clone(),
+            killed,
+            pid,
+        )),
         "qoder" | "qoder-cn" => tokio::spawn(qoder_session::run_acp_turn(
             core, launch.req, launch.bin, killed, pid,
+        )),
+        "grok" | "kimi" => tokio::spawn(grok_acp::run_acp_turn(
+            core,
+            launch.req,
+            launch.built,
+            killed,
+            pid,
+        )),
+        "codex" => tokio::spawn(codex_app::run_app_server_turn(
+            core,
+            launch.req,
+            launch.built,
+            killed,
+            pid,
         )),
         _ => unreachable!("send_host_stream only routes drives_own_transport engines: {engine}"),
     };
@@ -794,11 +1128,21 @@ pub async fn interrupt_session(
         .await
         .map_err(|e| e.to_string())
 }
-/// Answer a pending AskUserQuestion (claude control protocol). `answers` maps
-/// each question's text to the chosen option label — an array of labels for
-/// multiSelect questions. `None` means the user skipped: the CLI records
-/// "did not answer" and the model continues without a choice. Accepts either
-/// the run id or the conversation session id, like `interrupt_session`.
+/// Answer a pending question card. Five transports share this command:
+/// - claude (control protocol): the answers merge into the parked tool input
+///   and ride stdin as a `control_response`.
+/// - omp (rpc-ui): the parked value carries the dialog method; the answer is
+///   an `extension_ui_response` frame on the CLI's stdin.
+/// - dsh (host session): the parked value is an answer context (origin +
+///   clientId + eventId + original request); the answer is an HTTP
+///   `$events/result` outcome.
+/// - grok (ACP) and codex (app-server): the parked value carries the server
+///   request's JSON-RPC id — codex additionally the question-text→id map its
+///   protocol answers by; the answer is the response frame on the CLI's stdin.
+/// `answers` maps each question's text to the chosen option label — an array
+/// of labels for multiSelect questions. `None` means the user
+/// skipped/dismissed. Accepts either the run id or the conversation session
+/// id, like `interrupt_session`.
 #[tauri::command]
 pub async fn answer_question(
     state: tauri::State<'_, crate::AppState>,
@@ -819,6 +1163,143 @@ pub async fn answer_question(
         .get(&request_id)
         .cloned()
         .ok_or_else(|| "question is no longer pending".to_string())?;
+    if let Some(context) = input.get("kimiAcp") {
+        let frame = kimi_acp::answer_frame(context, answers.as_ref())?;
+        state
+            .processes
+            .write_line(&session_id, frame.to_string())
+            .await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
+    // grok's ACP driver parks the server's `_x.ai/ask_user_question` request:
+    // the answer is the JSON-RPC response line on the CLI's stdin.
+    if let Some(acp) = input.get("grokAcp") {
+        let frame = grok_acp::answer_frame(acp, answers.as_ref())?;
+        state
+            .processes
+            .write_line(&session_id, frame.to_string())
+            .await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
+    // codex's app-server driver parks `item/tool/requestUserInput`: same stdin
+    // response, but its answer map is keyed by the question ids the server
+    // issued — the card answers by question text.
+    if let Some(app) = input.get("codexApp") {
+        let frame = codex_app::answer_frame(app, answers.as_ref())?;
+        state
+            .processes
+            .write_line(&session_id, frame.to_string())
+            .await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
+    // pi/omp rpc sessions park the render input plus the dialog method: the
+    // answer is an extension_ui_response frame on the CLI's stdin.
+    if let Some(extui) = input.get("extui") {
+        let method = extui.get("method").and_then(Value::as_str).unwrap_or("");
+        let frame = pi_family::extension_ui_answer_frame(method, &request_id, answers.as_ref());
+        // A failed write must surface: the frontend keeps the card pending on
+        // Err instead of falsely marking the question answered.
+        state
+            .processes
+            .write_line(&session_id, frame.to_string())
+            .await?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
+    // opencode attached sessions park an answer context: the reply is an HTTP
+    // POST to the managed server, not a stdin line.
+    if let Some(opencode) = input.get("opencode") {
+        let origin = opencode
+            .get("origin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "question answer context is missing the server origin".to_string())?;
+        let directory = opencode
+            .get("directory")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let request_id = opencode
+            .get("requestId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "question answer context is missing the request id".to_string())?;
+        let request = opencode.get("request").cloned().unwrap_or(Value::Null);
+        // 忽略 = reject(工具侧抛 QuestionRejectedError,模型得到「用户拒绝
+        // 回答」并继续);否则 reply,answers 与 questions 同序。
+        let result = match answers.as_ref() {
+            None => {
+                opencode_server::post(
+                    origin,
+                    &format!("/question/{request_id}/reject"),
+                    directory,
+                    None,
+                )
+                .await
+            }
+            Some(answers) => {
+                let answers = opencode_session::reply_answers(&request, answers)
+                    .ok_or_else(|| "question answer context is malformed".to_string())?;
+                opencode_server::post(
+                    origin,
+                    &format!("/question/{request_id}/reply"),
+                    directory,
+                    Some(serde_json::json!({ "answers": answers })),
+                )
+                .await
+            }
+        };
+        // A failed post must surface: the frontend keeps the card pending on
+        // Err instead of falsely marking the question answered.
+        result?;
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(request_id);
+        }
+        return Ok(());
+    }
+    // dsh host sessions park an answer context instead of a tool input: the
+    // answer is an HTTP outcome, not a stdin line.
+    if let Some(dsh) = input.get("dsh") {
+        let origin = dsh
+            .get("origin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "question answer context is missing the host origin".to_string())?;
+        let client_id = dsh
+            .get("clientId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "question answer context is missing the events client id".to_string())?;
+        let event_id = dsh
+            .get("eventId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "question answer context is missing the event id".to_string())?;
+        let request = dsh.get("request").cloned().unwrap_or(Value::Null);
+        let outcome = dsh_session::question_outcome(&request, answers.as_ref());
+        // A failed post must surface: the frontend keeps the card pending on
+        // Err instead of falsely marking the question answered.
+        crate::dsh_host::host_call(
+            origin,
+            "$events/result",
+            serde_json::json!({
+                "clientId": client_id,
+                "eventId": event_id,
+                "outcome": outcome,
+            }),
+        )
+        .await?;
+        // Delivered: drop the parked copy so the turn-end drain skips it.
+        if let Ok(mut questions) = entry.questions.lock() {
+            questions.remove(&request_id);
+        }
+        return Ok(());
+    }
     let mut updated = match input {
         Value::Object(map) => map,
         // Defensive: a non-object input cannot merge answers; rebuild the
@@ -855,9 +1336,67 @@ mod permission_tests {
     use super::*;
 
     #[test]
+    fn list_engines_ipc_runs_off_handler_thread() {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![list_engines])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "engine-test", Default::default())
+            .build()
+            .unwrap();
+        let handler_thread = std::thread::current().id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let webview: &tauri::Webview<tauri::test::MockRuntime> = window.as_ref();
+        webview.clone().on_message(
+            tauri::webview::InvokeRequest {
+                cmd: "list_engines".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .unwrap(),
+                body: tauri::ipc::InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+            Box::new(move |_, _, response, _, _| {
+                sender
+                    .send((std::thread::current().id(), response))
+                    .unwrap();
+            }),
+        );
+        let (response_thread, response) = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(matches!(response, tauri::ipc::InvokeResponse::Ok(_)));
+        assert_ne!(
+            handler_thread, response_thread,
+            "engine detection ran inline on the IPC handler"
+        );
+    }
+
+    #[test]
     fn every_registered_engine_has_an_adapter() {
         for id in crate::config::ENGINES {
             assert!(engine_by_id(id).is_some(), "{id}");
+        }
+    }
+
+    /// 工具白名单是显式能力：只有实现了约束的引擎才允许被任务工作台
+    /// 用于只读节点，其余引擎必须在启动时被拒绝。
+    #[test]
+    fn tool_constraint_support_is_explicit() {
+        assert!(engine_by_id("claude").unwrap().supports_tool_constraints());
+        assert!(engine_by_id("pi").unwrap().supports_tool_constraints());
+        for id in ["codex", "omp", "grok", "kimi"] {
+            assert!(
+                !engine_by_id(id).unwrap().supports_tool_constraints(),
+                "{id}"
+            );
         }
     }
 
@@ -873,7 +1412,99 @@ mod permission_tests {
             permission: permission.map(str::to_string),
             additional_dirs: Vec::new(),
             provider_id: None,
+            computer_use: None,
+            allowed_tools: None,
         }
+    }
+
+    #[test]
+    fn pi_read_only_launch_disables_all_extensions_on_start_and_resume() {
+        for session_id in [None, Some("existing-session".to_string())] {
+            let mut request = req(None);
+            request.session_id = session_id;
+            request.allowed_tools = Some(vec![
+                "read".into(),
+                "grep".into(),
+                "find".into(),
+                "ls".into(),
+            ]);
+            let args = argv(&pi_family::pi(), &request);
+            assert!(args
+                .windows(2)
+                .any(|args| args == ["--tools", "read,grep,find,ls"]));
+            assert!(args.contains(&"--no-extensions".to_string()));
+            assert!(!args.contains(&"--extension".to_string()));
+            assert!(!args.contains(&"--auto-approve".to_string()));
+        }
+    }
+
+    #[test]
+    fn pi_read_only_rejects_empty_writable_and_custom_tools() {
+        for tools in [
+            vec![],
+            vec![""],
+            vec!["read", "bash"],
+            vec!["write"],
+            vec!["edit"],
+            vec!["custom"],
+            vec!["read,bash"],
+        ] {
+            let mut request = req(None);
+            request.allowed_tools = Some(tools.into_iter().map(str::to_string).collect());
+            assert!(pi_family::pi().build_command(&request, "pi").is_err());
+        }
+    }
+
+    #[test]
+    fn pi_read_only_rejects_computer_use_and_omp_constraints() {
+        let mut request = req(None);
+        request.allowed_tools = Some(vec!["read".into()]);
+        assert!(pi_family::omp().build_command(&request, "omp").is_err());
+        request.computer_use = Some(true);
+        assert!(pi_family::pi().build_command(&request, "pi").is_err());
+    }
+
+    #[test]
+    fn pi_read_only_rejects_session_file_destinations() {
+        for session in ["/tmp/plan.jsonl", "relative.jsonl", "../plan", "C:\\plan"] {
+            let mut request = req(None);
+            request.allowed_tools = Some(vec!["read".into()]);
+            request.session_id = Some(session.into());
+            assert!(
+                pi_family::pi().build_command(&request, "pi").is_err(),
+                "{session}"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_unrestricted_launch_keeps_the_ask_extension() {
+        let args = argv(&pi_family::pi(), &req(None));
+        assert!(args.contains(&"--extension".to_string()));
+        assert!(!args.contains(&"--no-extensions".to_string()));
+        assert!(!args.contains(&"--tools".to_string()));
+    }
+
+    #[test]
+    fn plugin_read_only_is_opt_in_and_fails_closed() {
+        for engine in crate::config::ENGINES {
+            assert_eq!(plugin_agent_tools(engine, None).unwrap(), None);
+            assert_eq!(plugin_agent_tools(engine, Some(false)).unwrap(), None);
+            if !matches!(engine, "pi" | "codex") {
+                assert!(plugin_agent_tools(engine, Some(true)).is_err(), "{engine}");
+            }
+        }
+        assert_eq!(
+            plugin_agent_tools("pi", Some(true)).unwrap(),
+            Some(vec![
+                "read".into(),
+                "grep".into(),
+                "find".into(),
+                "ls".into()
+            ])
+        );
+        assert!(plugin_agent_tools("unknown", Some(true)).is_err());
+        assert_eq!(plugin_agent_tools("codex", Some(true)).unwrap(), None);
     }
 
     fn argv(engine: &dyn Engine, req: &SendRequest) -> Vec<String> {
@@ -887,27 +1518,111 @@ mod permission_tests {
     }
 
     #[test]
-    fn pi_prompt_goes_through_stdin_not_argv() {
-        // Windows resolves the pi install to a `.cmd` shim spawned via `cmd /c`;
-        // cmd.exe cuts a multiline argument at the first newline, so only line 1
-        // ever reached the model. The prompt must ride stdin verbatim, and the
-        // `@<abs path>` image refs must stay in argv.
+    fn claude_computer_use_mounts_driver_mcp_and_preapproves_it() {
+        let mut request = req(None);
+        request.computer_use = Some(true);
+        let args = argv(&claude::ClaudeEngine::new(), &request);
+        let at = args
+            .iter()
+            .position(|a| a == "--mcp-config")
+            .unwrap_or_else(|| panic!("{args:?}"));
+        let config: Value =
+            serde_json::from_str(&args[at + 1]).expect("mcp config must be inline JSON");
+        let server = &config["mcpServers"]["ccgui-computer"];
+        assert_eq!(server["args"], serde_json::json!(["--computer-use-mcp"]));
+        assert!(!server["command"].as_str().unwrap_or_default().is_empty());
+        // Pre-approved: a click-per-approval loop would be unusable.
+        let tools_at = args
+            .iter()
+            .position(|a| a == "--allowedTools")
+            .unwrap_or_else(|| panic!("{args:?}"));
+        assert!(
+            args[tools_at + 1..].contains(&"mcp__ccgui-computer".to_string()),
+            "{args:?}"
+        );
+        // Off by default: no driver, no pre-approval.
+        let off = argv(&claude::ClaudeEngine::new(), &req(None));
+        assert!(!off.contains(&"--mcp-config".to_string()));
+        assert!(!off.contains(&"mcp__ccgui-computer".to_string()));
+    }
+
+    #[test]
+    fn pi_prompt_rides_the_rpc_prompt_command() {
+        // pi 也走 rpc 模式(提问桥扩展需要):prompt 是 stdin NDJSON 命令的
+        // message 字段,多行文本不再被 Windows 的 cmd.exe shim 截断。
         let mut request = req(None);
         request.prompt = "first line\nsecond line\n%PATH%".to_string();
-        request.images = vec!["C:/tmp/paste.png".to_string()];
-        let engines: [&dyn Engine; 2] = [&pi_family::pi(), &pi_family::omp()];
-        for engine in engines {
-            let built = engine.build_command(&request, "fake-bin").unwrap();
-            let args: Vec<String> = built
-                .command
-                .as_std()
-                .get_args()
-                .map(|a| a.to_string_lossy().to_string())
-                .collect();
-            assert!(!args.iter().any(|a| a.contains("first line")), "{args:?}");
-            assert!(args.iter().any(|a| a.contains("paste.png")), "{args:?}");
-            assert_eq!(built.stdin_payload.as_deref(), Some(request.prompt.as_str()));
-        }
+        let built = pi_family::pi().build_command(&request, "fake-bin").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--mode", "rpc"]), "{args:?}");
+        // The ask bridge extension rides along via --extension.
+        let at = args
+            .iter()
+            .position(|a| a == "--extension")
+            .expect("{args:?}");
+        assert!(args[at + 1].ends_with("ccgui-ask-bridge.ts"), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("first line")), "{args:?}");
+        let payload = built.stdin_payload.expect("rpc prompt must ride stdin");
+        let mut lines = payload.lines();
+        // pi 只有 v1:没有 negotiate_protocol 前导。
+        let state: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(state["type"], "get_state");
+        let prompt: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(prompt["type"], "prompt");
+        assert_eq!(prompt["message"], request.prompt);
+        assert!(
+            lines.next().is_none(),
+            "unexpected extra command: {payload}"
+        );
+        // 末尾不得自带换行:writer 统一补 `\n`,自带会在 rpc stdin 上产生
+        // 空行,pi 回一帧 `command:"parse"` 失败响应(parse 错误警告横幅)。
+        assert!(
+            !payload.ends_with('\n'),
+            "writer appends the terminator: {payload:?}"
+        );
+        assert!(built.keep_stdin_open);
+    }
+
+    #[test]
+    fn omp_prompt_rides_the_rpc_prompt_command() {
+        // rpc-ui 模式拒绝位置参数与 @file:prompt 是 stdin NDJSON 命令里的
+        // message 字段,图片是命令里的 base64 payload,argv 只带协议 flags。
+        // 图片走 prompt 命令的 base64 字段(load_image 覆盖),这里纯文本即可。
+        let mut request = req(None);
+        request.prompt = "first line\nsecond line".to_string();
+        let built = pi_family::omp()
+            .build_command(&request, "fake-bin")
+            .unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.windows(2).any(|w| w == ["--mode", "rpc-ui"]),
+            "{args:?}"
+        );
+        assert!(!args.contains(&"--print".to_string()), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("first line")), "{args:?}");
+        let payload = built.stdin_payload.expect("rpc prompt must ride stdin");
+        let mut lines = payload.lines();
+        assert!(lines.next().unwrap().contains("negotiate_protocol"));
+        assert!(lines.next().unwrap().contains("get_state"));
+        let prompt: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(prompt["type"], "prompt");
+        assert_eq!(prompt["message"], "first line\nsecond line");
+        assert!(
+            lines.next().is_none(),
+            "unexpected extra command: {payload}"
+        );
+        // The question answer frames write back over this same stdin.
+        assert!(built.keep_stdin_open);
     }
 
     #[test]
@@ -990,7 +1705,9 @@ mod permission_tests {
         assert!(!auto.contains(&"--dangerously-skip-permissions".to_string()));
         // Headless cannot prompt: auto pre-approves the read-only network
         // tools acceptEdits does not cover, or every web call is denied.
-        assert!(auto.windows(3).any(|w| w == ["--allowedTools", "WebSearch", "WebFetch"]));
+        assert!(auto
+            .windows(3)
+            .any(|w| w == ["--allowedTools", "WebSearch", "WebFetch"]));
 
         let manual = argv(&e, &req(Some("manual")));
         assert!(manual.contains(&"default".to_string()));
@@ -1052,7 +1769,10 @@ mod permission_tests {
             .collect();
         assert!(args.contains(&"-".to_string()));
         assert!(!args.iter().any(|a| a.contains("first line")));
-        assert_eq!(built.stdin_payload.as_deref(), Some(request.prompt.as_str()));
+        assert_eq!(
+            built.stdin_payload.as_deref(),
+            Some(request.prompt.as_str())
+        );
 
         let mut resume = req(Some("auto"));
         resume.session_id = Some("00000000-0000-0000-0000-000000000000".to_string());
@@ -1068,17 +1788,17 @@ mod permission_tests {
     }
 
     #[test]
-    fn kimi_maps_plan_and_bypass() {
+    fn kimi_prompt_mode_never_combines_interactive_permission_flags() {
         let e = kimi::KimiEngine;
         let auto = argv(&e, &req(Some("auto")));
         assert!(!auto.contains(&"--yolo".to_string()));
         assert!(!auto.contains(&"--plan".to_string()));
 
-        let plan = argv(&e, &req(Some("plan")));
-        assert!(plan.contains(&"--plan".to_string()));
+        assert!(e.build_command(&req(Some("plan")), "kimi").is_err());
 
         let bypass = argv(&e, &req(Some("bypass")));
-        assert!(bypass.contains(&"--yolo".to_string()));
+        assert!(!bypass.contains(&"--yolo".to_string()));
+        assert!(!bypass.contains(&"--auto".to_string()));
 
         // Manual is unsupported: falls back to auto (no flags).
         let manual = argv(&e, &req(Some("manual")));
@@ -1092,7 +1812,10 @@ mod permission_tests {
         // 0.85 still exposes none of them. Declaring only the modes a CLI can
         // actually honor is the whole point of supported_permissions — the
         // picker greys out the rest instead of sending a mode that is ignored.
-        assert_eq!(pi_family::omp().supported_permissions(), ["auto", "plan", "bypass"]);
+        assert_eq!(
+            pi_family::omp().supported_permissions(),
+            ["auto", "plan", "bypass"]
+        );
         assert_eq!(pi_family::pi().supported_permissions(), ["auto"]);
 
         // "manual" must stay unsupported: always-ask/write leave write/exec
@@ -1149,10 +1872,7 @@ mod permission_tests {
             "/data/shared".to_string(),
         ];
         let args = argv(&e, &r);
-        let pairs: Vec<&[String]> = args
-            .windows(2)
-            .filter(|w| w[0] == "--add-dir")
-            .collect();
+        let pairs: Vec<&[String]> = args.windows(2).filter(|w| w[0] == "--add-dir").collect();
         assert_eq!(pairs.len(), 1, "{args:?}");
         assert_eq!(pairs[0][1], "/data/shared");
 
@@ -1184,7 +1904,10 @@ mod retry_lifecycle_tests {
 
     impl event_sink::Emit for CollectingEmitter {
         fn emit_json(&self, _name: &str, raw_json: &str) {
-            self.0.lock().unwrap().extend(serde_json::from_str::<Vec<Value>>(raw_json).unwrap());
+            self.0
+                .lock()
+                .unwrap()
+                .extend(serde_json::from_str::<Vec<Value>>(raw_json).unwrap());
         }
     }
 
@@ -1200,31 +1923,47 @@ mod retry_lifecycle_tests {
         let mut state = TurnState::new(Some("session".to_string()));
         for event in [
             EngineEvent::Error("retry exhausted".to_string()),
-            EngineEvent::Retry { attempt: 1, max: 50, message: "socket closed".to_string() },
+            EngineEvent::Retry {
+                attempt: 1,
+                max: 50,
+                message: "socket closed".to_string(),
+            },
             EngineEvent::Warn("late request error".to_string()),
-            EngineEvent::Done { session_id: None, usage: None },
+            EngineEvent::Done {
+                session_id: None,
+                usage: None,
+            },
         ] {
             core.dispatch_event(&mut state, event);
         }
         core.sink.flush();
         let events = emitter.0.lock().unwrap();
-        let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
+        let kinds: Vec<_> = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect();
         assert_eq!(kinds, ["error"], "a settled run must not send live events");
     }
 
     async fn replay_cli_output(lines: &[Value]) -> Vec<Value> {
         let path = std::env::temp_dir().join(format!("ccgui-retry-{}.jsonl", uuid::Uuid::new_v4()));
-        let mut text = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        let mut text = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         text.push('\n');
         std::fs::write(&path, text).unwrap();
         let mut command = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "cat" });
         if cfg!(windows) {
             command.args(["/d", "/c", "type"]);
         }
-        let mut child = command.arg(&path)
+        let mut child = command
+            .arg(&path)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         let stdout = child.stdout.take().unwrap();
         let emitter = Arc::new(CollectingEmitter::default());
         let ctx = RunContext {
@@ -1238,9 +1977,11 @@ mod retry_lifecycle_tests {
             pid: child.id().unwrap(),
             preassigned_session_id: Some("session".to_string()),
             initial_model: None,
+            initial_effort: None,
             child: Arc::new(TokioMutex::new(child)),
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_files: vec![path],
+            mcp_restore: None,
             stderr_buf: Arc::new(Mutex::new(String::new())),
             stdout_plain_buf: Arc::new(Mutex::new(String::new())),
             // Windows-only guard field the production constructor fills; this
@@ -1259,8 +2000,7 @@ mod retry_lifecycle_tests {
     /// is empty — otherwise the banner is a bare exit code.
     #[tokio::test]
     async fn plain_stdout_tail_surfaces_on_failed_exit_without_stderr() {
-        let mut command =
-            tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        let mut command = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
         if cfg!(windows) {
             command.args(["/c", "echo error: unrecognized arguments: --json & exit 1"]);
         } else {
@@ -1285,9 +2025,11 @@ mod retry_lifecycle_tests {
             pid: child.id().unwrap(),
             preassigned_session_id: None,
             initial_model: None,
+            initial_effort: None,
             child: Arc::new(TokioMutex::new(child)),
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_files: Vec::new(),
+            mcp_restore: None,
             stderr_buf: Arc::new(Mutex::new(String::new())),
             stdout_plain_buf: Arc::new(Mutex::new(String::new())),
             // See the pipe-retry constructor above.
@@ -1313,7 +2055,10 @@ mod retry_lifecycle_tests {
             serde_json::json!({"type":"turn_end","message":{"role":"assistant","stopReason":"stop"}}),
             serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}),
         ]).await;
-        let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
+        let kinds: Vec<_> = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect();
         assert_eq!(kinds, ["retry", "delta", "done"]);
         assert_eq!(events[1]["data"], "recovered");
     }
@@ -1326,8 +2071,14 @@ mod retry_lifecycle_tests {
         ] {
             let events = replay_cli_output(&[failure]).await;
             let last = events.last().unwrap();
-            assert_eq!(last["kind"], "error", "clean process exit must not turn a failed request into success");
-            assert!(matches!(last["data"].as_str(), Some("401 Invalid token" | "socket closed")));
+            assert_eq!(
+                last["kind"], "error",
+                "clean process exit must not turn a failed request into success"
+            );
+            assert!(matches!(
+                last["data"].as_str(),
+                Some("401 Invalid token" | "socket closed")
+            ));
             assert!(!events.iter().any(|event| event["kind"] == "done"));
         }
     }
@@ -1393,9 +2144,11 @@ mod retry_lifecycle_tests {
             pid,
             preassigned_session_id: Some("session-held".to_string()),
             initial_model: None,
+            initial_effort: None,
             child,
             killed,
             cleanup_files: Vec::new(),
+            mcp_restore: None,
             stderr_buf: Arc::new(Mutex::new(String::new())),
             stdout_plain_buf: Arc::new(Mutex::new(String::new())),
             // See the pipe-retry constructor above.
@@ -1408,9 +2161,20 @@ mod retry_lifecycle_tests {
             .await
             .expect("reader must settle after child exit, not park on the held pipe");
         let events = std::mem::take(&mut *emitter.0.lock().unwrap());
-        let kinds: Vec<_> = events.iter().map(|event| event["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["done"], "buffered turn events must survive the drain");
-        assert_eq!(registry.0.lock().unwrap().len(), 0, "settled run must drain its registry entries");
+        let kinds: Vec<_> = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["done"],
+            "buffered turn events must survive the drain"
+        );
+        assert_eq!(
+            registry.0.lock().unwrap().len(),
+            0,
+            "settled run must drain its registry entries"
+        );
     }
 }
 #[cfg(test)]
@@ -1419,10 +2183,8 @@ mod codex_home_bin_tests {
 
     #[test]
     fn engine_bin_prefers_codex_home_bin() {
-        let dir = std::env::temp_dir().join(format!(
-            "ccgui-codex-home-bin-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("ccgui-codex-home-bin-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         let candidate = dir.join("bin").join("codex");
         std::fs::write(&candidate, "#!/bin/sh\n").unwrap();

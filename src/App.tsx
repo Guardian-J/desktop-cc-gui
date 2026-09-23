@@ -20,7 +20,7 @@ const loadSettingsPage = () => import("@/features/settings/SettingsPage");
 const SettingsPage = lazy(loadSettingsPage);
 
 export default function App() {
-  // Startup theme/language init lives in main.tsx module scope; only the
+  // Startup theme/language init lives in bootstrap.tsx; only the
   // theme-change listeners (with their own cleanup) are registered here.
   useEffect(() => bindThemeChangePersistence(), []);
   // bindSystemThemeSync keeps a "system" theme following OS color-scheme

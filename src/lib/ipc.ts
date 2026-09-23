@@ -1,5 +1,6 @@
 // Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
 import { invoke } from "./transport";
+import type { NativePerformanceDiagnostics } from "./performance-types";
 import { withGrantRetry } from "./grant";
 
 // ==================== Shared types (mirror Rust serde camelCase) ====================
@@ -54,6 +55,7 @@ export interface QuestionSpec {
   question: string;
   header: string;
   multiSelect?: boolean;
+  allowOther?: boolean;
   options: { label: string; description?: string; preview?: string }[];
 }
 
@@ -129,9 +131,13 @@ export interface EngineInfo {
    * picker and history lists; running sessions are unaffected. */
   enabled: boolean;
   supportsImages: boolean;
+  supportsEffort?: boolean;
   /** Permission modes the engine honors at spawn ("auto" | "manual" |
    * "plan" | "bypass"); the composer picker greys out the rest. */
   permissions: string[];
+  /** 引擎能否兑现逐次调用的工具白名单（任务工作台只读节点）；
+   *  不支持的引擎会被工作台阻止运行只读节点。 */
+  supportsToolConstraints?: boolean;
 }
 /** One entry of an engine's model catalog (`--list-models` probe). */
 export interface EngineModel {
@@ -262,6 +268,7 @@ export interface AppSettings {
   interruptShortcut?: string | null;
   commandPaletteShortcut?: string | null;
   sidebarSearchShortcut?: string | null;
+  chatSearchShortcut?: string | null;
   toggleTerminalShortcut?: string | null;
   toggleSidebarShortcut?: string | null;
   toggleSidePanelShortcut?: string | null;
@@ -273,6 +280,9 @@ export interface AppSettings {
   /** Thinking-process row behavior once its thinking settles: true/absent =
    *  auto-fold (default), false = stay expanded until the user folds it. */
   thinkingAutoCollapse?: boolean | null;
+  /** Beta entry points (设置 → 其他 → 内测功能): feature id -> enabled.
+   *  Missing/false = the entry stays hidden (default off). */
+  betaFeatures?: Record<string, boolean> | null;
   /** Terminal shell override; null/empty = auto-detect. */
   terminalShellPath: string | null;
   /** DSH host address (default "127.0.0.1"). */
@@ -324,6 +334,33 @@ export interface SearchHit {
   line: number;
   text: string;
 }
+/** One render-safe snippet segment (`search_messages`): `marked` spans are
+ *  the query match, everything else is plain message text. */
+export interface SnippetPart {
+  text: string;
+  marked: boolean;
+}
+
+/** One message-content search hit: the best-matching message of a session. */
+export interface MessageSearchHit {
+  engine: string;
+  sessionId: string;
+  workspacePath: string;
+  workspaceName: string | null;
+  title: string;
+  customTitle: string | null;
+  updatedAt: number | null;
+  role: string;
+  snippet: SnippetPart[];
+}
+
+export interface MessageSearchPage {
+  hits: MessageSearchHit[];
+  hasMore: boolean;
+  /** Sessions still awaiting (re)indexing at query time; >0 means the
+   *  hit list can grow without the query changing. */
+  pending: number;
+}
 /** One entry of the workspace file index (`list_file_index`). */
 export interface FileIndexEntry {
   /** Workspace-relative path, "/" separators. */
@@ -334,8 +371,10 @@ export interface FileIndexEntry {
 /** What a `/` picker entry is. Commands (`.claude/commands/*.md`) and
  *  skills (`.claude/skills/<name>/SKILL.md`) share the picker but stay
  *  distinct: the menu keys icons/badges/section grouping off this field,
- *  and per-kind merging lets a command and a skill share a name. */
-export type SlashEntryKind = "command" | "skill";
+ *  and per-kind merging lets a command and a skill share a name. "app" is
+ *  frontend-only: injected by the picker for ccgui's own intercepted
+ *  commands (/new, /compact), never emitted by the backend catalog. */
+export type SlashEntryKind = "command" | "skill" | "app";
 
 /** A `/` picker entry (`list_slash_commands`): workspace entries shadow
  *  global ones of the same name and kind. */
@@ -469,9 +508,19 @@ export interface RepositorySummary {
  *  exact repo-root directory (blue name); plain folders never carry color. */
 export type FileTreeColor = "modified" | "untracked" | "repository";
 
+export interface GitTreeLevel {
+  path: string;
+  files: string[];
+  directories: string[];
+}
+
+export interface GitTreeStatus {
+  repositories: RepositorySummary[];
+  fileColors: Record<string, Record<string, FileTreeColor>>;
+}
+
 export interface BranchInfo {
   name: string;
-  isCurrent: boolean;
 }
 export interface AppMetrics {
   /** Resident memory of the app process, bytes. */
@@ -668,6 +717,32 @@ export interface PluginInfo {
   permissions: string[];
   installedAt: number;
   minAppVersion: string | null;
+  /** Artwork declared by the installed manifest: `https://` URLs render
+   *  directly, repo-relative paths are read from the plugin directory through
+   *  `plugin_read_artwork`. Null / empty when the plugin ships none — the UI
+   *  then keeps its deterministic letter tile and renders no gallery. */
+  icon: string | null;
+  screenshots: string[];
+}
+
+/** 内置「插件开发」skill 的落盘结果（`creator_skill_install`）：每个引擎
+ *  skills 根一条，action 说明本次到底做了什么（written = 新装/刷新，
+ *  current = 已最新，conflict = 同名目录非本应用所写、刻意未动，failed = 读写失败）。 */
+export type CreatorSkillAction = "written" | "current" | "conflict" | "failed";
+
+export interface CreatorSkillTarget {
+  /** 目标 skills 根（`<engine home>/skills`）。 */
+  root: string;
+  /** 该 skill 目录的绝对路径。 */
+  path: string;
+  action: CreatorSkillAction;
+  error: string | null;
+}
+
+export interface CreatorSkillReport {
+  /** 随包资源里 skill 的目录；null = 打包缺资源（打包 bug）。 */
+  source: string | null;
+  targets: CreatorSkillTarget[];
 }
 /** Marketplace listing row (plan §6.1): community-plugins.json merged with
  *  plugins/<id>.json — the fields the market UI renders. */
@@ -679,12 +754,23 @@ export interface MarketPlugin {
   author: string;
   tier: "declarative" | "js";
   version: string;
+  /** Index-repo stamp of the pinned release's publish time (RFC 3339 UTC);
+   *  null when the index entry predates the field — the rail hides the row. */
+  updatedAt: string | null;
   minAppVersion: string | null;
   sdkVersion: string | null;
   permissions: string[];
   /** Lifetime download count from the index stats bot; null when the
    *  stats file is unavailable — decorative, never gates anything. */
   downloads: number | null;
+  /** Detail-page carousel: absolute https URLs, already resolved by the
+   *  backend from the index's repo-relative paths. Empty when the plugin
+   *  ships no screenshots. */
+  screenshots: string[];
+  /** Market identity tile: absolute https URL, already resolved by the
+   *  backend from the index's repo-relative path. Null when the index
+   *  carries no icon — the row keeps its deterministic letter tile. */
+  icon: string | null;
 }
 
 /** One installed marketplace plugin with a newer indexed version. */
@@ -792,6 +878,22 @@ export const ipc = {
   }) => invoke<SendResult>("send_message", args),
   interruptSession: (sessionId: string) =>
     invoke<boolean>("interrupt_session", { sessionId }),
+  /** 任务工作台 agent 节点：原生桥（事件走 mission-agent://event）。 */
+  missionAgentStart: (args: {
+    /** 前端预生成的 runId（mission- 前缀）；先注册监听再 invoke。 */
+    runId: string;
+    engine: string;
+    workspacePath: string;
+    sessionId: string | null;
+    prompt: string;
+    model: string | null;
+    effort: string | null;
+    providerId: string | null;
+    /** 只读白名单；null = 不加约束（普通 agent 节点）。 */
+    allowedTools: string[] | null;
+  }) => invoke<SendResult>("mission_agent_start", args),
+  missionAgentInterrupt: (runId: string) =>
+    invoke<boolean>("mission_agent_interrupt", { runId }),
   listEngines: () => invoke<EngineInfo[]>("list_engines"),
   /** Persist a clipboard image to app home; returns its absolute path so it
    * can flow through the same path-based image pipeline as picked files. */
@@ -818,6 +920,14 @@ export const ipc = {
     limit?: number,
     beforeSeq?: number | null,
   ) => invoke<SessionPage>("load_session_page", { engine, sessionId, limit, beforeSeq }),
+  /** Full-text search over message bodies (⌘L palette). FTS5 trigram when
+   *  every token is ≥3 chars, exact AND-substring LIKE otherwise. */
+  searchMessages: (
+    query: string,
+    limit?: number,
+    offset?: number,
+  ) =>
+    invoke<MessageSearchPage>("search_messages", { query, limit, offset }),
   /** Remote (WSL distro) transcript: host fetches the jsonl over the ssh
    *  channel, caches it locally, and parses with the same engine reader. */
   loadRemoteSessionPage: (
@@ -992,11 +1102,15 @@ export const ipc = {
     invoke<RepositorySummary[]>("git_repository_summaries", { paths }),
   gitFileColors: (path: string, files: string[]) =>
     invoke<Record<string, FileTreeColor>>("git_file_colors", { path, files }),
+  gitTreeStatus: (levels: GitTreeLevel[]) =>
+    invoke<GitTreeStatus>("git_tree_status", { levels }),
   gitDiff: (path: string, file: string, staged: boolean) =>
     invoke<string>("git_diff", { path, file, staged }),
   gitStage: (path: string, files: string[]) => invoke<void>("git_stage", { path, files }),
   gitUnstage: (path: string, files: string[]) =>
     invoke<void>("git_unstage", { path, files }),
+  gitDiscard: (path: string, files: string[]) =>
+    invoke<void>("git_discard", { path, files }),
   gitCommit: (path: string, message: string) =>
     invoke<string>("git_commit", { path, message }),
   gitPush: (path: string) => invoke<void>("git_push", { path }),
@@ -1019,6 +1133,9 @@ export const ipc = {
     invoke<void>("reveal_in_file_manager", { path }),
   // metrics
   appMetrics: () => invoke<AppMetrics>("app_metrics"),
+  performanceDiagnostics: () => invoke<NativePerformanceDiagnostics>("performance_diagnostics"),
+  performanceDiagnosticsEnabled: () => invoke<boolean>("performance_diagnostics_enabled"),
+  performanceDiagnosticsSetEnabled: (enabled: boolean) => invoke<boolean>("performance_diagnostics_set_enabled", { enabled }),
   // plugins
   pluginList: () => invoke<PluginInfo[]>("plugin_list"),
   pluginInstallFromPath: (path: string) =>
@@ -1031,6 +1148,11 @@ export const ipc = {
     invoke<PluginInfo>("plugin_quarantine", { id, error }),
   pluginReadFile: (id: string, name: string) =>
     invoke<string>("plugin_read_file", { id, name }),
+  /** One declared artwork file of an installed plugin as a data URL. The
+   *  webview has no filesystem access, so locally installed plugins get their
+   *  icon/gallery through this path-scoped read. */
+  pluginReadArtwork: (id: string, path: string) =>
+    invoke<string>("plugin_read_artwork", { id, path }),
   pluginStorageGet: (id: string, key: string) =>
     invoke<unknown>("plugin_storage_get", { id, key }),
   pluginStorageSet: (id: string, key: string, value: unknown) =>
@@ -1041,9 +1163,17 @@ export const ipc = {
   // web bridge; fetch/checkUpdates ride the read-only whitelist.
   pluginFetchIndex: (force = false) =>
     invoke<MarketPlugin[]>("plugin_fetch_index", { force }),
+  /** Long-form intro (README.md from the plugin repo's default branch) for
+   *  the market detail page. Fetched on open, cached backend-side for 1h. */
+  pluginFetchMarketReadme: (id: string) =>
+    invoke<string>("plugin_fetch_market_readme", { id }),
   pluginInstallFromMarketplace: (id: string) =>
     invoke<PluginInfo>("plugin_install_from_marketplace", { id }),
   pluginCheckUpdates: () => invoke<PluginUpdate[]>("plugin_check_updates"),
+  /** 内置「插件开发」skill 的落盘：幂等地同步进各引擎的 skills 根（Claude /
+   *  Codex / ~/.agents）。插件中心的「创建插件」在开新会话前调一次，这样
+   *  `/ccgui-plugin-creator` 在引擎侧确实存在、可被解析。 */
+  creatorSkillInstall: () => invoke<CreatorSkillReport>("creator_skill_install"),
   // web access (start/stop are desktop-only; the bridge answers status too)
   webDevices: () => invoke<WebDevice[]>("web_devices"),
   webDeviceApprove: (id: string) => invoke<boolean>("web_device_approve", { id }),

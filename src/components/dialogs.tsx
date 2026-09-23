@@ -25,7 +25,7 @@ import {
  * (`isDismissable`), and portalling to document.body.
  *
  * z-110, not z-50: the portalled overlay is a document.body sibling of
- * SettingsModal's z-100 overlay, so dialogs opened from inside settings
+ * the settings shell's z-100 page, so dialogs opened from inside settings
  * (add/edit/delete channel) must outrank it to stay visible.
  */
 export function ModalShell({
@@ -51,13 +51,18 @@ export function ModalShell({
   return (
     <ModalOverlay
       isOpen
+      // `isDismissable` belongs on the overlay: react-aria's `useOverlay`
+      // defaults it to false and `useModalOverlay` only reads it from the
+      // ModalOverlay — on the inner Modal it is silently ignored (the library
+      // warns in dev), which left outside-press dismissal dead for every
+      // dialog built on this shell.
+      isDismissable
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
       className="fixed inset-0 z-110 flex items-center justify-center bg-overlay-backdrop"
     >
       <Modal
-        isDismissable
         className={cx(
           "w-80 rounded-2lg border border-border-button-default bg-background-primary-default p-4 shadow-xl outline-none",
           className,
@@ -179,7 +184,7 @@ interface ConfirmPopoverProps extends ConfirmDialogProps {
 export function ConfirmPopover({ message, danger = false, anchor, onConfirm, onCancel }: ConfirmPopoverProps) {
   const { t } = useTranslation();
   useBrowserOcclusion(true);
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDialogElement>(null);
   const [pos, setPos] = useState(anchor);
   // Latest-handler ref so the global dismissal listeners below subscribe
   // once yet always invoke the current onCancel.
@@ -223,11 +228,12 @@ export function ConfirmPopover({ message, danger = false, anchor, onConfirm, onC
   }, []);
 
   return createPortal(
-    <div
+    <dialog
+      open
       ref={popoverRef}
       role="alertdialog"
       aria-label={message}
-      className="fixed z-120 w-72 rounded-2lg border border-border-button-default bg-background-primary-default p-3 shadow-xl"
+      className="fixed z-120 m-0 w-72 rounded-2lg border border-border-button-default bg-background-primary-default p-3 shadow-xl"
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -241,7 +247,7 @@ export function ConfirmPopover({ message, danger = false, anchor, onConfirm, onC
           {t("common.confirm")}
         </Button>
       </div>
-    </div>,
+    </dialog>,
     document.body,
   );
 }

@@ -1,6 +1,13 @@
 import { useSyncExternalStore, type ComponentType } from "react";
 import type { Components } from "react-markdown";
 import type { Disposer } from "./manifest";
+import type { PluginConversationProps } from "./context";
+
+export interface ConversationModeDef {
+  id: string;
+  label: () => string;
+  component: ComponentType<PluginConversationProps>;
+}
 
 /**
  * 扩展点定义类型（plan §4.2）与注册表（plan §4.1 runtime/registry.ts）。
@@ -21,8 +28,10 @@ export interface SettingsSectionDef {
   /** Resolved at render time so language flips re-label the rail. */
   label: () => string;
   icon?: ComponentType<{ className?: string }>;
-  /** Nav group: core settings rail vs the CLI 管理 rail. */
-  group: "settings" | "cli";
+  /** Nav group id: 系统 system / 插件 plugins / CLI 管理 cli / 工作区与数据
+   *  workspace / 其他 misc. Open string so SDK consumers can introduce new
+   *  rails — the settings page appends unknown groups after the known ones. */
+  group: string;
   /** Rail order within the group; builtins use their old fixed order,
    *  plugin sections default after them. */
   order: number;
@@ -51,7 +60,8 @@ export interface ComposerSlotDef {
 }
 
 /** Chat right-panel tab (plan §4.2 #4). Builtin tabs (files/changes) are
- *  registered through the same registry; plugin tabs render inside a
+ *  registered through the same registry and keep icon + label in the strip;
+ *  plugin tabs render icon-only (label → title/accessible name) inside a
  *  PluginBoundary. */
 export interface PanelTabDef {
   id: string;
@@ -143,6 +153,29 @@ export interface TimelineRowRendererDef {
   component: ComponentType<{ row: { kind: string } }>;
 }
 
+/** Home sidebar nav entry (0.3.12): one row under the builtin 自动化 entry,
+ *  rendering through the same chrome as the builtin nav items. `onOpen`
+ *  typically opens the plugin's center tab (ctx.ui.openCenterTab). */
+export interface SidebarNavEntryDef {
+  id: string;
+  label: () => string;
+  icon?: ComponentType<{ className?: string }>;
+  order?: number;
+  onOpen: () => void;
+}
+
+/** Center-area tab definition (0.3.12): what a plugin can open as a tab in
+ *  the center tab strip. Definitions live in this registry; open-tab
+ *  INSTANCES are host-side runtime state (features/plugins/runtime/
+ *  center-tabs.ts), created via ctx.ui.openCenterTab. */
+export interface CenterTabDef {
+  id: string;
+  title: () => string;
+  icon?: ComponentType<{ className?: string }>;
+  component: ComponentType;
+  order?: number;
+}
+
 // ---------------------------------------------------------------------------
 // 注册表
 // ---------------------------------------------------------------------------
@@ -224,6 +257,13 @@ export const pageRegistry = new Registry<PageDef>();
 
 /** Chat timeline row renderer registry (plan §4.2 #5). */
 export const timelineRowRegistry = new Registry<TimelineRowRendererDef>();
+
+/** Home sidebar nav entries (0.3.12); rendered after the builtin 自动化 row. */
+export const sidebarNavRegistry = new Registry<SidebarNavEntryDef>();
+
+/** Center-area tab definitions (0.3.12). */
+export const centerTabRegistry = new Registry<CenterTabDef>();
+export const conversationModeRegistry = new Registry<ConversationModeDef>();
 
 // ---------------------------------------------------------------------------
 // 注册表 id / 排序辅助

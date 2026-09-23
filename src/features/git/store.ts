@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { ipc, type BranchInfo, type GitStatus } from "@/lib/ipc";
 import { errorText } from "@/lib/errors";
-import { useFilesStore } from "@/features/files/store";
 
 const TTL_MS = 30_000;
 
@@ -45,6 +44,7 @@ interface GitStore {
   // re-thrown so callers can surface them inline.
   stage: (workspacePath: string, files: string[]) => Promise<void>;
   unstage: (workspacePath: string, files: string[]) => Promise<void>;
+  discard: (workspacePath: string, files: string[]) => Promise<void>;
   commit: (workspacePath: string, message: string) => Promise<string>;
   push: (workspacePath: string) => Promise<void>;
   pull: (workspacePath: string) => Promise<void>;
@@ -77,9 +77,9 @@ export const useGitStore = create<GitStore>((set, get) => {
         .catch(() => undefined);
       // The file tree's git badges/colors are stale after any mutation
       // (commit/stage/checkout); refreshTree re-walks every loaded level.
-      useFilesStore
-        .getState()
-        .refreshTree()
+      // 动态引入避免与 files/store 的模块环：文件抢到中心时也要关差异页签。
+      void import("@/features/files/store")
+        .then((m) => m.useFilesStore.getState().refreshTree())
         .catch(() => undefined);
     }
   };
@@ -160,6 +160,8 @@ export const useGitStore = create<GitStore>((set, get) => {
       runMutation(workspacePath, () => ipc.gitStage(workspacePath, files)) as Promise<void>,
     unstage: (workspacePath, files) =>
       runMutation(workspacePath, () => ipc.gitUnstage(workspacePath, files)) as Promise<void>,
+    discard: (workspacePath, files) =>
+      runMutation(workspacePath, () => ipc.gitDiscard(workspacePath, files)) as Promise<void>,
     commit: (workspacePath, message) =>
       runMutation(workspacePath, () => ipc.gitCommit(workspacePath, message)) as Promise<string>,
     push: (workspacePath) =>

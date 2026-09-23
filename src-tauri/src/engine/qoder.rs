@@ -84,6 +84,9 @@ impl Engine for QoderEngine {
         // session/prompt carries image content blocks (base64).
         true
     }
+    fn supports_effort(&self) -> bool {
+        true
+    }
 
     fn supported_permissions(&self) -> &'static [&'static str] {
         // A headless ACP turn cannot honor an approval flow: the driver
@@ -119,7 +122,10 @@ mod tests {
         assert_eq!(QoderDistribution::Cn.engine_id(), "qoder-cn");
         assert_eq!(QoderDistribution::Global.cli_name(), "qodercli");
         assert_eq!(QoderDistribution::Cn.cli_name(), "qoderclicn");
-        assert_eq!(QoderDistribution::Global.default_config_dir_name(), ".qoder");
+        assert_eq!(
+            QoderDistribution::Global.default_config_dir_name(),
+            ".qoder"
+        );
         assert_eq!(QoderDistribution::Cn.default_config_dir_name(), ".qoder-cn");
     }
 
