@@ -18,6 +18,7 @@ function setup(messages: Message[] = []) {
       [OTHER]: { ...EMPTY_SESSION, streaming: true },
     },
     streamingByKey: { [KEY]: true, [OTHER]: true },
+    retryingByKey: {},
     models: {},
     efforts: {},
     openTabs: [{ engine: "codex", sessionId: "first", workspacePath: "/tmp/ws" }],
