@@ -30,6 +30,10 @@ const checkForUpdatesSpy = vi.fn(async () => {});
  *  when no release was discovered (manual open / idle app). */
 const newest = CHANGELOG_DATA[0];
 
+/** First bolded title of the newest entry; asserting on this instead of a
+ *  hard-coded phrase keeps the test valid across releases. */
+const newestMarker = newest.content.zh.match(/\*\*(.+?)\*\*/)?.[1] ?? "";
+
 describe("ReleaseNotesPane", () => {
   let container: HTMLDivElement;
   let root: Root | null;
@@ -90,15 +94,15 @@ describe("ReleaseNotesPane", () => {
 
     expect(container.textContent).toContain("v1.0.9");
     expect(container.textContent).toContain("Release notes open as a tab");
-    // The local v1.0.7 body must not leak under the v1.0.9 heading.
-    expect(container.textContent).not.toContain("插件中心升级为原生页签");
+    // The local newest entry must not leak under the v1.0.9 heading.
+    expect(container.textContent).not.toContain(newestMarker);
   });
 
   it("falls back to the local version history when no release was discovered", async () => {
     await render();
 
     expect(container.textContent).toContain(`v${newest.version}`);
-    expect(container.textContent).toContain("插件中心升级为原生页签");
+    expect(container.textContent).toContain(newestMarker);
   });
 
   it("checks for updates in place and reports the already-latest result", async () => {
