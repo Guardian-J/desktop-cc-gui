@@ -982,6 +982,7 @@ export const en: Messages = {
     errorNotARepo: "Current workspace is not a git repository",
     errorInvalidBranch: "Branch name is not a valid git ref",
     errorRegisterFailed: "The worktree was created but registration failed; retrying reuses the existing directory",
+    errorSparseCheckoutEmpty: "The repository's sparse-checkout rules exclude every file, so nothing was checked out; run git sparse-checkout disable (or adjust the rules) and retry",
     errorUnknown: "Creation failed; please retry",
     // Delete dialog
     deleteTitle: "Delete Worktree \"{{branch}}\"?",

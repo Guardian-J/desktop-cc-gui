@@ -945,6 +945,7 @@ export const zh = {
     errorNotARepo: "当前工作区不是 Git 仓库",
     errorInvalidBranch: "分支名不符合 git 规范",
     errorRegisterFailed: "worktree 已创建但登记失败，重试将复用现有目录补登记",
+    errorSparseCheckoutEmpty: "仓库启用了 sparse-checkout（稀疏检出）且规则排除了全部文件，未检出任何内容；请先执行 git sparse-checkout disable 或调整规则后重试",
     errorUnknown: "创建失败，请重试",
     // 删除对话框
     deleteTitle: "删除 Worktree「{{branch}}」？",

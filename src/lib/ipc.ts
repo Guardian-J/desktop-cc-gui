@@ -194,6 +194,7 @@ export type WorktreeErrorKind =
   | "base_not_found"
   | "add_failed"
   | "register_failed"
+  | "sparse_checkout_empty"
   | "invalid_args"
   | "unknown";
 

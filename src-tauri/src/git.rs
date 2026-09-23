@@ -253,14 +253,18 @@ impl TreeSnapshots {
                 let mut opts = StatusOptions::new();
                 opts.include_untracked(true)
                     .recurse_untracked_dirs(self.recurse_untracked_dirs);
+                // Sparse checkouts hide unmaterialized paths from the tree:
+                // same skip-worktree filter as `git_status`.
+                let index = repo.index().ok();
                 repo.statuses(Some(&mut opts)).ok().map(|statuses| {
                     statuses
                         .iter()
                         .filter_map(|entry| {
-                            entry
-                                .path()
-                                .filter(|path| !path.is_empty())
-                                .map(|path| (path.to_string(), entry.status()))
+                            let path = entry.path().filter(|path| !path.is_empty())?;
+                            if is_skip_worktree(index.as_ref(), path) {
+                                return None;
+                            }
+                            Some((path.to_string(), entry.status()))
                         })
                         .collect()
                 })
@@ -436,8 +440,23 @@ fn count_untracked_reader(mut reader: impl std::io::Read) -> Option<(usize, usiz
     (lines <= MAX_UNTRACKED_LINES).then_some((lines, 0))
 }
 
+/// libgit2 `GIT_INDEX_ENTRY_SKIP_WORKTREE` (1 << 14): the entry is tracked
+/// but intentionally absent from the working tree (sparse checkout). The
+/// git2 bindings do not expose the constant; status filtering and worktree
+/// creation both need it.
+pub(crate) const INDEX_ENTRY_SKIP_WORKTREE: u16 = 1 << 14;
+
+/// True when the index marks `path` skip-worktree: tracked but intentionally
+/// absent from the working tree (sparse checkout), so never a user change.
+fn is_skip_worktree(index: Option<&git2::Index>, path: &str) -> bool {
+    index
+        .and_then(|index| index.get_path(Path::new(path), 0))
+        .is_some_and(|entry| entry.flags_extended & INDEX_ENTRY_SKIP_WORKTREE != 0)
+}
+
 /// Bucket status entries into staged/unstaged/untracked file lists.
 fn collect_status_entries(
+    index: &git2::Index,
     statuses: &git2::Statuses,
 ) -> (Vec<GitFileEntry>, Vec<GitFileEntry>, Vec<GitFileEntry>) {
     let mut staged = Vec::new();
@@ -449,6 +468,16 @@ fn collect_status_entries(
             continue;
         }
         let status = entry.status();
+        // Sparse checkouts keep unmaterialized paths in the index with the
+        // skip-worktree bit set. libgit2's status walk ignores the bit and
+        // reports those paths as worktree-deleted; they are not user edits,
+        // so the worktree-side buckets must drop them.
+        let skip_worktree = status.intersects(
+            git2::Status::WT_MODIFIED
+                | git2::Status::WT_DELETED
+                | git2::Status::WT_TYPECHANGE
+                | git2::Status::WT_RENAMED,
+        ) && is_skip_worktree(Some(index), &path);
         if status.contains(git2::Status::WT_NEW) && !status.intersects(git2::Status::INDEX_NEW) {
             untracked.push(GitFileEntry {
                 path,
@@ -472,12 +501,14 @@ fn collect_status_entries(
                 deletions: None,
             });
         }
-        if status.intersects(
-            git2::Status::WT_MODIFIED
-                | git2::Status::WT_DELETED
-                | git2::Status::WT_TYPECHANGE
-                | git2::Status::WT_RENAMED,
-        ) {
+        if !skip_worktree
+            && status.intersects(
+                git2::Status::WT_MODIFIED
+                    | git2::Status::WT_DELETED
+                    | git2::Status::WT_TYPECHANGE
+                    | git2::Status::WT_RENAMED,
+            )
+        {
             unstaged.push(GitFileEntry {
                 path,
                 status: status_label(status).to_string(),
@@ -549,8 +580,9 @@ fn git_status_blocking(path: &str) -> Result<GitStatus, String> {
         .unwrap_or_else(|| "HEAD".to_string());
     let mut opts = StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
+    let index = repo.index().map_err(|e| e.to_string())?;
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
-    let (mut staged, mut unstaged, mut untracked) = collect_status_entries(&statuses);
+    let (mut staged, mut unstaged, mut untracked) = collect_status_entries(&index, &statuses);
     fill_line_stats(&repo, &mut staged, &mut unstaged, &mut untracked);
     let (ahead, behind) = ahead_behind(&repo).unzip();
     Ok(GitStatus {
@@ -1304,6 +1336,44 @@ mod tests {
             assert_eq!(entry.additions, expected, "{}", entry.path);
             assert_eq!(entry.deletions, expected, "{}", entry.path);
         }
+    }
+
+    #[test]
+    fn status_ignores_skip_worktree_paths() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        commit_file(&repo, "sparse.txt", "index only\n");
+
+        // Sparse checkout state: tracked in the index, marked skip-worktree,
+        // absent from the working tree. Not a user edit.
+        std::fs::remove_file(scratch.0.join("sparse.txt")).unwrap();
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("sparse.txt"), 0).unwrap();
+        entry.flags_extended |= INDEX_ENTRY_SKIP_WORKTREE;
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+
+        let status = git_status_blocking(scratch.0.to_str().unwrap()).unwrap();
+        assert!(status.staged.is_empty(), "status={status:?}");
+        assert!(status.unstaged.is_empty(), "status={status:?}");
+        assert!(status.untracked.is_empty(), "status={status:?}");
+
+        // The file tree's repo summary and colors share the same snapshot.
+        let summary = exact_repository_summary(&scratch.0).unwrap();
+        assert_eq!(summary.changed, 0);
+    }
+
+    #[test]
+    fn status_still_reports_a_real_worktree_deletion() {
+        let scratch = Scratch::new();
+        let repo = Repository::init(&scratch.0).unwrap();
+        commit_file(&repo, "gone.txt", "deleted for real\n");
+        std::fs::remove_file(scratch.0.join("gone.txt")).unwrap();
+
+        let status = git_status_blocking(scratch.0.to_str().unwrap()).unwrap();
+        assert_eq!(status.unstaged.len(), 1, "status={status:?}");
+        assert_eq!(status.unstaged[0].path, "gone.txt");
+        assert_eq!(status.unstaged[0].deletions, Some(1));
     }
 
     fn tree_level(path: &Path, files: &[&str], directories: &[&str]) -> GitTreeLevel {

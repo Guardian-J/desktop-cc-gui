@@ -417,6 +417,23 @@ async fn ensure_push_auto_setup(repo: &Path) {
     }
 }
 
+/// True when every indexed path is skip-worktree, i.e. sparse-checkout rules
+/// excluded the whole tree and `git worktree add` produced a directory with
+/// no files in it. Such a worktree is unusable, so creation fails instead of
+/// registering an empty workspace.
+fn worktree_is_empty_checkout(path: &Path) -> bool {
+    let Ok(repo) = git2::Repository::open(path) else {
+        return false;
+    };
+    let Ok(index) = repo.index() else {
+        return false;
+    };
+    !index.is_empty()
+        && index
+            .iter()
+            .all(|entry| entry.flags_extended & crate::git::INDEX_ENTRY_SKIP_WORKTREE != 0)
+}
+
 /// The whole create pipeline, split from the command for tests (no AppHandle
 /// / AppState needed: pass None to skip event emission and registration).
 async fn run_create(
@@ -592,6 +609,24 @@ async fn run_create(
             return Err(fail(kind, summarize_stderr(&out.stderr)));
         }
         ensure_push_auto_setup(&repo_path).await;
+    }
+
+    // Sparse-checkout rules that exclude every path make `git worktree add`
+    // succeed with an empty directory (every index entry skip-worktree). The
+    // worktree is unusable, so fail with guidance instead of registering it.
+    // A resumed directory is left on disk (the user may be mid-repair) but is
+    // still not registered until it holds files.
+    if worktree_is_empty_checkout(&target) {
+        if !resume {
+            cleanup_partial_add(&repo_path, &target).await;
+        }
+        return Err(fail(
+            "sparse_checkout_empty",
+            format!(
+                "{} checked out no files: the repository's sparse-checkout rules exclude every path",
+                args.worktree_path
+            ),
+        ));
     }
     check_cancel(cancel)?;
 
@@ -1039,6 +1074,34 @@ mod tests {
         assert!(repo
             .find_branch("feat-x", git2::BranchType::Local)
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn sparse_checkout_excluding_everything_fails_instead_of_empty_worktree() {
+        let scratch = Scratch::new();
+        let repo_dir = scratch.join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let repo = init_repo(&repo_dir);
+
+        // Sparse rules that match no path: `worktree add` writes no files at
+        // all, so the new directory would be an empty workspace.
+        repo.config()
+            .unwrap()
+            .set_bool("core.sparseCheckout", true)
+            .unwrap();
+        std::fs::write(
+            repo.path().join("info/sparse-checkout"),
+            "/definitely-not-a-path\n",
+        )
+        .unwrap();
+
+        let target = scratch.join("wt-empty");
+        let args = create_args(&repo_dir, "feat-empty", &target);
+        let error = run_create(None, None, "t-empty", &args, &cancel_handle())
+            .await
+            .expect_err("empty checkout must fail creation");
+        assert_eq!(error.kind, "sparse_checkout_empty");
+        assert!(!target.exists(), "partial add cleaned up");
     }
 
     #[tokio::test]

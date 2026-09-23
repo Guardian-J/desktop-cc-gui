@@ -17,6 +17,7 @@ const ERROR_KEY_BY_KIND: Record<string, string> = {
   not_a_repo: "worktree.errorNotARepo",
   invalid_branch: "worktree.errorInvalidBranch",
   register_failed: "worktree.errorRegisterFailed",
+  sparse_checkout_empty: "worktree.errorSparseCheckoutEmpty",
   unknown: "worktree.errorUnknown",
 };
 
