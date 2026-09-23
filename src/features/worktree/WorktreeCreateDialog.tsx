@@ -131,7 +131,7 @@ function BranchCombobox({
   );
 }
 
-/** Three-source worktree creation (PR / new branch / existing branch). The
+/** Three-source worktree creation (new branch / existing branch / PR). The
  *  submit hands off to the background pipeline immediately — progress lives
  *  in the sidebar's pending row, so the dialog closes on submit. */
 export function WorktreeCreateDialog({
@@ -145,7 +145,7 @@ export function WorktreeCreateDialog({
   const prefs = useWorktreeStore((s) => s.prefs);
   const branches = useGitStore((s) => s.branchesByWorkspace[parent.path]);
 
-  const [tab, setTab] = useState<SourceTab>("pr");
+  const [tab, setTab] = useState<SourceTab>("new");
   const [occupied, setOccupied] = useState<Set<string>>(new Set());
 
   // PR tab
@@ -322,14 +322,14 @@ export function WorktreeCreateDialog({
         </div>
 
         <div className="flex gap-1.5">
-          <Chip selected={tab === "pr"} onClick={() => setTab("pr")}>
-            {t("worktree.tabFromPr")}
-          </Chip>
           <Chip selected={tab === "new"} onClick={() => setTab("new")}>
             {t("worktree.tabNewBranch")}
           </Chip>
           <Chip selected={tab === "existing"} onClick={() => setTab("existing")}>
             {t("worktree.tabExistingBranch")}
+          </Chip>
+          <Chip selected={tab === "pr"} onClick={() => setTab("pr")}>
+            {t("worktree.tabFromPr")}
           </Chip>
         </div>
 

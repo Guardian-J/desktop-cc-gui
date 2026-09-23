@@ -890,7 +890,6 @@ export const zh = {
     deleteWorktree: "删除 Worktree…",
     showInFinder: "在访达中显示",
     prBadge: "PR#{{number}}",
-    dirtyBadge: "●{{count}}",
     lockedDeleteDisabled: "该 worktree 已被 git 锁定，无法删除",
     missingDirectory: "目录已丢失",
     missingDirectoryHint: "该 worktree 的目录在磁盘上不存在，可从侧栏移除登记",

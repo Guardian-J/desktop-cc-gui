@@ -25,7 +25,7 @@
 | # | 决策 | 结论 |
 |---|---|---|
 | 1 | worktree 在侧栏的形态 | 父工作区下的**子工作区**（WORKTREES 分组，缩进子行），恢复旧版 `kind` + `parentId` 数据先例 |
-| 2 | 创建来源 | 三种：**从 PR 创建**（默认 Tab）/ 新分支 / 检出已有分支，同一对话框 |
+| 2 | 创建来源 | 三种：**新分支**（默认 Tab）/ 检出已有分支 / 从 PR 创建，同一对话框 |
 | 3 | PR 获取 | 不依赖 GitHub token：fork/同仓 PR 统一走 `git fetch origin +refs/pull/N/head:refs/heads/<branch>`；PR 标题等元信息在 `gh` CLI 可用时增强，缺失降级不阻塞 |
 | 4 | 创建方式 | 后台化：对话框即交即走，侧栏进度行（转圈 → 成功/失败），可取消、失败可重试；分支/目录冲突**行内报错**，不做自动重试 |
 | 5 | 父工作区移除/归档 | **级联提示**：弹窗列出受影响 worktree，确认后一并处理 |
@@ -304,7 +304,7 @@ interface WorktreePrefs {
 ### 5.3 `WorktreeCreateDialog.tsx`
 
 - `ModalShell` 容器（`src/components/dialogs.tsx`），标题「新建 Worktree」+ 副标题父仓库名与路径；
-- 三 Tab 用 `Chip`（`src/components/base/chips/chip.tsx`，与 Skills/MCP 页同形）：从 PR 创建（默认）/ 新分支 / 已有分支；
+- 三 Tab 用 `Chip`（`src/components/base/chips/chip.tsx`，与 Skills/MCP 页同形）：新分支（默认）/ 已有分支 / 从 PR 创建；
 - **从 PR 创建**：Input（mono）→ 防抖 400ms 调 `gitResolvePr` → 预览卡（标题/作者/+a −d/分支名；`degraded` 时只显示「PR #N · owner/repo · 将通过 pull/N/head 获取」）；`branchConflict` 行内红字；
 - **新分支**：分支名 Input（实时 `check-ref-format` 经后端校验太重——前端正则粗检 + 提交时后端终检）+ base 选择（复用 `ChangesPanelHeader` 的 Dropdown+搜索模式）；
 - **已有分支**：同一分支选择器，占用分支（`gitWorktreeList` 已挂载）禁用并注明「已被 worktree 占用」；
@@ -319,7 +319,7 @@ interface WorktreePrefs {
 
 **渲染**（`workspace-sections.tsx`）：
 - 父行会话列表之后渲染「WORKTREES · n」分组标签（可折叠，折叠状态持久化，同分组折叠机制）；
-- worktree 子行：缩进 + `git-branch` 图标 + 分支名（`name` 即目录名，分支名以 `worktreeMeta.branch` 为准）+ PR 徽标（`prNumber` 存在时，`status-purple` 对）+ 脏状态 `●n`（复用 git store 的 `statusByWorkspace`，30s TTL，与变更面板同缓存）；
+- worktree 子行：缩进 + `git-branch` 图标 + 分支名（`name` 即目录名，分支名以 `worktreeMeta.branch` 为准）+ PR 徽标（`prNumber` 存在时，`status-purple` 对）；
 - 子行可展开列出该 worktree 的会话线程（现有线程行渲染复用，缩进加深一级）；
 - 激活态/未读/streaming 呼吸点沿用现有语义；
 - worktree 行**禁用**拖拽排序与拖入分组（父子绑定，拖拽会破坏 parentId 语义）；右键菜单给出说明性禁用项而不是隐藏（对齐「禁用目标不能谎报」）。

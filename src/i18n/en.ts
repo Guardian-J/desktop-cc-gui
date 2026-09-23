@@ -927,7 +927,6 @@ export const en: Messages = {
     deleteWorktree: "Delete Worktree…",
     showInFinder: "Reveal in Finder",
     prBadge: "PR#{{number}}",
-    dirtyBadge: "●{{count}}",
     lockedDeleteDisabled: "This worktree is locked by git and cannot be deleted",
     missingDirectory: "Directory missing",
     missingDirectoryHint: "The worktree's directory no longer exists on disk; you can remove the entry from the sidebar",

@@ -15,7 +15,6 @@ import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import X from "lucide-react/dist/esm/icons/x";
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { paginateThreads } from "@/components/application/ai-chat/repo-pagination";
-import { useGitStore } from "@/features/git/store";
 import { ipc } from "@/lib/ipc";
 import { useWorktreeStore } from "@/features/worktree/store";
 import { WorktreeProgressRow } from "@/features/worktree/WorktreeProgressRow";
@@ -340,9 +339,9 @@ function RepoHeaderRow({
   );
 }
 
-/** A worktree child row: branch icon + branch label + optional PR badge +
- *  dirty-file count; click toggles its own thread list, right-click opens
- *  the workspace menu (which renders worktree entries for it). */
+/** A worktree child row: branch icon + branch label + optional PR badge;
+ *  click toggles its own thread list, right-click opens the workspace menu
+ *  (which renders worktree entries for it). */
 function WorktreeChildRow({
   repo,
   expanded,
@@ -361,11 +360,6 @@ function WorktreeChildRow({
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
 }) {
   const { t } = useTranslation();
-  // git store 的 status 缓存按工作区路径键控；计数 = 暂存+未暂存+未跟踪。
-  const dirtyCount = useGitStore((s) => {
-    const status = repo.path ? s.statusByWorkspace[repo.path] : undefined;
-    return status ? status.staged.length + status.unstaged.length + status.untracked.length : 0;
-  });
   const missing = useWorktreeStore((s) =>
     repo.path ? s.missingPaths[repo.path] === true : false,
   );
@@ -407,14 +401,6 @@ function WorktreeChildRow({
             title={t("worktree.missingDirectoryHint")}
           >
             {t("worktree.missingDirectory")}
-          </span>
-        )}
-        {!missing && dirtyCount > 0 && (
-          <span
-            className="shrink-0 text-caption-2-medium text-text-warning-primary"
-            title={t("worktree.dirtyBadge", { count: dirtyCount })}
-          >
-            {t("worktree.dirtyBadge", { count: dirtyCount })}
           </span>
         )}
       </button>
@@ -476,14 +462,11 @@ function WorktreeGroup({
   const collapsed = useWorktreeStore((s) => (parentId ? s.collapsedGroups[parentId] === true : false));
   const toggleGroupCollapsed = useWorktreeStore((s) => s.toggleGroupCollapsed);
 
-  // 行内 ●n 徽标的 git 状态：30s TTL + 去重都在 store 里，展开时刷一次即可；
-  // 同时采一次 worktree 列表拿 locked 状态（右键菜单禁用删除用）。
+  // 采一次 worktree 列表拿 locked / prunable 状态（右键菜单禁用删除、
+  // 子行「目录已丢失」徽标用）。
   const childPathsKey = children.map((c) => c.path ?? "").join("|");
   useEffect(() => {
     if (collapsed) return;
-    for (const child of children) {
-      if (child.path) void useGitStore.getState().refresh(child.path);
-    }
     if (parent.path) {
       void ipc
         .gitWorktreeList(parent.path)
