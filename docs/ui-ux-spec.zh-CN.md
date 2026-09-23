@@ -174,6 +174,13 @@ const feedback = useRunningFeedback(store.loading);
 - 与刷新反馈的差异：复制没有别的成功信号，所以**可访问名一起改成"已复制"**（`aria-label` / `title`），刷新反馈则不改名。这是刻意的差别，不要强行统一。
 - 复制按钮旁边有明文内容时（如密钥框），保留原布局尺寸与分隔符，只换图标。
 
+### 4.3 桌面宠物（pet overlay）
+
+- 窗口形态：独立透明置顶窗口（`src-tauri/src/pet_overlay.rs`），无边框、不进任务栏；仅宠物图像矩形接收点击（左键拖动＝`data-tauri-drag-region`，右键循环 50%/75%/100%/125%/150% 五档缩放并立即持久化），状态气泡与其余透明区域保持鼠标穿透，不遮挡桌面操作。
+- 状态气泡（`src/index.css` `.pet-bubble`）：有活动状态时显现，显隐动效 opacity 160ms / transform 180ms（`cubic-bezier(0.23, 1, 0.32, 1)`）+ blur 消退；`prefers-reduced-motion` 下仅保留 opacity 180ms，无位移与模糊。气泡为玻璃拟态（backdrop blur + 内高光），文本两行截断（会话名 + 状态）；状态文案走 `settings.petActivity*`，`aria-live="polite"`，无活动时 `aria-hidden`。
+- 位置与尺寸记忆：拖动结束保存位置、缩放即时生效并持久化；恢复位置前校验仍在已连接显示器内，落出所有屏幕则用默认位置。宠物设置（开关/角色/导入/移除/尺寸）在设置「常规」分组；移除走 `ConfirmDialog`（danger），导入失败等后端稳定错误码经 `petErrorMessage` 映射为本地化文案。
+- 多会话状态：气泡在并发会话间每 1.8s 轮播，刚完成的会话短暂展示「已完成」；失败/等待优先于运行中展示。
+
 ## 5. 加载、空状态与错误
 
 - 整块区域加载：`CenteredSpinner`；有内容但空：`EmptyState`（都来自 `src/components/base/empty-state.tsx`）。列表局部加载用行内文字或 `Loader2`，不要动辄整屏转圈。
@@ -234,6 +241,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.50 | 2026-09-23 | 桌面宠物（§4.3）：透明置顶宠物窗口的点击穿透/拖动/右键缩放交互、状态气泡动效时长、位置与尺寸记忆、多会话轮播；移除宠物改用 `ConfirmDialog`（danger），后端宠物错误码本地化 |
 | v0.49 | 2026-09-23 | Worktree 展开/收起补齐动效：「WORKTREES · n」分组原来是条件渲染、点击即闪现，现抽出 `SidebarDisclosure`（grid-rows 1fr⇄0fr、300ms、收起动画结束才卸载、`inert` + `aria-hidden`）供分组与线程列表共用，子行维持同一实现；新增浏览器 fixture 逐帧采样（`sidebar-collapse.html`）与 jsdom 卸载时序用例；新增 §2.4 展开/收起动效规则 |
 | v0.48 | 2026-09-23 | 修复打包版插件样式全丢：启动占位样式从 `index.html` 内联 `<style>` 移入 `public/boot.css` 外部文件（Tauri 会给内联标签加 nonce，nonce 让 `'unsafe-inline'` 失效，运行时注入的插件样式表全被拒）；`tests/platform-build.test.ts` 增加守卫（index.html 无内联 style/script + style-src 保留 'unsafe-inline'）；§5 补充规则 |
 | v0.47 | 2026-09-23 | Git worktree 子工作区全链路：workspaces 表恢复 kind/parentId 先例并迁移旧版导入；侧栏「WORKTREES · n」分组挂载子行（分支名 + PR 徽标 + 脏文件数，locked/prunable 明说）；三来源创建对话框（从 PR / 新分支 / 已有分支，PR 解析走 `pull/N/head` 不依赖 GitHub 登录，gh CLI 仅增强）即交即走 + 进度行三态可取消可重试；删除分级确认（未提交/未推送/未合入预检、默认保留分支、后台直接删）与父行移除/归档级联提示；§3、§5、§6、§7 同步 |

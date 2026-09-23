@@ -1,5 +1,5 @@
 // Transport picks Tauri IPC natively and the web-access WS bridge in browsers.
-import { invoke } from "./transport";
+import { invoke, listen } from "./transport";
 import type { NativePerformanceDiagnostics } from "./performance-types";
 import { withGrantRetry } from "./grant";
 
@@ -421,6 +421,14 @@ export interface AppSettings {
   systemProxyEnabled: boolean;
   /** Proxy URL (http/https/socks5); null = unset. */
   systemProxyUrl: string | null;
+  /** Always-on-top desktop pet switch; off by default. */
+  petEnabled?: boolean;
+  /** Selected pet package id. */
+  petId?: string;
+  /** Display scale of the desktop pet. */
+  petScale?: number;
+  /** Last desktop-pet position in logical desktop pixels. */
+  petPosition?: { x: number; y: number } | null;
   /** Require a pairing key before the bridge serves a browser. */
   webAuthEnabled?: boolean | null;
   /** 8-character pairing key, minted when the switch is turned on. */
@@ -782,6 +790,12 @@ export interface CliUpdatePlan {
 // Shared in-flight/cached app-settings promise: startup, the settings page
 // and the chat store all read the same settings, so fetch once.
 let settingsPromise: Promise<AppSettings> | null = null;
+// Backend writes that bypass update_app_settings (pet scale / position /
+// visibility) broadcast this event; drop the shared cache in every window so
+// a later read-modify-write save cannot resurrect the pre-write values.
+void listen("settings://changed", () => {
+  settingsPromise = null;
+});
 
 function fetchAppSettings(): Promise<AppSettings> {
   return (settingsPromise ??= invoke<AppSettings>("get_app_settings").catch((e) => {
@@ -923,6 +937,20 @@ export interface OfficialConfigDraft {
   content: string;
 }
 
+export interface PetSummary {
+  id: string;
+  displayName: string;
+  description: string;
+  spriteVersionNumber: number;
+  builtIn: boolean;
+}
+
+export interface PetPackage extends PetSummary {
+  spritesheetPath: string;
+  spritesheetDataUrl: string;
+  frameCounts?: number[];
+}
+
 export const ipc = {
   // config
   getCliConfig: () => invoke<CliConfig>("get_cli_config"),
@@ -984,6 +1012,33 @@ export const ipc = {
     // it stores (it mints the pairing key, drops rejected bin paths), and a
     // write must never seed the shared copy with something the backend did
     // not answer — one bad value here blanks every settings page.
+    settingsPromise = null;
+  },
+  listPets: () => invoke<PetSummary[]>("pet_list"),
+  importPet: (path: string) => invoke<PetSummary>("pet_import", { path }),
+  removePet: (id: string) => invoke<void>("pet_remove", { id }),
+  getPetPackage: (id: string) => invoke<PetPackage>("pet_get_package", { id }),
+  setPetVisible: (visible: boolean) => invoke<void>("pet_set_visible", { visible }),
+  setPetScale: async (scale: number) => {
+    const applied = await invoke<number>("pet_set_scale", { scale });
+    // pet_set_scale persists the value outside update_app_settings; invalidate
+    // the shared read cache so reopening Settings cannot show the old scale.
+    settingsPromise = null;
+    return applied;
+  },
+  setPetState: (state: {
+    sessionKey: string | null;
+    sessionName: string | null;
+    status: string;
+    lookDirection: number;
+    activity: "idle" | "thinking" | "tool" | "command" | "waiting" | "failed" | "completed";
+    changedAt: number;
+  }) =>
+    invoke<void>("pet_set_state", { next: state }),
+  savePetPosition: async (position: { x: number; y: number }) => {
+    await invoke<void>("pet_save_position", { position });
+    // pet_save_position persists outside update_app_settings (same bypass as
+    // setPetScale above); invalidate this window's shared read cache too.
     settingsPromise = null;
   },
   setWindowTheme: (dark: boolean) =>

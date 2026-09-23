@@ -45,6 +45,32 @@ let scheduler: MissionScheduler | null = null;
 let runSequence = 0;
 let persistence: { dispose: () => void } | null = null;
 
+/** Load persisted mission state without creating the demo flow. This is used
+ * by app-wide projections such as the desktop pet before the workbench opens.
+ */
+export function ensureMissionPersistenceLoaded(): void {
+  if (persistence) return;
+  const bound = initMissionPersistence({
+    load: loadMissionState,
+    save: saveMissionState,
+    subscribe: (listener) => useMissionStore.subscribe(listener),
+    snapshot: () => {
+      const state = useMissionStore.getState();
+      return { flows: state.flows, runs: state.runs, inbox: state.inbox };
+    },
+  });
+  persistence = bound;
+  // Rehydrate only if a persisted snapshot exists. The demo flow belongs to
+  // the workbench UX and must not be created merely because the pet is on.
+  if (bound.hydrated && bound.hydrated.flows.length > 0) {
+    useMissionStore.getState().hydrate({
+      flows: bound.hydrated.flows,
+      runs: bound.hydrated.runs,
+      inbox: bound.hydrated.inbox,
+    });
+  }
+}
+
 function getScheduler(): MissionScheduler {
   if (scheduler) return scheduler;
   const simulated = createSimulatedExecutor({ delayMs: DEMO_TASK_DELAY_MS });
@@ -67,26 +93,7 @@ function getScheduler(): MissionScheduler {
 
 /** 首次打开时：回放持久化状态，装载内置演示流程（幂等，StrictMode 双调用安全）。 */
 export function ensureMissionSeeded(): void {
-  if (!persistence) {
-    const bound = initMissionPersistence({
-      load: loadMissionState,
-      save: saveMissionState,
-      subscribe: (listener) => useMissionStore.subscribe(listener),
-      snapshot: () => {
-        const state = useMissionStore.getState();
-        return { flows: state.flows, runs: state.runs, inbox: state.inbox };
-      },
-    });
-    persistence = bound;
-    // 重启后未完成的运行已被收敛为「已中断」；这里只做回放，不伪续跑。
-    if (bound.hydrated && bound.hydrated.flows.length > 0) {
-      useMissionStore.getState().hydrate({
-        flows: bound.hydrated.flows,
-        runs: bound.hydrated.runs,
-        inbox: bound.hydrated.inbox,
-      });
-    }
-  }
+  ensureMissionPersistenceLoaded();
   const store = useMissionStore.getState();
   if (store.flows.length > 0) return;
   const definition = buildPrReviewDemoFlow();

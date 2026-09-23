@@ -12,11 +12,14 @@ import {
   SettingsRow,
   SettingsSectionLabel,
 } from "@/components/application/settings/settings-rows";
-import { ipc, type AppSettings } from "@/lib/ipc";
-import { IS_WINDOWS } from "@/lib/platform";
+import { ConfirmDialog } from "@/components/dialogs";
+import { ipc, type AppSettings, type PetSummary } from "@/lib/ipc";
+import { petErrorMessage } from "@/features/pet/pet-errors";
+import { IS_WINDOWS, pickDirectory } from "@/lib/platform";
 import { applyTheme } from "./theme";
 import { PromptHistoryManager, PromptHistoryToggleRow } from "./PromptHistorySettings";
 import { useChatStore } from "@/features/chat/store";
+import { PET_SCALE_OPTIONS, normalizePetScale } from "@/features/pet/pet-scale";
 
 export const LANGUAGE_STORAGE_KEY = "ccgui-next.language";
 
@@ -37,6 +40,10 @@ export function GeneralSection() {
   const [limitText, setLimitText] = useState<string | null>(null);
   // 窗口当前是否有系统装饰（isDecorated）；null = 还没读回来。
   const [decorated, setDecorated] = useState<boolean | null>(null);
+  const [pets, setPets] = useState<PetSummary[]>([]);
+  const [petBusy, setPetBusy] = useState(false);
+  // Pet pending destructive confirmation; null = no dialog open.
+  const [removingPet, setRemovingPet] = useState<PetSummary | null>(null);
   useEffect(() => {
     let cancelled = false;
     ipc
@@ -49,6 +56,10 @@ export function GeneralSection() {
       .catch((e) => {
         if (!cancelled) setError(String(e));
       });
+    void ipc
+      .listPets()
+      .then(setPets)
+      .catch((e) => console.warn("[settings] pet list failed", e));
     return () => {
       cancelled = true;
     };
@@ -60,15 +71,17 @@ export function GeneralSection() {
   // Read-modify-write: the local `settings` descends from a mount-time
   // snapshot; persisting it whole would clobber concurrent edits (CLI config
   // page, chat-side model pinning). Apply each patch onto a fresh read.
-  const save = useCallback(async (patch: Partial<AppSettings>) => {
+  const save = useCallback(async (patch: Partial<AppSettings>): Promise<boolean> => {
     try {
       const latest = await ipc.getAppSettings();
       const next = { ...latest, ...patch };
       await ipc.updateAppSettings(next);
       setSettings(next);
       setError(null);
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     }
   }, []);
 
@@ -151,6 +164,79 @@ export function GeneralSection() {
     useChatStore.getState().setThinkingAutoCollapse(autoCollapse);
     void save({ thinkingAutoCollapse: autoCollapse });
   };
+  const onPetEnabledChange = (enabled: boolean) => {
+    if (!settings) return;
+    if (enabled && !pets.some((pet) => pet.id === settings.petId)) {
+      setError(t("settings.petImportRequired"));
+      return;
+    }
+    setSettings({ ...settings, petEnabled: enabled });
+    void save({ petEnabled: enabled }).then((ok) => {
+      if (ok) void ipc.setPetVisible(enabled).catch((e) => setError(petErrorMessage(e, t)));
+    });
+  };
+  const onPetScaleChange = async (key: Key | null) => {
+    if (!settings || key == null) return;
+    const next = normalizePetScale(Number(key));
+    const previous = normalizePetScale(settings.petScale);
+    if (next === previous) return;
+    setSettings({ ...settings, petScale: next });
+    try {
+      const applied = await ipc.setPetScale(next);
+      setSettings((current) => (current ? { ...current, petScale: normalizePetScale(applied) } : current));
+      setError(null);
+    } catch (e) {
+      setSettings((current) => (current ? { ...current, petScale: previous } : current));
+      setError(petErrorMessage(e, t));
+    }
+  };
+  const onPetChange = async (key: Key | null) => {
+    if (!settings || key == null) return;
+    const petId = String(key);
+    setSettings({ ...settings, petId });
+    const saved = await save({ petId });
+    if (!saved) return;
+    // Recreate the overlay so the selected package is loaded immediately.
+    try {
+      await ipc.setPetVisible(false);
+      await ipc.setPetVisible(settings.petEnabled ?? false);
+    } catch (e) {
+      setError(petErrorMessage(e, t));
+    }
+  };
+  const importPet = async () => {
+    const path = await pickDirectory(t("settings.petImportHint"));
+    if (!path) return;
+    setPetBusy(true);
+    try {
+      const imported = await ipc.importPet(path);
+      setPets((current) => [...current.filter((pet) => pet.id !== imported.id), imported]);
+      setSettings((current) => (current ? { ...current, petId: imported.id } : current));
+      const saved = await save({ petId: imported.id });
+      if (saved && settings?.petEnabled) {
+        await ipc.setPetVisible(false);
+        await ipc.setPetVisible(true);
+      }
+    } catch (e) {
+      setError(`${t("settings.petImportFailed")}: ${petErrorMessage(e, t)}`);
+    } finally {
+      setPetBusy(false);
+    }
+  };
+  const removePet = async (pet: PetSummary) => {
+    try {
+      await ipc.removePet(pet.id);
+      setPets((current) => current.filter((item) => item.id !== pet.id));
+      if (settings?.petId === pet.id) {
+        if (settings.petEnabled) await ipc.setPetVisible(false).catch(() => {});
+        await save({ petId: "", petEnabled: false });
+      }
+    } catch (e) {
+      setError(petErrorMessage(e, t));
+    }
+  };
+  const selectedPetId = settings?.petId?.trim() ?? "";
+  const selectedPet = pets.find((pet) => pet.id === selectedPetId);
   return (
     <div className="flex w-full flex-col gap-6">
       {error && (
@@ -237,6 +323,75 @@ export function GeneralSection() {
       )}
       {settings && (
         <div className="flex w-full flex-col gap-2">
+          <SettingsSectionLabel>{t("settings.pet")}</SettingsSectionLabel>
+          <SettingsCard>
+            <SettingsRow
+              label={t("settings.petEnabled")}
+              description={t("settings.petEnabledDesc")}
+            >
+              <Switch
+                size="sm"
+                aria-label={t("settings.petEnabled")}
+                isSelected={settings.petEnabled ?? false}
+                isDisabled={!selectedPet || petBusy}
+                onChange={onPetEnabledChange}
+              />
+            </SettingsRow>
+            {!selectedPet && (
+              <p className="px-3 pb-2 text-body-2-regular text-text-tertiary">
+                {t("settings.petImportRequired")}
+              </p>
+            )}
+            <SettingsRow label={t("settings.petCharacter")}>
+              <div className="flex items-center gap-2">
+                <Select
+                  aria-label={t("settings.petCharacter")}
+                  selectedKey={selectedPetId || null}
+                  isDisabled={pets.length === 0 || petBusy}
+                  onSelectionChange={onPetChange}
+                  triggerClassName={SELECT_TRIGGER}
+                >
+                  {pets.map((pet) => (
+                    <SelectItem key={pet.id} id={pet.id} textValue={pet.displayName}>
+                      {pet.displayName}
+                    </SelectItem>
+                  ))}
+                </Select>
+                <Button size="small" variant="secondary" onClick={() => void importPet()} disabled={petBusy}>
+                  {t("settings.petImport")}
+                </Button>
+                {selectedPet && (
+                  <Button
+                    size="small"
+                    variant="ghost"
+                    onClick={() => setRemovingPet(selectedPet)}
+                  >
+                    {t("settings.petRemove")}
+                  </Button>
+                )}
+              </div>
+            </SettingsRow>
+            <SettingsRow
+              label={t("settings.petScale")}
+            >
+              <Select
+                aria-label={t("settings.petScale")}
+                selectedKey={String(normalizePetScale(settings.petScale))}
+                onSelectionChange={onPetScaleChange}
+                triggerClassName={SELECT_TRIGGER}
+              >
+                {PET_SCALE_OPTIONS.map((value) => (
+                  <SelectItem key={value} id={String(value)} textValue={`${value * 100}%`}>
+                    {t("settings.petScaleValue", { percent: value * 100 })}
+                  </SelectItem>
+                ))}
+              </Select>
+            </SettingsRow>
+          </SettingsCard>
+        </div>
+      )}
+      {settings && (
+        <div className="flex w-full flex-col gap-2">
           <SettingsSectionLabel>{t("settings.behavior")}</SettingsSectionLabel>
           <SettingsCard>
             <SettingsRow label={t("settings.sendShortcut")}>
@@ -273,6 +428,18 @@ export function GeneralSection() {
         </div>
       )}
       {settings && <PromptHistoryManager />}
+      {removingPet && (
+        <ConfirmDialog
+          danger
+          message={t("settings.petRemoveConfirm", { name: removingPet.displayName })}
+          onCancel={() => setRemovingPet(null)}
+          onConfirm={() => {
+            const pet = removingPet;
+            setRemovingPet(null);
+            void removePet(pet);
+          }}
+        />
+      )}
     </div>
   );
 }
