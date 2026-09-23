@@ -1,22 +1,31 @@
 /**
- * Skill detail: metadata, per-engine target sync, SKILL.md content and the
- * destructive actions. SKILL.md is fetched on open (never with the list), so
- * browsing hundreds of skills stays cheap.
+ * Skill detail: metadata, per-engine sync ("同步到"), invocation activity and
+ * the destructive actions. SKILL.md is fetched on open (never with the list),
+ * so browsing hundreds of skills stays cheap; usage is passed in from the pane,
+ * which loads it once per open panel.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import ExternalLink from "lucide-react/dist/esm/icons/external-link";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import { Button } from "@/components/base/buttons/button";
 import { Checkbox } from "@/components/base/checkbox/checkbox";
+import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { ModalShell } from "@/components/dialogs";
 import { MarkdownPreview } from "@/features/files/MarkdownPreview";
 import { openExternal } from "@/lib/platform";
+import { cx } from "@/utils/cx";
 import { skillsHubApi } from "./api";
 import { SourceBadge } from "./components";
-import type { SkillRow, SkillTargetId, SkillTargetInfo } from "./types";
-import { sourceKindOf } from "./utils";
+import type {
+  SkillRow,
+  SkillTargetId,
+  SkillTargetInfo,
+  SkillUsageEntry,
+} from "./types";
+import { daysSince, relevantTargets, sourceKindOf } from "./utils";
 
 interface SkillContentState {
   path: string;
@@ -24,7 +33,7 @@ interface SkillContentState {
   truncated: boolean;
 }
 
-function PropertyRow({ label, children }: { label: string; children: ReactNode }) {
+function PropertyRow({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-3 py-1.5">
       <span className="shrink-0 text-body-2-regular text-text-secondary">{label}</span>
@@ -33,10 +42,24 @@ function PropertyRow({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+/** Recency dot for "上次使用": fresh (≤7d) accent, fading (≤30d) warning,
+ *  never / stale neutral — at-a-glance "do I still use this", always with the
+ *  relative text next to it so the color is not the only signal. */
+function freshnessTone(days: number | null): string {
+  if (days == null) return "bg-background-tertiary-hover ring-1 ring-separator-border";
+  if (days <= 7) return "bg-accent-500";
+  if (days <= 30) return "bg-status-warning-background";
+  return "bg-background-tertiary-hover ring-1 ring-separator-border";
+}
+
 export function SkillDetailDialog({
   skill,
   targets,
   pending,
+  busyTarget,
+  usage,
+  usageLoading,
+  usageError,
   hasUpdate,
   onClose,
   onToggleTarget,
@@ -48,9 +71,13 @@ export function SkillDetailDialog({
   skill: SkillRow;
   targets: SkillTargetInfo[];
   pending: boolean;
+  busyTarget?: string | null;
+  usage?: SkillUsageEntry | null;
+  usageLoading?: boolean;
+  usageError?: string | null;
   hasUpdate: boolean;
   onClose: () => void;
-  onToggleTarget: (skill: SkillRow, next: SkillTargetId[]) => void;
+  onToggleTarget: (skill: SkillRow, targetId: SkillTargetId, enabled: boolean) => void;
   onTriggerUpdate: (skill: SkillRow) => void;
   onUninstall: (skill: SkillRow) => void;
   onDeleteLocal: (skill: SkillRow) => void;
@@ -98,23 +125,34 @@ export function SkillDetailDialog({
 
   const readonly = skill.readonly === true;
   const kind = sourceKindOf(skill);
-  const selected = new Set(skill.targets ?? []);
+  // Only engines that are installed, or that already hold a copy, are offered.
+  const engineTargets = relevantTargets(skill, targets);
+  const hiddenEngineCount = targets.length - engineTargets.length;
+  const invocations = usage?.invocations ?? 0;
+  const lastUsedDays = daysSince(usage?.lastUsedAt);
+  const lastUsedLabel =
+    usage?.lastUsedAt == null
+      ? t("skills.detail.neverUsed")
+      : lastUsedDays == null
+        ? t("skills.detail.neverUsed")
+        : lastUsedDays <= 0
+          ? t("skills.usage.today")
+          : lastUsedDays < 30
+            ? t("skills.usage.daysAgo", { days: lastUsedDays })
+            : t("skills.usage.monthsAgo", { months: Math.max(1, Math.floor(lastUsedDays / 30)) });
 
-  const toggleTarget = (targetId: SkillTargetId, next: boolean) => {
-    const nextTargets = new Set(selected);
-    if (next) nextTargets.add(targetId);
-    else nextTargets.delete(targetId);
-    onToggleTarget(skill, [...nextTargets]);
+  const toggleTarget = (targetId: SkillTargetId, enabled: boolean) => {
+    onToggleTarget(skill, targetId, enabled);
   };
 
   return (
     <ModalShell
       onClose={onClose}
       label={t("skills.detail.title", { name: skill.name })}
-      className="flex max-h-[80vh] w-[520px] max-w-[94vw] flex-col"
+      className="flex max-h-[80vh] w-[560px] max-w-[94vw] flex-col"
       dialogClassName="flex min-h-0 flex-col gap-3"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex shrink-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate text-title-3-medium text-text-primary" title={skill.name}>
             {skill.name}
@@ -128,114 +166,187 @@ export function SkillDetailDialog({
         </div>
       </div>
 
-      {skill.description ? (
-        <p className="text-body-2-regular text-text-secondary">{skill.description}</p>
-      ) : null}
-
-      <div className="rounded-2lg border border-separator-border px-3 py-1">
-        {skill.repoOwner && skill.repoName ? (
-          <PropertyRow label={t("skills.detail.repository")}>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 text-accent-600 hover:underline"
-              onClick={() =>
-                skill.readmeUrl ? openExternal(skill.readmeUrl) : undefined
-              }
-            >
-              {skill.repoOwner}/{skill.repoName}
-              <ExternalLink className="size-3.5" aria-hidden />
-            </button>
-          </PropertyRow>
+      {/* One scroll body for description → properties → activity → sync list:
+          with a target list this long the sections must scroll together, or the
+          footer (remove / update / close) ends up outside the dialog.
+          The SKILL.md area keeps its own bounded scroll so one long skill file
+          cannot push the sync switches out of sight. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+        {skill.description ? (
+          <p className="shrink-0 text-body-2-regular text-text-secondary">{skill.description}</p>
         ) : null}
-        <PropertyRow label={t("skills.detail.directory")}>
-          <span className="break-all font-mono text-caption-1-regular">{skill.directory}</span>
-        </PropertyRow>
-        {skill.targetPaths && Object.keys(skill.targetPaths).length > 0 ? (
-          <PropertyRow label={t("skills.detail.paths")}>
-            <span className="flex flex-col gap-0.5">
-              {Object.entries(skill.targetPaths).map(([key, value]) => (
-                <span key={`${key}:${value}`} className="break-all font-mono text-caption-1-regular">
-                  {value}
-                </span>
-              ))}
-            </span>
-          </PropertyRow>
-        ) : null}
-      </div>
 
-      <div className="flex flex-col gap-2">
-        <p className="text-body-2-medium text-text-primary">{t("skills.detail.targets")}</p>
-        {targets.map((target) => {
-          const state = skill.targetStates?.[target.id] ?? "off";
+        <div className="shrink-0 rounded-2lg border border-separator-border px-3 py-1">
+          {skill.repoOwner && skill.repoName ? (
+            <PropertyRow label={t("skills.detail.repository")}>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-accent-600 hover:underline"
+                onClick={() =>
+                  skill.readmeUrl ? openExternal(skill.readmeUrl) : undefined
+                }
+              >
+                {skill.repoOwner}/{skill.repoName}
+                <ExternalLink className="size-3.5" aria-hidden />
+              </button>
+            </PropertyRow>
+          ) : null}
+          <PropertyRow label={t("skills.detail.directory")}>
+            <span className="break-all font-mono text-caption-1-regular">{skill.directory}</span>
+          </PropertyRow>
+          {skill.targetPaths && Object.keys(skill.targetPaths).length > 0 ? (
+            <PropertyRow label={t("skills.detail.paths")}>
+              <span className="flex flex-col gap-0.5">
+                {Object.entries(skill.targetPaths).map(([key, value]) => (
+                  <span key={`${key}:${value}`} className="break-all font-mono text-caption-1-regular">
+                    {value}
+                  </span>
+                ))}
+              </span>
+            </PropertyRow>
+          ) : null}
+        </div>
+
+        <div className="flex shrink-0 flex-col gap-1">
+          <p className="text-body-2-medium text-text-primary">{t("skills.detail.activity")}</p>
+          <div className="rounded-2lg border border-separator-border px-3 py-1">
+            <PropertyRow label={t("skills.detail.invocations")}>
+              <span className="tabular-nums">{usageLoading ? "—" : invocations}</span>
+            </PropertyRow>
+            <PropertyRow label={t("skills.detail.lastUsed")}>
+              <span className="inline-flex items-center gap-1.5">
+                <span className={cx("size-1.5 rounded-full", freshnessTone(lastUsedDays))} aria-hidden />
+                {usageLoading ? t("skills.detail.activityLoading") : lastUsedLabel}
+              </span>
+            </PropertyRow>
+          </div>
+          {usageError ? (
+            <p className="text-caption-1-regular text-text-tertiary">
+              {t("skills.detail.usageUnavailable")}
+            </p>
+          ) : !usageLoading && invocations === 0 ? (
+            <p className="text-caption-1-regular text-text-tertiary">{t("skills.detail.unusedHint")}</p>
+          ) : null}
+          <p className="text-caption-1-regular text-text-tertiary">{t("skills.usage.scope")}</p>
+        </div>
+
+        <div className="flex shrink-0 flex-col gap-2">
+          <p className="text-body-2-medium text-text-primary">{t("skills.detail.syncTo")}</p>
+          {/* 13 targets × 2rem would push the footer out of the dialog on its own;
+              the list scrolls in place instead. */}
+          <div className="flex max-h-[13rem] flex-col gap-0.5 overflow-y-auto pr-1">
+            {engineTargets.map((target) => {
+            const state = skill.targetStates?.[target.id] ?? "off";
+            const busy = busyTarget === target.id;
+            // 未纳管的本地技能：已存在的副本是用户自己的目录，不能在这里取消。
+            const locked = !skill.managed && state === "synced";
           return (
-            <div key={target.id} className="flex items-center justify-between gap-2">
+            <label
+              key={target.id}
+              title={locked ? t("skills.row.localCopyLocked") : undefined}
+              className={cx(
+                "flex items-center gap-2 rounded-md px-1 py-0.5",
+                !readonly && !pending && !locked && "cursor-pointer hover:bg-background-tertiary-default",
+              )}
+            >
               <Checkbox
                 size="sm"
                 isSelected={state === "synced"}
-                isDisabled={readonly || pending}
+                isDisabled={readonly || pending || busy || locked}
                 onChange={(next) => toggleTarget(target.id as SkillTargetId, next)}
               >
-                {target.label}
+                <span className="flex items-center gap-2">
+                  <EngineIcon engine={target.id} size={16} />
+                  {target.label}
+                </span>
               </Checkbox>
-              <span className="text-caption-1-regular text-text-tertiary">
-                {t(`skills.targetState.${state}`)}
+              <span className="ml-auto flex items-center gap-1.5 text-caption-1-regular text-text-tertiary">
+                {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+                {t(`skills.targetStateShort.${state}`)}
               </span>
-            </div>
+            </label>
           );
         })}
-        {readonly ? (
-          <p className="text-caption-1-regular text-text-tertiary">
-            {t(`skills.readonly.${kind}`)}
-          </p>
-        ) : null}
-        {!skill.managed && !readonly ? (
-          <p className="text-caption-1-regular text-text-tertiary">
-            {t("skills.detail.promoteHint")}
-          </p>
-        ) : null}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-2lg border border-separator-border p-3">
-        {loading ? (
-          <p className="flex items-center gap-2 text-body-2-regular text-text-secondary">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            {t("skills.detail.contentLoading")}
-          </p>
-        ) : contentError ? (
-          <div className="flex flex-col gap-2">
-            <p role="alert" className="text-body-2-regular text-text-error-primary">
-              {contentError}
+          </div>
+          {hiddenEngineCount > 0 ? (
+            <p className="text-caption-1-regular text-text-tertiary">
+              {t("skills.detail.hiddenEngines", { count: hiddenEngineCount })}
             </p>
-            <Button variant="secondary" size="xs" onClick={() => void loadContent()}>
-              {t("common.refresh")}
-            </Button>
-          </div>
-        ) : content ? (
-          <div className="text-body-2-regular">
-            <MarkdownPreview path={content.path} draft={content.markdown} />
-            {content.truncated ? (
-              <p className="mt-2 text-caption-1-regular text-text-tertiary">
-                {t("skills.detail.contentTruncated")}
+          ) : null}
+          {readonly ? (
+            <p className="text-caption-1-regular text-text-tertiary">
+              {t(`skills.readonly.${kind}`)}
+            </p>
+          ) : null}
+          {!skill.managed && !readonly ? (
+            <p className="text-caption-1-regular text-text-tertiary">
+              {t("skills.detail.promoteHint")}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="min-h-[6rem] max-h-[20rem] shrink-0 overflow-y-auto rounded-2lg border border-separator-border p-3">
+          {loading ? (
+            <p className="flex items-center gap-2 text-body-2-regular text-text-secondary">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              {t("skills.detail.contentLoading")}
+            </p>
+          ) : contentError ? (
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="text-body-2-regular text-text-error-primary">
+                {contentError}
               </p>
-            ) : null}
-          </div>
+              <Button variant="secondary" size="xs" onClick={() => void loadContent()}>
+                {t("common.refresh")}
+              </Button>
+            </div>
+          ) : content ? (
+            <div className="text-body-2-regular">
+              <MarkdownPreview path={content.path} draft={content.markdown} />
+              {content.truncated ? (
+                <p className="mt-2 text-caption-1-regular text-text-tertiary">
+                  {t("skills.detail.contentTruncated")}
+                </p>
+              ) : null}
+            </div>
         ) : null}
+        </div>
       </div>
 
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex gap-2">
+      <div className="flex shrink-0 flex-col gap-2">
+        <div>
           {skill.managed ? (
             <Button
               variant="secondary"
               size="small"
+              leadingIcon={Trash2}
+              className="w-full justify-center text-text-error-primary"
               disabled={pending}
               onClick={() => onUninstall(skill)}
             >
-              {t("skills.actions.uninstall")}
+              {t("skills.detail.removeAll")}
+            </Button>
+          ) : !readonly ? (
+            <Button
+              variant="secondary"
+              size="small"
+              leadingIcon={Trash2}
+              className="w-full justify-center text-text-error-primary"
+              disabled={pending}
+              onClick={() => onDeleteLocal(skill)}
+            >
+              {t("skills.detail.removeAll")}
             </Button>
           ) : null}
-          {!skill.managed && !readonly ? (
-            <>
+          {!readonly ? (
+            <p className="mt-1 text-center text-caption-1-regular text-text-tertiary">
+              {t("skills.detail.removeAllHint")}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex gap-2">
+            {!skill.managed && !readonly ? (
               <Button
                 variant="secondary"
                 size="small"
@@ -244,31 +355,23 @@ export function SkillDetailDialog({
               >
                 {t("skills.actions.import")}
               </Button>
+            ) : null}
+          </div>
+          <div className="flex gap-2">
+            {hasUpdate ? (
               <Button
-                variant="secondary"
+                variant="primary"
                 size="small"
                 disabled={pending}
-                onClick={() => onDeleteLocal(skill)}
+                onClick={() => onTriggerUpdate(skill)}
               >
-                {t("skills.actions.deleteLocal")}
+                {t("skills.actions.update")}
               </Button>
-            </>
-          ) : null}
-        </div>
-        <div className="flex gap-2">
-          {hasUpdate ? (
-            <Button
-              variant="primary"
-              size="small"
-              disabled={pending}
-              onClick={() => onTriggerUpdate(skill)}
-            >
-              {t("skills.actions.update")}
+            ) : null}
+            <Button variant="secondary" size="small" onClick={onClose}>
+              {t("common.close")}
             </Button>
-          ) : null}
-          <Button variant="secondary" size="small" onClick={onClose}>
-            {t("common.close")}
-          </Button>
+          </div>
         </div>
       </div>
     </ModalShell>

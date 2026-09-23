@@ -43,6 +43,9 @@ use target_sync::*;
 use updates_popular::*;
 use usage::*;
 
+/// 供 `creator_skill` 复用同一张引擎目标表（内置 skill 落到每个已安装的 CLI）。
+pub(crate) use core::installed_engine_skill_roots;
+
 /// 归一化的错误：Tauri 把 `Err` 的序列化值交给前端（不是字符串）。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/base/buttons/button";
 import { Checkbox } from "@/components/base/checkbox/checkbox";
 import { Input } from "@/components/base/input/input";
+import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { ModalShell } from "@/components/dialogs";
 import { pickDirectory } from "@/lib/platform";
 import type { SkillTargetId, SkillTargetInfo } from "./types";
@@ -38,6 +39,16 @@ export function relativeToRoot(
   return best;
 }
 
+/** Pre-selected engines: the two CLIs the hub has always defaulted to when
+ *  they are installed, otherwise whichever installed engines exist. */
+export function defaultTargets(offered: SkillTargetInfo[]): SkillTargetId[] {
+  const preferred = offered
+    .filter((target) => target.id === "claude" || target.id === "codex")
+    .map((target) => target.id as SkillTargetId);
+  if (preferred.length > 0) return preferred;
+  return offered.slice(0, 1).map((target) => target.id as SkillTargetId);
+}
+
 export function SkillImportDialog({
   targets,
   busy,
@@ -50,8 +61,16 @@ export function SkillImportDialog({
   onImport: (directory: string, engineTargets: SkillTargetId[]) => void;
 }) {
   const { t } = useTranslation();
+  // Installed CLI first: importing into an engine that is not installed would
+  // write a copy nothing reads. A target that still holds a copy stays
+  // selectable so its state can be corrected. (The backend accepts every id.)
+  const offered = useMemo(
+    () => targets.filter((target) => target.available !== false),
+    [targets],
+  );
+  const offeredList = offered.length > 0 ? offered : targets;
   const [directory, setDirectory] = useState("");
-  const [selected, setSelected] = useState<SkillTargetId[]>(["claude", "codex"]);
+  const [selected, setSelected] = useState<SkillTargetId[]>(() => defaultTargets(offeredList));
   const [pickerError, setPickerError] = useState<string | null>(null);
 
   const roots = useMemo(
@@ -112,13 +131,16 @@ export function SkillImportDialog({
       ) : null}
       <div className="flex flex-col gap-2">
         <p className="text-body-2-medium text-text-primary">{t("skills.import.targets")}</p>
-        {targets.map((target) => (
+        {offeredList.map((target) => (
           <Checkbox
             key={target.id}
             isSelected={selected.includes(target.id as SkillTargetId)}
             onChange={(next) => toggleTarget(target.id as SkillTargetId, next)}
           >
-            {target.label}
+            <span className="flex items-center gap-2">
+              <EngineIcon engine={target.id} size={16} />
+              {target.label}
+            </span>
           </Checkbox>
         ))}
       </div>

@@ -87,8 +87,19 @@ impl Sandbox {
         let env = EnvGuard::new(&[
             ("HOME", home.path()),
             ("CCGUI_SKILLS_HUB_HOME", store.path()),
+            // 引擎 home / skills 根的 env 全部清空：开发机上真实设置的
+            // CLAUDE_CONFIG_DIR、GROK_HOME 等不能把测试写入引到 sandbox 之外。
             ("CLAUDE_CONFIG_DIR", &PathBuf::new()),
             ("CODEX_HOME", &PathBuf::new()),
+            ("KIMI_CODE_HOME", &PathBuf::new()),
+            ("GROK_HOME", &PathBuf::new()),
+            ("PI_CODING_AGENT_DIR", &PathBuf::new()),
+            ("OMP_CODING_AGENT_DIR", &PathBuf::new()),
+            ("DSH_HOME", &PathBuf::new()),
+            ("ANTIGRAVITY_HOME", &PathBuf::new()),
+            ("GEMINI_DIR", &PathBuf::new()),
+            ("XDG_CONFIG_HOME", &PathBuf::new()),
+            ("HERMES_HOME", &PathBuf::new()),
         ]);
         Self {
             home,
@@ -551,7 +562,144 @@ fn unknown_targets_are_rejected_not_silently_filtered() {
         matches!(error, SkillError::Coded("invalid_input", _)),
         "got {error:?}"
     );
+    // 全量目标的每个 id 都是合法输入（逐个写盘不是重点，这里验证门禁）。
+    for target in TARGETS.iter().filter(|t| t.visible) {
+        validate_targets(&[target.id.to_string()]).expect(target.id);
+    }
     let _ = &sandbox;
+}
+
+#[test]
+fn target_list_covers_every_cli_and_reports_availability() {
+    let sandbox = Sandbox::new("target-list");
+    let home = sandbox.home.path();
+    let list = target_list();
+    let ids: Vec<&str> = list
+        .iter()
+        .map(|t| t.get("id").and_then(Value::as_str).unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "claude",
+            "codex",
+            "kimi",
+            "grok",
+            "pi",
+            "omp",
+            "dsh",
+            "agy",
+            "gemini",
+            "opencode",
+            "qoder",
+            "qoder-cn",
+            "hermes",
+        ]
+    );
+    // 隐藏的 agents 目标不进 UI 列表。
+    assert!(!ids.contains(&"agents"));
+    // 空 sandbox：一个引擎都没装。
+    assert!(list
+        .iter()
+        .all(|t| t.get("available") == Some(&json!(false))));
+    // 建好 home 的目标才可用；Antigravity 的任一 home 都算已装。
+    for dir in [".claude", ".grok", ".gemini/antigravity", ".qoder-cn"] {
+        fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    let available = |id: &str| {
+        target_list()
+            .iter()
+            .find(|t| t.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|t| t.get("available"))
+            .and_then(Value::as_bool)
+            .unwrap()
+    };
+    assert!(available("claude"), "claude home exists");
+    assert!(available("grok"), "grok home exists");
+    assert!(available("qoder-cn"), "qoder-cn home exists");
+    assert!(available("agy"), "antigravity app home exists");
+    assert!(!available("codex"), "no codex home");
+    assert!(!available("hermes"), "no hermes home");
+}
+
+/// 每装一个引擎就把受管副本写进它自己的 skills 根，移除时也逐目标清干净：
+/// “支持全部 CLI”不是列表多几行，而是同步/移除真的落到各自目录。
+#[test]
+fn sync_and_remove_reach_every_engine_root() {
+    let sandbox = Sandbox::new("all-engines");
+    let home = sandbox.home.path();
+    // 全部 visible 目标的 home 都存在 → 每个都是可用目标。
+    for target in TARGETS.iter().filter(|t| t.visible) {
+        for home_dir in target_home_dirs(target) {
+            fs::create_dir_all(&home_dir).unwrap();
+        }
+    }
+    let dest = managed_skill_path("demo").unwrap();
+    write_skill(dest.parent().unwrap(), "demo", "demo");
+    let ids: Vec<String> = TARGETS
+        .iter()
+        .filter(|t| t.visible)
+        .map(|t| t.id.to_string())
+        .collect();
+    let (all_ok, results) = sync_targets_with_results("demo", &ids);
+    assert!(all_ok, "every target syncs: {results:?}");
+    for target in TARGETS.iter().filter(|t| t.visible) {
+        assert_eq!(classify_target_skill("demo", target.id), "synced");
+        for dir in target_dirs(target) {
+            assert!(
+                dir.join("demo").join("SKILL.md").is_file(),
+                "{} missing",
+                dir.display()
+            );
+            assert!(dir.starts_with(home), "{} escaped the sandbox", dir.display());
+        }
+    }
+    // 隐藏的 agents 目标同样参与（`visible=false` 只影响列表）。
+    let (agents_ok, _) = sync_targets_with_results("demo", &["agents".to_string()]);
+    assert!(agents_ok);
+    assert_eq!(classify_target_skill("demo", "agents"), "synced");
+    let mut all_ids = ids.clone();
+    all_ids.push("agents".to_string());
+    let results = remove_targets_with_results("demo", &all_ids);
+    assert!(results.iter().all(|r| r.get("ok") == Some(&json!(true))), "{results:?}");
+    for target in TARGETS.iter() {
+        assert_eq!(classify_target_skill("demo", target.id), "off");
+    }
+}
+
+/// 内置 skill 落到每个已安装引擎的 skills 根（不是只给 Claude / Codex）。
+#[test]
+fn creator_skill_roots_cover_every_installed_cli() {
+    let sandbox = Sandbox::new("builtin-roots");
+    let home = sandbox.home.path();
+    for dir in [
+        ".claude",
+        ".grok",
+        ".pi/agent",
+        ".dsh",
+        ".config/opencode",
+        ".hermes",
+        ".agents",
+    ] {
+        fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    let roots = crate::creator_skill::engine_skill_roots();
+    for expected in [
+        ".claude/skills",
+        ".grok/skills",
+        ".pi/agent/skills",
+        ".dsh/skills",
+        ".config/opencode/skills",
+        ".hermes/skills",
+        ".agents/skills",
+    ] {
+        assert!(
+            roots.contains(&home.join(expected)),
+            "{expected} missing from {roots:?}"
+        );
+    }
+    // 没装的引擎不写入（`.codex` 不存在）。
+    assert!(!roots.contains(&home.join(".codex/skills")), "{roots:?}");
 }
 
 #[test]
@@ -567,6 +715,41 @@ fn sync_target_results_report_partial_failure() {
     assert!(results
         .iter()
         .all(|r| r.get("error").and_then(Value::as_str).is_some()));
+}
+
+/// 移除时用户自己的来源副本被保留：结果必须标 `kept`，否则 UI 只能报“已移除”，
+/// 刷新后图标还在，自相矛盾。
+#[test]
+fn remove_reports_a_kept_user_copy_instead_of_claiming_removal() {
+    let sandbox = Sandbox::new("kept");
+    let claude_skills = sandbox.home.path().join(".claude").join("skills");
+    let codex_skills = sandbox.home.path().join(".codex").join("skills");
+    write_skill(&claude_skills, "demo", "demo");
+    let skill = import_local_skill("demo", &["claude".to_string(), "codex".to_string()])
+        .expect("import");
+    let id = js_string(skill.get("skill").and_then(|s| s.get("id")));
+    assert_eq!(classify_target_skill("demo", "codex"), "synced");
+
+    // 全部目标都关掉：codex 副本被删，claude 是用户自己的目录，保留。
+    let removed = set_skill_targets(&id, &[]).expect("remove all");
+    let results = removed
+        .get("targetResults")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let entry = |target: &str| {
+        results
+            .iter()
+            .find(|r| r.get("target").and_then(Value::as_str) == Some(target))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(entry("codex").get("kept"), Some(&json!(false)));
+    assert_eq!(entry("codex").get("ok"), Some(&json!(true)));
+    assert_eq!(entry("claude").get("kept"), Some(&json!(true)));
+    assert_eq!(entry("claude").get("ok"), Some(&json!(true)));
+    assert!(!codex_skills.join("demo").exists());
+    assert!(claude_skills.join("demo").join("SKILL.md").is_file());
 }
 
 // ===== skill usage =====

@@ -1,9 +1,10 @@
 /**
- * 我的 Skills: the installed list, local import, target sync via the detail
- * dialog, updates and destructive confirmations.
+ * 我的 Skills: the installed list, local import, engine sync from the row or
+ * the detail panel, updates and destructive confirmations.
  *
- * Rows are plain buttons; all switches live in the detail dialog so a click
- * on a row can never toggle a target by accident.
+ * A row is a button that opens the detail panel; the engine icons next to it
+ * are separate buttons, so opening the panel can never toggle a target by
+ * accident and toggling one engine never opens the panel.
  */
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -13,16 +14,31 @@ import Search from "lucide-react/dist/esm/icons/search";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { CenteredSpinner, EmptyState } from "@/components/base/empty-state";
+import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { ModalShell } from "@/components/dialogs";
 import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
 import { cx } from "@/utils/cx";
 import { skillsHubApi } from "./api";
-import { Chip, FeedbackLine, SourceBadge, TargetDots, type Feedback } from "./components";
+import {
+  Chip,
+  FeedbackLine,
+  SourceBadge,
+  TargetEngines,
+  type Feedback,
+} from "./components";
 import { SkillDetailDialog } from "./SkillDetailDialog";
 import { SkillImportDialog } from "./SkillImportDialog";
 import { useInstalledSkills } from "./useInstalledSkills";
+import { useSkillUsage } from "./useSkillUsage";
 import type { SkillRow, SkillSourceKind, SkillTargetId } from "./types";
-import { filterSkills, sourceKindOf, summarizeTargetResults } from "./utils";
+import {
+  filterSkills,
+  nextTargets,
+  sourceKindOf,
+  summarizeTargetResults,
+  usageForSkill,
+  visibleEngines,
+} from "./utils";
 
 const SOURCE_FILTERS: (SkillSourceKind | "")[] = [
   "",
@@ -43,7 +59,8 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<SkillSourceKind | "">("");
   const [engine, setEngine] = useState<SkillTargetId | "">("");
-  const [selected, setSelected] = useState<SkillRow | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [busyTarget, setBusyTarget] = useState<{ skillId: string; targetId: string } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [confirm, setConfirm] = useState<
     | { kind: "uninstall"; skill: SkillRow }
@@ -55,6 +72,25 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [restoreId, setRestoreId] = useState<string | null>(null);
   const refreshAction = useActionFeedback({ spin: true });
+
+  // The selected row is derived from the refreshed list, never a stale copy:
+  // a toggle in the row (or in the detail panel) must reach the panel that is
+  // already open, and a removed skill closes it without a second state source.
+  const selected = useMemo(
+    () => store.skills.find((skill) => skill.id === selectedId) ?? null,
+    [store.skills, selectedId],
+  );
+  // Usage is only fetched once a detail panel is open (Claude Code transcripts,
+  // cached for 10 minutes server-side) — browsing hundreds of skills stays cheap.
+  const usageStore = useSkillUsage(selectedId !== null);
+
+  const engineChips = useMemo(
+    () => visibleEngines(store.skills, store.targets),
+    [store.skills, store.targets],
+  );
+
+  const targetLabel = (targetId: string) =>
+    store.targets.find((target) => target.id === targetId)?.label ?? targetId;
 
   const filtered = useMemo(
     () => filterSkills(store.skills, { query, source, target: engine }),
@@ -81,7 +117,7 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
       flash({ tone: "success", text: t("skills.feedback.syncedAll", { name }) });
       return;
     }
-    const failed = summary.failed.map((entry) => entry.target).join(", ");
+    const failed = summary.failed.map((entry) => targetLabel(entry.target)).join(", ");
     flash({ tone: "error", text: t("skills.feedback.syncedPartial", { name, failed }) }, 0);
   };
 
@@ -141,7 +177,6 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
         setRestoreId(null);
         flash({ tone: "success", text: t("skills.feedback.uninstalled", { name: skill.name }) });
       }
-      if (selected?.id === skill.id) setSelected(null);
     } catch (error) {
       flash({ tone: "error", text: error instanceof Error ? error.message : String(error) }, 0);
     }
@@ -163,20 +198,62 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
     try {
       const result = await store.deleteLocal(skill.directory, skill.targets);
       reportTargetResults(result.targetResults, skill.name);
-      if (selected?.id === skill.id) setSelected(null);
+      if (selectedId === skill.id) setSelectedId(null);
     } catch (error) {
       flash({ tone: "error", text: error instanceof Error ? error.message : String(error) }, 0);
     }
   };
 
-  const onToggleTarget = async (skill: SkillRow, next: SkillTargetId[]) => {
+  /** Sync one engine on/off from the row icon or the detail checkbox: the
+   *  message names the engine, because a single-target action must not read
+   *  like a bulk result. */
+  const onToggleTarget = async (
+    skill: SkillRow,
+    targetId: SkillTargetId,
+    enabled: boolean,
+  ) => {
+    setBusyTarget({ skillId: skill.id, targetId });
     try {
+      const next = nextTargets(skill, targetId, enabled);
       const result = skill.managed
         ? await store.setTargets(skill.id, next)
         : await store.importLocal(skill.directory, next);
-      reportTargetResults(result.targetResults, skill.name);
+      const entry = result.targetResults?.find((item) => item.target === targetId);
+      if (entry && !entry.ok) {
+        flash(
+          {
+            tone: "error",
+            text: t("skills.feedback.syncFailed", {
+              engine: targetLabel(targetId),
+              error: entry.error ?? "",
+            }),
+          },
+          0,
+        );
+        return;
+      }
+      const vars = { name: skill.name, engine: targetLabel(targetId) };
+      // 用户自己的来源副本不会被删除：后端保留它并标 kept，UI 就不能说成
+      // “已移除”，否则刷新后图标还在，自相矛盾。
+      if (!enabled && entry?.kept) {
+        flash({ tone: "success", text: t("skills.feedback.keptLocal", vars) });
+        return;
+      }
+      flash({
+        tone: "success",
+        text: enabled
+          ? t("skills.feedback.syncedOne", vars)
+          : t("skills.feedback.unsyncedOne", vars),
+      });
     } catch (error) {
       flash({ tone: "error", text: error instanceof Error ? error.message : String(error) }, 0);
+    } finally {
+      // 只清自己这一次的繁忙态：另一个引擎的切换可能同时在飞。
+      setBusyTarget((current) =>
+        current && current.skillId === skill.id && current.targetId === targetId
+          ? null
+          : current,
+      );
     }
   };
 
@@ -184,7 +261,7 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
     try {
       const result = await store.importLocal(skill.directory, skill.targets);
       reportTargetResults(result.targetResults, skill.name);
-      setSelected(null);
+      setSelectedId(null);
     } catch (error) {
       flash({ tone: "error", text: error instanceof Error ? error.message : String(error) }, 0);
     }
@@ -242,13 +319,17 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
         <Chip selected={engine === ""} onClick={() => setEngine("")}>
           {t("skills.filter.allEngines")}
         </Chip>
-        {store.targets.map((target) => (
+        {engineChips.map((target) => (
           <Chip
             key={target.id}
             selected={engine === target.id}
             onClick={() => setEngine(target.id as SkillTargetId)}
+            title={target.path}
           >
-            {target.label}
+            <span className="flex items-center gap-1">
+              <EngineIcon engine={target.id} size={12} />
+              {target.label}
+            </span>
           </Chip>
         ))}
       </div>
@@ -309,7 +390,7 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
                 >
                   <button
                     type="button"
-                    onClick={() => setSelected(skill)}
+                    onClick={() => setSelectedId(skill.id)}
                     aria-label={t("skills.row.open", { name: skill.name })}
                     className="flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
                   >
@@ -318,12 +399,20 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
                         {skill.name}
                       </span>
                       <SourceBadge skill={skill} />
-                      <TargetDots skill={skill} targets={store.targets} />
                     </span>
                     <span className="w-full truncate text-caption-1-regular text-text-secondary">
                       {skill.description || skill.directory}
                     </span>
                   </button>
+                  <TargetEngines
+                    skill={skill}
+                    targets={store.targets}
+                    busyTarget={busyTarget?.skillId === skill.id ? busyTarget.targetId : null}
+                    disabled={pending}
+                    onToggleTarget={(row, targetId, enabled) =>
+                      void onToggleTarget(row, targetId, enabled)
+                    }
+                  />
                   {rowUpdate ? (
                     <Button
                       variant="primary"
@@ -358,9 +447,15 @@ export function InstalledPane({ onBrowse }: { onBrowse: () => void }) {
           pending={
             store.pendingIds.has(selected.id) || store.pendingIds.has(selected.directory)
           }
+          busyTarget={busyTarget?.skillId === selected.id ? busyTarget.targetId : null}
+          usage={usageForSkill(usageStore.usage, selected)}
+          usageLoading={usageStore.usageLoading}
+          usageError={usageStore.usageError}
           hasUpdate={Boolean(updates[selected.id])}
-          onClose={() => setSelected(null)}
-          onToggleTarget={(skill, next) => void onToggleTarget(skill, next)}
+          onClose={() => setSelectedId(null)}
+          onToggleTarget={(skill, targetId, enabled) =>
+            void onToggleTarget(skill, targetId, enabled)
+          }
           onTriggerUpdate={(skill) => void runUpdate(skill, false)}
           onUninstall={(skill) => setConfirm({ kind: "uninstall", skill })}
           onDeleteLocal={(skill) => setConfirm({ kind: "deleteLocal", skill })}

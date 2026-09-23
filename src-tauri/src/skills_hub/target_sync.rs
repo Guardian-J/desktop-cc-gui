@@ -6,13 +6,16 @@
 //! 1. SSOT 根目录为本应用数据目录下的 `skills-hub/`（`paths::app_home()`），
 //!    可用 env `CCGUI_SKILLS_HUB_HOME` 覆盖（测试注入点）。参考实现用
 //!    `~/.ccgui/skills`，与本应用的可写存储隔离，不共享注册表。
-//! 2. 目标引擎首期仅 Claude Code / Codex；引擎目录解析走 `engine::engine_home`
-//!    与 `engine::codex_home`，尊重 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 与设置页
-//!    的 Codex 目录覆盖。只出现在 CLI 目录、不属于本应用托管的目标是只读来源
-//!    （Codex `.system`、插件缓存、随包分发的内置 skill）。
+//! 2. 同步目标覆盖本应用接入的全部 CLI（Claude / Codex / Kimi / Grok / PI /
+//!    OMP / dsh / Antigravity / Gemini / OpenCode / Qoder / Qoder CN / Hermes）
+//!    加跨 agent 的 `~/.agents`；引擎目录解析走 `engine::engine_home` 与
+//!    `engine::codex_home`，尊重各 CLI 自己的 env（`CLAUDE_CONFIG_DIR` /
+//!    `CODEX_HOME` / `GROK_HOME` / `PI_CODING_AGENT_DIR`…）与设置页的 Codex
+//!    目录覆盖。只出现在 CLI 目录、不属于本应用托管的目标是只读来源
+//!    （Codex / dsh 的 `.system`、Codex 插件缓存、随包分发的内置 skill）。
 //! 3. skill_usage 的统计范围固定为 Claude Code 会话转录
-//!    （`<claude home>/projects/**/*.jsonl`），响应带 scope 字段说明；Codex
-//!    没有可可靠读取的 Skill 调用记录，不可用时显示"暂无可用数据"。
+//!    （`<claude home>/projects/**/*.jsonl`），响应带 scope 字段说明；其他
+//!    引擎没有可可靠读取的 Skill 调用记录，不可用时显示"暂无可用数据"。
 //! 4. 删除/卸载入口对只读来源（内置、系统、插件）一律拒绝，保护
 //!    `creator_skill.rs` 安装的随包 skill。
 
@@ -154,7 +157,8 @@ pub(super) fn sync_targets_with_results(
 
 /// 逐目标移除并回读结果：ok = 该目标下已无该 skill 的实体/悬空链接。
 /// 删除本身是 best-effort（与上游一致），但结果不静默：UI 可以告诉用户
-/// 哪个引擎副本没删干净。
+/// 哪个引擎副本没删干净。`kept` 标记该目标是用户自己的来源副本（本来就不
+/// 在删除范围内，保留它就是正确结果）——UI 据此不要说成“已移除”。
 pub(super) fn remove_targets_with_results(directory: &str, target_ids: &[String]) -> Vec<Value> {
     let preserved = preserved_source_for(directory);
     let mut results = Vec::new();
@@ -172,6 +176,7 @@ pub(super) fn remove_targets_with_results(directory: &str, target_ids: &[String]
         results.push(json!({
             "target": target_id,
             "ok": gone || keep_preserved,
+            "kept": keep_preserved,
             "error": if gone || keep_preserved { Value::Null } else { json!("copy still present") },
         }));
     }

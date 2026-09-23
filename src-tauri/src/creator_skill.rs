@@ -232,21 +232,12 @@ pub(crate) fn skill_source_root(resource_dir: Option<&Path>) -> Option<PathBuf> 
 }
 
 /// 要同步的 skills 根：引擎 home 已存在才写（不替用户创建引擎目录）。
+///
+/// 根列表来自 skills hub 的目标表——那里定义“哪些 CLI 读哪个目录”。两处
+/// 共用同一份解析，内置 skill 才真能在每个已安装的 CLI 里被 `/` 触发；
+/// 在别处塞一份引擎看不到的副本等于假成功。
 pub(crate) fn engine_skill_roots() -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = Vec::new();
-    let claude_home = crate::engine::engine_home(Some("CLAUDE_CONFIG_DIR"), ".claude");
-    let codex_home = crate::engine::codex_home();
-    let agents_home = crate::engine::engine_home(None, ".agents");
-    for home in [claude_home, codex_home, agents_home] {
-        if !home.is_dir() {
-            continue;
-        }
-        let root = home.join(SKILLS_DIR);
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    roots
+    crate::skills_hub::installed_engine_skill_roots()
 }
 
 /// 同步到全部引擎根；单个目标失败不影响其它目标（启动路径不抛错）。
@@ -362,7 +353,23 @@ mod tests {
 
     impl EnvSteer {
         fn apply(vars: &[(&'static str, &Path)]) -> Self {
-            const KEYS: [&str; 4] = ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+            // 引擎 home 的全部 env 变量参与 `engine_skill_roots` 解析：开发机上
+            // 真实设置的 GROK_HOME 等不能把测试的写入引到 scratch 之外。
+            const KEYS: [&str; 13] = [
+                "HOME",
+                "USERPROFILE",
+                "CLAUDE_CONFIG_DIR",
+                "CODEX_HOME",
+                "KIMI_CODE_HOME",
+                "GROK_HOME",
+                "PI_CODING_AGENT_DIR",
+                "OMP_CODING_AGENT_DIR",
+                "DSH_HOME",
+                "ANTIGRAVITY_HOME",
+                "GEMINI_DIR",
+                "XDG_CONFIG_HOME",
+                "HERMES_HOME",
+            ];
             let previous = KEYS
                 .into_iter()
                 .map(|key| (key, std::env::var_os(key)))

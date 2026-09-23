@@ -9,9 +9,24 @@
  *  others are read-only sources the app merely displays. */
 export type SkillSourceKind = "managed" | "local" | "builtin" | "system" | "plugin";
 
-/** Sync targets the engine adapters implement. `agents` is the shared
- *  cross-agent root: hidden from the engine list but part of the state. */
-export type SkillTargetId = "claude" | "codex" | "agents";
+/** Sync targets the engine adapters implement: every CLI the app drives,
+ *  plus the shared cross-agent root. `agents` stays hidden from the engine
+ *  list but is part of the state (`~/.agents/skills` is read by several CLIs). */
+export type SkillTargetId =
+  | "claude"
+  | "codex"
+  | "kimi"
+  | "grok"
+  | "pi"
+  | "omp"
+  | "dsh"
+  | "agy"
+  | "gemini"
+  | "opencode"
+  | "qoder"
+  | "qoder-cn"
+  | "hermes"
+  | "agents";
 
 export type SkillTargetState = "off" | "synced" | "orphan";
 
@@ -20,6 +35,9 @@ export interface SkillTargetInfo {
   label: string;
   path: string;
   readonly: boolean;
+  /** The CLI's home exists on this machine. Targets that are not installed are
+   *  hidden by the UI unless a copy (or a missing copy) already lives there. */
+  available: boolean;
 }
 
 export interface SkillRow {
@@ -134,11 +152,15 @@ export interface SkillUsageResult {
   unusedInstalled: { skillId: string | null; directory: string | null; name: string | null }[];
 }
 
-/** Per-target outcome of a multi-target operation. */
+/** Per-target outcome of a multi-target operation.
+ *  `kept` marks a target whose copy is the user's own source directory: the app
+ *  never deletes it, so a "remove" that keeps it is a correct outcome — but the
+ *  UI must not report it as "removed". */
 export interface SkillTargetResult {
   target: string;
   ok: boolean;
   error: string | null;
+  kept?: boolean;
 }
 
 export interface SkillMutationResult {

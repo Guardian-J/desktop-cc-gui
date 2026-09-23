@@ -6,13 +6,16 @@
 //! 1. SSOT 根目录为本应用数据目录下的 `skills-hub/`（`paths::app_home()`），
 //!    可用 env `CCGUI_SKILLS_HUB_HOME` 覆盖（测试注入点）。参考实现用
 //!    `~/.ccgui/skills`，与本应用的可写存储隔离，不共享注册表。
-//! 2. 目标引擎首期仅 Claude Code / Codex；引擎目录解析走 `engine::engine_home`
-//!    与 `engine::codex_home`，尊重 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 与设置页
-//!    的 Codex 目录覆盖。只出现在 CLI 目录、不属于本应用托管的目标是只读来源
-//!    （Codex `.system`、插件缓存、随包分发的内置 skill）。
+//! 2. 同步目标覆盖本应用接入的全部 CLI（Claude / Codex / Kimi / Grok / PI /
+//!    OMP / dsh / Antigravity / Gemini / OpenCode / Qoder / Qoder CN / Hermes）
+//!    加跨 agent 的 `~/.agents`；每个 CLI 的 home 走它自己的 env 与设置页
+//!    覆盖（见 `engine::engine_home` / `engine::codex_home`）。home 不存在的
+//!    目标标 `available: false`，UI 隐去。只出现在 CLI 目录、不属于本应用
+//!    托管的目标是只读来源（Codex `.system` 与插件缓存、dsh `.system`、
+//!    随包分发的内置 skill）。
 //! 3. skill_usage 的统计范围固定为 Claude Code 会话转录
-//!    （`<claude home>/projects/**/*.jsonl`），响应带 scope 字段说明；Codex
-//!    没有可可靠读取的 Skill 调用记录，不可用时显示"暂无可用数据"。
+//!    （`<claude home>/projects/**/*.jsonl`），响应带 scope 字段说明；其他
+//!    引擎没有可可靠读取的 Skill 调用记录，不可用时显示"暂无可用数据"。
 //! 4. 删除/卸载入口对只读来源（内置、系统、插件）一律拒绝，保护
 //!    `creator_skill.rs` 安装的随包 skill。
 
@@ -146,25 +149,56 @@ pub(super) fn is_dir(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 引擎 skills 根（Claude / Codex / 跨 agent 的 `~/.agents`）。
-/// Claude 尊重 `CLAUDE_CONFIG_DIR`，Codex 尊重 `CODEX_HOME` 与设置页覆盖
-/// （见 `engine::codex_home`）——与聊天 `/` 选择器的目录解析保持同一套规则。
-fn claude_skills_dir() -> PathBuf {
-    crate::engine::engine_home(Some("CLAUDE_CONFIG_DIR"), ".claude").join("skills")
-}
-fn codex_skills_dir() -> PathBuf {
-    crate::engine::codex_home().join("skills")
-}
-fn agents_skills_dir() -> PathBuf {
-    crate::engine::engine_home(None, ".agents").join("skills")
+// ===== 目标引擎：每个 CLI 自己的用户级 skills 根 =====
+//
+// 只登记 CLI 真正会读取的目录：写进别处的副本引擎看不到，那是假同步。目录
+// 解析与设置页/聊天页共用 `engine::engine_home` / `codex_home` 与各 CLI 自己
+// 的环境变量（Claude 的 `CLAUDE_CONFIG_DIR`、Codex 的 `CODEX_HOME` 与设置页
+// 覆盖、Grok 的 `GROK_HOME`……），并把引擎 home 不存在（没装该 CLI）的目标
+// 标记为 unavailable，由 UI 隐去，避免凭空造出一堆空目录。
+
+/// pi / omp 的用户 skills 在 agent 目录下（`$PI_CODING_AGENT_DIR` /
+/// `$OMP_CODING_AGENT_DIR`，缺省 `~/.pi/agent`、`~/.omp/agent`），不在配置根；
+/// omp 是 pi 的 fork，两个变量它都认。
+fn coding_agent_home(env_keys: &[&str], home_dir_name: &str) -> PathBuf {
+    for key in env_keys {
+        if let Some(dir) = std::env::var_os(key).filter(|value| !value.is_empty()) {
+            return PathBuf::from(dir);
+        }
+    }
+    crate::engine::engine_home(None, home_dir_name).join("agent")
 }
 
-/// 本应用托管的同步目标：Claude Code 与 Codex 各一份受管副本；`agents`
-/// 是跨 agent 的共享 skills 根，沿用参考实现的隐藏目标（不进 UI 引擎列表，
-/// 但参与扫描/分类/同步，保证"移除某个引擎副本"的语义完整）。
+/// Antigravity 的一个目标覆盖三个 home：应用自带的 `agy` 引擎（CLI）、
+/// Antigravity 应用与 Antigravity IDE（参考实现的扫描范围）。
+fn antigravity_homes() -> Vec<PathBuf> {
+    let mut homes = vec![crate::engine::engine_home(
+        Some("ANTIGRAVITY_HOME"),
+        ".gemini/antigravity-cli",
+    )];
+    for home in [".gemini/antigravity", ".gemini/antigravity-ide"] {
+        homes.push(crate::engine::engine_home(None, home));
+    }
+    homes
+}
+
+/// 本应用托管的同步目标；`agents` 是跨 agent 的共享 skills 根（Claude /
+/// Codex / Kimi / dsh 等都读它），沿用参考实现的隐藏目标：不进 UI 引擎
+/// 列表，但参与扫描/分类/同步，保证"移除某个引擎副本"的语义完整。
 pub(super) enum TargetKind {
     Claude,
     Codex,
+    Kimi,
+    Grok,
+    Pi,
+    Omp,
+    Dsh,
+    Agy,
+    Gemini,
+    Opencode,
+    Qoder,
+    QoderCn,
+    Hermes,
     Agents,
 }
 
@@ -175,8 +209,9 @@ pub(super) struct Target {
     pub(super) kind: TargetKind,
 }
 
-/// 首期只暴露 Claude Code / Codex；顺序与 UI 引擎页签一致。
-pub(super) static TARGETS: [Target; 3] = [
+/// 支持全部已接入 CLI 的用户级 skills 根；顺序与设置页引擎列表一致
+/// （`config.rs` 的 ENGINE_IDS），Gemini CLI / Hermes 追加在末尾。
+pub(super) static TARGETS: [Target; 14] = [
     Target {
         id: "claude",
         label: "Claude",
@@ -190,6 +225,72 @@ pub(super) static TARGETS: [Target; 3] = [
         kind: TargetKind::Codex,
     },
     Target {
+        id: "kimi",
+        label: "Kimi",
+        visible: true,
+        kind: TargetKind::Kimi,
+    },
+    Target {
+        id: "grok",
+        label: "Grok",
+        visible: true,
+        kind: TargetKind::Grok,
+    },
+    Target {
+        id: "pi",
+        label: "PI",
+        visible: true,
+        kind: TargetKind::Pi,
+    },
+    Target {
+        id: "omp",
+        label: "OMP",
+        visible: true,
+        kind: TargetKind::Omp,
+    },
+    Target {
+        id: "dsh",
+        label: "DeepSeek",
+        visible: true,
+        kind: TargetKind::Dsh,
+    },
+    Target {
+        id: "agy",
+        label: "Antigravity",
+        visible: true,
+        kind: TargetKind::Agy,
+    },
+    Target {
+        id: "gemini",
+        label: "Gemini",
+        visible: true,
+        kind: TargetKind::Gemini,
+    },
+    Target {
+        id: "opencode",
+        label: "OpenCode",
+        visible: true,
+        kind: TargetKind::Opencode,
+    },
+    Target {
+        id: "qoder",
+        label: "Qoder",
+        visible: true,
+        kind: TargetKind::Qoder,
+    },
+    Target {
+        id: "qoder-cn",
+        label: "Qoder CN",
+        visible: true,
+        kind: TargetKind::QoderCn,
+    },
+    Target {
+        id: "hermes",
+        label: "Hermes",
+        visible: true,
+        kind: TargetKind::Hermes,
+    },
+    Target {
         id: "agents",
         label: "Agents",
         visible: false,
@@ -201,21 +302,56 @@ pub(super) fn target_by_id(id: &str) -> Option<&'static Target> {
     TARGETS.iter().find(|target| target.id == id)
 }
 
-/// 目标目录在调用时按 env/home 动态解析（测试可经 HOME 注入）。
-pub(super) fn target_dirs(target: &Target) -> Vec<PathBuf> {
+fn skills_dirs_for_id(id: &str) -> Vec<PathBuf> {
+    target_by_id(id).map(target_dirs).unwrap_or_default()
+}
+
+/// 目标的引擎 home（skills 根的父目录）；多目录 target（Antigravity）返回多个。
+pub(super) fn target_home_dirs(target: &Target) -> Vec<PathBuf> {
     match target.kind {
-        TargetKind::Claude => vec![claude_skills_dir()],
-        TargetKind::Codex => vec![codex_skills_dir()],
-        TargetKind::Agents => vec![agents_skills_dir()],
+        TargetKind::Claude => vec![crate::engine::engine_home(Some("CLAUDE_CONFIG_DIR"), ".claude")],
+        TargetKind::Codex => vec![crate::engine::codex_home()],
+        TargetKind::Kimi => vec![crate::engine::engine_home(Some("KIMI_CODE_HOME"), ".kimi-code")],
+        TargetKind::Grok => vec![crate::engine::engine_home(Some("GROK_HOME"), ".grok")],
+        TargetKind::Pi => vec![coding_agent_home(&["PI_CODING_AGENT_DIR"], ".pi")],
+        TargetKind::Omp => vec![coding_agent_home(
+            &["OMP_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"],
+            ".omp",
+        )],
+        TargetKind::Dsh => vec![crate::engine::engine_home(Some("DSH_HOME"), ".dsh")],
+        TargetKind::Agy => antigravity_homes(),
+        TargetKind::Gemini => vec![crate::engine::engine_home(Some("GEMINI_DIR"), ".gemini")],
+        TargetKind::Opencode => vec![crate::engine::engine_home(Some("XDG_CONFIG_HOME"), ".config")
+            .join("opencode")],
+        TargetKind::Qoder => vec![crate::engine::engine_home(None, ".qoder")],
+        TargetKind::QoderCn => vec![crate::engine::engine_home(None, ".qoder-cn")],
+        TargetKind::Hermes => vec![crate::engine::engine_home(Some("HERMES_HOME"), ".hermes")],
+        TargetKind::Agents => vec![crate::engine::engine_home(None, ".agents")],
     }
 }
 
-/// 对应 upstream targetPrimaryDir（首期都是单目录，保留多目录签名）。
+/// 目标目录在调用时按 env/home 动态解析（测试可经 HOME / 各 CLI 的 env 注入）。
+pub(super) fn target_dirs(target: &Target) -> Vec<PathBuf> {
+    target_home_dirs(target)
+        .into_iter()
+        .map(|home| home.join("skills"))
+        .collect()
+}
+
+/// 对应 upstream targetPrimaryDir（多目录 target 取第一个用于 UI 展示）。
 pub(super) fn target_primary_dir(target: &Target) -> PathBuf {
     target_dirs(target).into_iter().next().unwrap_or_default()
 }
 
-/// 对应 upstream targetList：仅 visible target。
+/// 该引擎是否装着（home 存在）：UI 用它把没装的 CLI 隐去。已存在的副本
+/// （含副本丢失的 orphan）不受影响——卸载 CLI 不能把清理路径一起藏掉。
+fn target_available(target: &Target) -> bool {
+    target_dirs(target)
+        .iter()
+        .any(|dir| is_dir(dir) || dir.parent().is_some_and(is_dir))
+}
+
+/// 对应 upstream targetList：仅 visible target。`available` 是本地扩展。
 pub(super) fn target_list() -> Vec<Value> {
     TARGETS
         .iter()
@@ -226,9 +362,27 @@ pub(super) fn target_list() -> Vec<Value> {
                 "label": t.label,
                 "path": target_primary_dir(t).to_string_lossy(),
                 "readonly": false,
+                "available": target_available(t),
             })
         })
         .collect()
+}
+
+/// 引擎 home 已存在、可以直接写入的 skills 根（含隐藏的 `agents`）。
+/// `creator_skill` 用它把随包分发的内置 skill 装进每个已安装的 CLI：
+/// 没装的引擎不替用户建目录（与 `creator_skill` 的既有约定一致）。
+pub(crate) fn installed_engine_skill_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for target in TARGETS.iter() {
+        let homes = target_home_dirs(target);
+        for (home, root) in homes.into_iter().zip(target_dirs(target)) {
+            if !home.is_dir() || roots.contains(&root) {
+                continue;
+            }
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 // ===== 只读来源：本应用不纳管、只扫描展示的 skill 目录 =====
@@ -260,24 +414,30 @@ pub(super) struct ReadonlySource {
 }
 
 /// 内置 skill 的目录名（= `creator_skill::SKILL_ID`）。这些目录即使出现在
-/// Claude/Codex 的托管目标根里也按"内置"处理：只读、禁止删除/导入。
+/// 引擎的托管目标根里也按“内置”处理：只读、禁止删除/导入。
 pub(super) fn bundled_skill_names() -> HashSet<String> {
     [crate::creator_skill::SKILL_ID.to_string()]
         .into_iter()
         .collect()
 }
 
-/// 当前存在的只读来源目录。Codex 的 `.system` 与插件缓存目录在未安装时
-/// 不存在，函数只返回真实存在的目录。
+/// 当前存在的只读来源目录。引擎自带的 `.system`（Codex / dsh）与插件
+/// 缓存目录在未安装时不存在，函数只返回真实存在的目录。
 pub(super) fn readonly_sources() -> Vec<ReadonlySource> {
     let mut out: Vec<ReadonlySource> = Vec::new();
+    let mut push_system = |dir: PathBuf| {
+        if is_dir(&dir) {
+            out.push(ReadonlySource {
+                kind: ReadonlyKind::System,
+                dir,
+            });
+        }
+    };
     let codex_home = crate::engine::codex_home();
-    let system_dir = codex_home.join("skills").join(".system");
-    if is_dir(&system_dir) {
-        out.push(ReadonlySource {
-            kind: ReadonlyKind::System,
-            dir: system_dir,
-        });
+    push_system(codex_home.join("skills").join(".system"));
+    // dsh 的用户 skills 根同样带一个 `.system` 子目录（随 CLI 分发）。
+    for dir in skills_dirs_for_id("dsh") {
+        push_system(dir.join(".system"));
     }
     for (dir, _) in crate::slash_commands::codex_plugin_skills_dirs(&codex_home) {
         out.push(ReadonlySource {

@@ -7,9 +7,10 @@ import { useTranslation } from "react-i18next";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import Check from "lucide-react/dist/esm/icons/check";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
+import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { cx } from "@/utils/cx";
-import type { SkillRow, SkillSourceKind, SkillTargetInfo } from "./types";
-import { hasOrphanCopy, sourceKindOf } from "./utils";
+import type { SkillRow, SkillSourceKind, SkillTargetId, SkillTargetInfo } from "./types";
+import { hasOrphanCopy, relevantTargets, sourceKindOf } from "./utils";
 
 const BADGE_BASE =
   "inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ring-1";
@@ -32,40 +33,104 @@ export function SourceBadge({ skill }: { skill: SkillRow }) {
   );
 }
 
-/** One dot per engine target: filled = synced, hollow red = orphan, dim =
- *  absent. Titles carry the engine name so the dots are not color-only. */
-export function TargetDots({
+/** One clickable engine icon per target: full color = a copy lives there,
+ *  faded = no copy, amber corner badge = the copy is missing (orphan, clicking
+ *  re-syncs it). Clicking toggles that engine only — an unmanaged (local)
+ *  skill is adopted into an app-managed copy first, exactly like the detail
+ *  panel's checkbox. The row itself never toggles: the icons are siblings of
+ *  the row button, so opening the detail panel stays a separate gesture. */
+function TargetEngineButton({
+  skill,
+  target,
+  busy,
+  disabled,
+  onToggleTarget,
+}: {
+  skill: SkillRow;
+  target: SkillTargetInfo;
+  busy: boolean;
+  disabled: boolean;
+  onToggleTarget?: (skill: SkillRow, targetId: SkillTargetId, enabled: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const state = skill.targetStates?.[target.id] ?? "off";
+  const label = t(`skills.targetState.${state}`, { engine: target.label });
+  // 未纳管的本地技能：已有副本是用户自己的目录，应用不会删除它。禁用“取消”
+  // 比先报成功、刷新后又看到副本更诚实（后端也不会删它）。
+  const locked = skill.managed !== true && state === "synced";
+  return (
+    <button
+      type="button"
+      title={locked ? `${label} · ${t("skills.row.localCopyLocked")}` : label}
+      aria-label={label}
+      aria-pressed={state === "synced"}
+      data-target={target.id}
+      data-target-state={state}
+      disabled={disabled || busy || locked || !onToggleTarget}
+      onClick={() => onToggleTarget?.(skill, target.id as SkillTargetId, state !== "synced")}
+      className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-background-tertiary-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+    >
+      {busy ? (
+        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+      ) : (
+        <span
+          className={cx(
+            "flex size-4 items-center justify-center",
+            state === "off" && "opacity-35 grayscale",
+          )}
+          aria-hidden
+        >
+          <EngineIcon engine={target.id} size={16} />
+        </span>
+      )}
+      {state === "orphan" && !busy ? (
+        <span
+          className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full bg-text-error-primary ring-2 ring-background-primary"
+          aria-hidden
+        />
+      ) : null}
+    </button>
+  );
+}
+
+export function TargetEngines({
   skill,
   targets,
+  busyTarget,
+  disabled,
+  onToggleTarget,
 }: {
   skill: SkillRow;
   targets: SkillTargetInfo[];
+  /** Target id whose toggle is in flight for *this* skill. */
+  busyTarget?: string | null;
+  /** Row-level in-flight state (another action on the same row). */
+  disabled?: boolean;
+  onToggleTarget?: (skill: SkillRow, targetId: SkillTargetId, enabled: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const relevant = relevantTargets(skill, targets);
+  if (relevant.length === 0) return null;
   return (
-    <span className="inline-flex items-center gap-1">
-      {targets.map((target) => {
-        const state = skill.targetStates?.[target.id] ?? "off";
-        const label = t(`skills.targetState.${state}`, { engine: target.label });
-        return (
-          <span
+    <span className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
+      <span
+        role="group"
+        aria-label={t("skills.row.engines", { name: skill.name })}
+        className="flex flex-wrap items-center justify-end gap-0.5"
+      >
+        {relevant.map((target) => (
+          <TargetEngineButton
             key={target.id}
-            title={label}
-            aria-label={label}
-            role="img"
-            className={cx(
-              "size-1.5 rounded-full",
-              state === "synced" && "bg-accent-500",
-              state === "orphan" && "bg-text-error-primary",
-              state === "off" && "bg-background-tertiary-hover ring-1 ring-separator-border",
-            )}
+            skill={skill}
+            target={target}
+            busy={busyTarget === target.id}
+            disabled={disabled === true || skill.readonly === true}
+            onToggleTarget={onToggleTarget}
           />
-        );
-      })}
+        ))}
+      </span>
       {hasOrphanCopy(skill) ? (
-        <span className="text-[10px] text-text-error-primary">
-          {t("skills.orphanHint")}
-        </span>
+        <span className="text-[10px] text-text-error-primary">{t("skills.orphanHint")}</span>
       ) : null}
     </span>
   );
