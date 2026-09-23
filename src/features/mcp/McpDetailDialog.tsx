@@ -11,6 +11,7 @@ import { ModalShell } from "@/components/dialogs";
 import { ipc } from "@/lib/ipc";
 import { isWeb } from "@/lib/transport";
 import { readonlyReasonText } from "./labels";
+import { ProbeDetail } from "./probe-ui";
 import type { McpConfigEntry } from "./types";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -27,11 +28,14 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function McpDetailDialog({
   entry,
   pending,
+  workspacePath,
   onToggle,
   onClose,
 }: {
   entry: McpConfigEntry;
   pending: boolean;
+  /** 连接检测需要工作区（项目级来源的条目按此定位）。 */
+  workspacePath: string | null;
   onToggle: (enabled: boolean) => void;
   onClose: () => void;
 }) {
@@ -111,6 +115,7 @@ export function McpDetailDialog({
           {readonlyReason}
         </p>
       ) : null}
+      <ProbeDetail entry={entry} workspacePath={workspacePath} />
       <p className="text-caption-1-regular text-text-tertiary">{t("mcp.detail.restartHint")}</p>
     </ModalShell>
   );

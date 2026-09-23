@@ -371,6 +371,7 @@ pub fn run() {
             // web bridge intentionally does not dispatch these.
             mcp::mcp_inventory,
             mcp::mcp_set_enabled,
+            mcp::probe::mcp_probe,
             // skills hub (设置 → 能力扩展 → Skills)
             skills_hub::skills_hub_query,
             skills_hub::skills_hub_mutate,

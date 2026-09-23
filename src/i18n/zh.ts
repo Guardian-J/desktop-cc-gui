@@ -1709,6 +1709,21 @@ export const zh = {
       heading: "MCP 服务 · {{name}}",
       manage: "在设置中管理",
     },
+    probe: {
+      check: "检测 {{name}}",
+      checkAll: "检测全部",
+      hint: "检测会按配置启动 stdio 服务（npx 可能触发下载）或连接远程地址并握手，完成后立即结束进程；结果只代表本应用此刻能连上。",
+      pending: "检测中",
+      connected: "已连接",
+      connectedTools: "已连接 · {{count}} 个工具",
+      needsAuth: "需要登录",
+      failed: "连接失败",
+      detailTitle: "连接检测（本应用发起）",
+      serverName: "服务：{{name}}",
+      protocol: "协议 {{version}}",
+      toolList: "工具：{{tools}}",
+      checkedAt: "检测于 {{time}} · 耗时 {{ms}} ms",
+    },
   },
 
 };

@@ -11,6 +11,7 @@ import type {
 const api = vi.hoisted(() => ({
   inventory: vi.fn(),
   setEnabled: vi.fn(),
+  probe: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -29,6 +30,7 @@ vi.mock("@/lib/transport", () => ({ isWeb: false }));
 import "@/lib/i18n";
 import { useChatStore } from "@/features/chat/store";
 import { engineLabel } from "./labels";
+import { useMcpProbeStore } from "./probe-store";
 import { McpSection } from "./McpSection";
 
 declare global {
@@ -177,8 +179,10 @@ let root: Root;
 beforeEach(() => {
   api.inventory.mockReset();
   api.setEnabled.mockReset();
+  api.probe.mockReset();
   api.inventory.mockResolvedValue(payload());
   api.setEnabled.mockResolvedValue(claudeProject());
+  useMcpProbeStore.setState({ results: {}, pending: {}, runningAll: false, error: null });
   useChatStore.setState({ active: null });
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -450,6 +454,74 @@ describe("McpSection", () => {
     });
     expect(document.body.textContent).not.toContain("alpha");
     expect(document.body.textContent).toContain("运行时清单");
+  });
+
+  it("checks connections on demand and shows per-server status", async () => {
+    api.probe.mockImplementation(async (entry: McpConfigEntry) => {
+      if (entry.name === "alpha") {
+        return {
+          status: "connected",
+          message: null,
+          tools: ["a", "b"],
+          serverName: "fake",
+          protocolVersion: "2025-06-18",
+          elapsedMs: 12,
+        };
+      }
+      return {
+        status: "needs_auth",
+        message: "服务要求认证（HTTP 401）",
+        tools: [],
+        serverName: null,
+        protocolVersion: null,
+        elapsedMs: 5,
+      };
+    });
+    await renderSection();
+    // 未检测：不凭空显示状态。
+    expect(document.body.textContent).not.toContain("已连接");
+
+    await act(async () => {
+      buttonExact("检测全部").click();
+    });
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("已连接 · 2 个工具");
+    });
+    expect(document.body.textContent).toContain("需要登录");
+    // 只检测当前引擎的可检测条目（claude 两条），不会跑去启动 codex 的。
+    expect(api.probe).toHaveBeenCalledTimes(2);
+    expect(api.probe.mock.calls.map((call) => call[0].name)).toEqual([
+      "alpha",
+      "beta",
+    ]);
+  });
+
+  it("surfaces a probe transport failure next to the row", async () => {
+    api.probe.mockResolvedValue({
+      status: "failed",
+      message: "启动失败：No such file or directory",
+      tools: [],
+      serverName: null,
+      protocolVersion: null,
+      elapsedMs: 3,
+    });
+    await renderSection();
+    const alphaRow = [...document.querySelectorAll("li")].find((row) =>
+      row.textContent?.includes("alpha"),
+    );
+    const check = alphaRow?.querySelector<HTMLButtonElement>('button[aria-label*="检测"]');
+    await act(async () => {
+      check?.click();
+    });
+    await vi.waitFor(() => {
+      expect(alphaRow?.textContent).toContain("连接失败");
+    });
+    // 失败原因在 title 上，不把错误正文塞满行内。
+    expect(
+      alphaRow?.querySelector('[title*="启动失败"]'),
+    ).toBeTruthy();
+    // 单条检测只跑这一条。
+    expect(api.probe).toHaveBeenCalledTimes(1);
   });
 
   it("workspace switches cannot be overwritten by a late response", async () => {

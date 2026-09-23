@@ -2,7 +2,6 @@
  * Shared bits for the Skills panes: source/sync badges, feedback banner and
  * small formatting helpers. Pure display — no data loading here.
  */
-import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2";
 import Check from "lucide-react/dist/esm/icons/check";
@@ -161,43 +160,4 @@ export function FeedbackLine({ feedback }: { feedback: Feedback }) {
   );
 }
 
-/** Rounded neutral chip used for filters and metadata. */
-export function Chip({
-  selected,
-  children,
-  onClick,
-  title,
-}: {
-  selected?: boolean;
-  children: ReactNode;
-  onClick?: () => void;
-  title?: string;
-}) {
-  const classes = cx(
-    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-caption-1-regular transition-colors",
-    onClick &&
-      "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring",
-    selected
-      ? "bg-background-tertiary-default text-text-primary"
-      : "bg-background-secondary-default text-text-secondary hover:bg-background-tertiary-default",
-  );
-  if (!onClick) {
-    return (
-      <span className={classes} title={title}>
-        {children}
-      </span>
-    );
-  }
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={Boolean(selected)}
-      className={classes}
-    >
-      {children}
-    </button>
-  );
-}
 

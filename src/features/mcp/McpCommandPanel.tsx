@@ -19,6 +19,7 @@ import { isWeb } from "@/lib/transport";
 import { useChatStore } from "@/features/chat/store";
 import { McpDetailDialog } from "./McpDetailDialog";
 import { McpConfigList, McpSourceHint, RuntimeBlock } from "./McpSection";
+import { probeable, useMcpProbeStore } from "./probe-store";
 import { engineLabel, openMcpSettings } from "./labels";
 import { useMcpPanel } from "./panel";
 import type { McpConfigEntry } from "./types";
@@ -40,7 +41,11 @@ function PanelBody() {
   const [selected, setSelected] = useState<McpConfigEntry | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const refreshAction = useActionFeedback({ spin: true });
+  const probeAll = useMcpProbeStore((state) => state.probeAll);
+  const probingAll = useMcpProbeStore((state) => state.runningAll);
+  const probeError = useMcpProbeStore((state) => state.error);
   const label = engineId ? engineLabel(engineId) : t("mcp.command.title");
+  const probeableCount = (engine?.config.entries ?? []).filter(probeable).length;
 
   const handleToggle = (entry: McpConfigEntry, enabled: boolean) => {
     setToggleError(null);
@@ -60,6 +65,15 @@ function PanelBody() {
         <h3 className="min-w-0 flex-1 truncate text-title-3-medium text-text-primary">
           {t("mcp.command.heading", { name: label })}
         </h3>
+        <Button
+          variant="secondary"
+          size="small"
+          title={t("mcp.probe.hint")}
+          disabled={store.loading || probingAll || probeableCount === 0}
+          onClick={() => void probeAll(engine?.config.entries ?? [], workspacePath)}
+        >
+          {t("mcp.probe.checkAll")}
+        </Button>
         <Button
           variant="secondary"
           size="small"
@@ -107,6 +121,12 @@ function PanelBody() {
             </p>
           ) : null}
 
+          {probeError ? (
+            <p role="alert" className="text-body-2-regular text-text-error-primary">
+              {probeError}
+            </p>
+          ) : null}
+
           {engine?.support === "none" ? (
             <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
               {t("mcp.support.none", { name: label })}
@@ -144,6 +164,7 @@ function PanelBody() {
                   entries={engine.config.entries}
                   pendingId={store.pendingId}
                   selectedId={selected?.id ?? null}
+                  workspacePath={workspacePath}
                   onOpen={setSelected}
                   onToggle={handleToggle}
                 />
@@ -173,6 +194,7 @@ function PanelBody() {
         <McpDetailDialog
           entry={selected}
           pending={store.pendingId === selected.id}
+          workspacePath={workspacePath}
           onToggle={(enabled) => handleToggle(selected, enabled)}
           onClose={() => setSelected(null)}
         />

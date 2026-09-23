@@ -6,6 +6,7 @@ import type { McpConfigEntry, McpEngineInventory, McpInventory } from "./types";
 const api = vi.hoisted(() => ({
   inventory: vi.fn(),
   setEnabled: vi.fn(),
+  probe: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -26,6 +27,7 @@ import { useChatStore } from "@/features/chat/store";
 import { McpCommandPanel } from "./McpCommandPanel";
 import { engineIdFromHash, openMcpSettings } from "./labels";
 import { useMcpPanel } from "./panel";
+import { useMcpProbeStore } from "./probe-store";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -110,7 +112,9 @@ let root: Root;
 beforeEach(() => {
   api.inventory.mockReset();
   api.setEnabled.mockReset();
+  api.probe.mockReset();
   api.inventory.mockResolvedValue(payload());
+  useMcpProbeStore.setState({ results: {}, pending: {}, runningAll: false, error: null });
   useMcpPanel.setState({ open: false });
   useChatStore.setState({ active: null });
   window.location.hash = "";
@@ -161,6 +165,28 @@ describe("McpCommandPanel", () => {
     await renderPanel();
     expect(document.body.textContent).toContain("PI CLI 未内置 MCP");
     expect(document.body.textContent).not.toContain("配置清单");
+  });
+
+  it("checks the active engine's servers from the panel", async () => {
+    api.probe.mockResolvedValue({
+      status: "connected",
+      message: null,
+      tools: ["search"],
+      serverName: "fake",
+      protocolVersion: "2025-06-18",
+      elapsedMs: 7,
+    });
+    openPanel("codex");
+    await renderPanel();
+    const checkAll = [...document.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "检测全部",
+    );
+    await act(async () => checkAll?.click());
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("已连接 · 1 个工具");
+    });
+    expect(api.probe).toHaveBeenCalledTimes(1);
+    expect(api.probe.mock.calls[0][0].name).toBe("gamma");
   });
 
   it("deep links the settings page at the active engine", async () => {

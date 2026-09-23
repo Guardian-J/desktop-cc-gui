@@ -14,6 +14,7 @@ use std::path::PathBuf;
 mod read;
 mod write;
 
+pub(super) use read::{probe_target_from_json, probe_target_from_toml};
 pub(super) use write::write_enabled;
 use read::{read_dsh_profile, read_json_source, read_toml_source};
 
@@ -34,6 +35,8 @@ pub(super) const REASON_SHARED_PROJECT_FILE: &str = "shared_project_file";
 pub(super) const REASON_GROK_PROJECT: &str = "grok_project_toggle";
 pub(super) const REASON_DSH_PLUGIN: &str = "dsh_plugin";
 pub(super) const REASON_JSONC_READONLY: &str = "jsonc_readonly";
+/// 启停写按项目存（Claude 用户/local），没有活动工作区就没有写入位置。
+pub(super) const REASON_NEEDS_WORKSPACE: &str = "needs_workspace";
 
 /// 一个配置来源：条目标识前缀、引擎、作用域与写入能力。
 pub(super) struct SourceSpec {
@@ -47,33 +50,56 @@ pub(super) struct SourceSpec {
     pub readonly_reason_code: Option<&'static str>,
 }
 
-/// 服务器表里的字段名（不同 CLI 的写法差异都收在这里）。
-struct Fields {
-    command: &'static str,
-    args: &'static str,
-    env: &'static str,
-    url: &'static str,
-    headers: &'static str,
-    transport: &'static str,
+/// 服务器表里的字段名（不同 CLI 的写法差异都收在这里；`*_alt` 是同一含义
+/// 的第二个键名，先看 `x` 再看 `x_alt`）。
+#[derive(Clone, Copy)]
+pub(super) struct Fields {
+    pub(super) command: &'static str,
+    pub(super) args: &'static str,
+    pub(super) env: &'static str,
+    pub(super) cwd: &'static str,
+    pub(super) url: &'static str,
+    pub(super) url_alt: &'static str,
+    pub(super) headers: &'static str,
+    pub(super) transport: &'static str,
+    pub(super) transport_alt: &'static str,
 }
 
 /// Claude 形状：`command` 字符串 + `args` 数组。
-const CLAUDE_FIELDS: Fields = Fields {
+pub(super) const CLAUDE_FIELDS: Fields = Fields {
     command: "command",
     args: "args",
     env: "env",
+    cwd: "cwd",
     url: "url",
+    url_alt: "",
     headers: "headers",
     transport: "type",
+    transport_alt: "",
+};
+/// Kimi CLI：传输方式键叫 `transport`（`type` 也兼容）。
+pub(super) const KIMI_FIELDS: Fields = Fields {
+    transport: "transport",
+    transport_alt: "type",
+    ..CLAUDE_FIELDS
+};
+/// Antigravity CLI：远程地址必须是 `serverUrl`（文档明确不支持 `url`）。
+pub(super) const AGY_FIELDS: Fields = Fields {
+    url: "serverUrl",
+    url_alt: "url",
+    ..CLAUDE_FIELDS
 };
 /// OpenCode：`command` 是数组（首个元素是命令），环境变量键叫 `environment`。
-const OPENCODE_FIELDS: Fields = Fields {
+pub(super) const OPENCODE_FIELDS: Fields = Fields {
     command: "command",
     args: "args",
     env: "environment",
+    cwd: "cwd",
     url: "url",
+    url_alt: "",
     headers: "headers",
     transport: "type",
+    transport_alt: "",
 };
 
 /// 原生启停语义：`enabled` 缺省 true；`disabled` 缺省 false。
@@ -117,33 +143,42 @@ macro_rules! json_source {
 
 /// 新来源表。`paths()` 负责把每个来源解析成候选文件（第一个存在的生效）。
 const SOURCES: &[Source] = &[
-    json_source!(
-        "kimi_user",
-        "kimi",
-        "user",
-        Some(Toggle::Enabled),
-        false,
-        false,
-        REASON_UNVERIFIED_WRITE
-    ),
-    json_source!(
-        "kimi_local",
-        "kimi",
-        "project",
-        Some(Toggle::Enabled),
-        false,
-        false,
-        REASON_UNVERIFIED_WRITE
-    ),
-    json_source!(
-        "kimi_project",
-        "kimi",
-        "project",
-        Some(Toggle::Enabled),
-        false,
-        false,
-        REASON_SHARED_PROJECT_FILE
-    ),
+    Source {
+        id: "kimi_user",
+        engine: "kimi",
+        scope: "user",
+        format: "json",
+        servers_key: "mcpServers",
+        fields: KIMI_FIELDS,
+        command_is_array: false,
+        toggle: Some(Toggle::Enabled),
+        writable: false,
+        readonly_reason_code: REASON_UNVERIFIED_WRITE,
+    },
+    Source {
+        id: "kimi_local",
+        engine: "kimi",
+        scope: "project",
+        format: "json",
+        servers_key: "mcpServers",
+        fields: KIMI_FIELDS,
+        command_is_array: false,
+        toggle: Some(Toggle::Enabled),
+        writable: false,
+        readonly_reason_code: REASON_UNVERIFIED_WRITE,
+    },
+    Source {
+        id: "kimi_project",
+        engine: "kimi",
+        scope: "project",
+        format: "json",
+        servers_key: "mcpServers",
+        fields: KIMI_FIELDS,
+        command_is_array: false,
+        toggle: Some(Toggle::Enabled),
+        writable: false,
+        readonly_reason_code: REASON_SHARED_PROJECT_FILE,
+    },
     Source {
         id: "grok_user",
         engine: "grok",
@@ -210,24 +245,30 @@ const SOURCES: &[Source] = &[
         writable: true,
         readonly_reason_code: "",
     },
-    json_source!(
-        "agy_user",
-        "agy",
-        "user",
-        Some(Toggle::Disabled),
-        false,
-        false,
-        REASON_UNVERIFIED_WRITE
-    ),
-    json_source!(
-        "agy_project",
-        "agy",
-        "project",
-        Some(Toggle::Disabled),
-        false,
-        false,
-        REASON_UNVERIFIED_WRITE
-    ),
+    Source {
+        id: "agy_user",
+        engine: "agy",
+        scope: "user",
+        format: "json",
+        servers_key: "mcpServers",
+        fields: AGY_FIELDS,
+        command_is_array: false,
+        toggle: Some(Toggle::Disabled),
+        writable: false,
+        readonly_reason_code: REASON_UNVERIFIED_WRITE,
+    },
+    Source {
+        id: "agy_project",
+        engine: "agy",
+        scope: "project",
+        format: "json",
+        servers_key: "mcpServers",
+        fields: AGY_FIELDS,
+        command_is_array: false,
+        toggle: Some(Toggle::Disabled),
+        writable: false,
+        readonly_reason_code: REASON_UNVERIFIED_WRITE,
+    },
     json_source!(
         "qoder_user",
         "qoder",
@@ -306,18 +347,19 @@ pub(super) fn source_spec(id: &str) -> Option<SourceSpec> {
             id: SOURCE_CLAUDE_USER,
             engine: "claude",
             scope: "user",
-            writable: false,
-            readonly_reason: Some(
-                "Claude Code 未在该来源提供可验证的原生停用开关，这里只读展示；请在 Claude Code 内管理",
-            ),
+            // 启停写进 `~/.claude.json` 的 `projects[<ws>].disabledMcpServers`
+            // （TUI 的「停用（本项目）」用同一把开关，已用 `claude mcp list` 对拍），
+            // 因此需要一个工作区才能确定写入位置。
+            writable: true,
+            readonly_reason: None,
             readonly_reason_code: None,
         }),
         SOURCE_CLAUDE_LOCAL => Some(SourceSpec {
             id: SOURCE_CLAUDE_LOCAL,
             engine: "claude",
             scope: "project",
-            writable: false,
-            readonly_reason: Some("local 作用域存在用户配置里，没有按服务停用的原生开关，这里只读展示"),
+            writable: true,
+            readonly_reason: None,
             readonly_reason_code: None,
         }),
         SOURCE_CLAUDE_PROJECT => Some(SourceSpec {
@@ -363,6 +405,19 @@ pub(super) fn source_spec(id: &str) -> Option<SourceSpec> {
 
 pub(super) fn engine_of_source(id: &str) -> Option<&'static str> {
     source_spec(id).map(|spec| spec.engine)
+}
+
+/// 连接检测的目标：重新读文件拿原始条目（未脱敏，仅后端使用）。
+pub(super) fn probe_target(
+    source_id: &str,
+    name: &str,
+    workspace: Option<&str>,
+) -> Result<super::probe::ProbeTarget, super::McpError> {
+    let source = SOURCES
+        .iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| super::McpError::invalid("unknown MCP source"))?;
+    read::probe_target_for_source(source, name, workspace)
 }
 
 /// 某个引擎实际会被读取的来源文件（含尚未创建的首选路径），用于空状态

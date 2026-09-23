@@ -4,7 +4,12 @@
  * the page shows a local-management notice under `isWeb`.
  */
 import { invoke } from "@/lib/transport";
-import type { McpConfigEntry, McpErrorCode, McpInventory } from "./types";
+import type {
+  McpConfigEntry,
+  McpErrorCode,
+  McpInventory,
+  McpProbeResult,
+} from "./types";
 
 export class McpHubError extends Error {
   readonly code: McpErrorCode;
@@ -48,6 +53,19 @@ export const mcpApi = {
           version: entry.version,
           workspace,
         },
+      });
+    } catch (error) {
+      throw normalize(error);
+    }
+  },
+  /** 显式连接检测：后端按配置里的真实命令/地址启动或连接一次并握手。 */
+  probe: async (
+    entry: McpConfigEntry,
+    workspace: string | null,
+  ): Promise<McpProbeResult> => {
+    try {
+      return await invoke<McpProbeResult>("mcp_probe", {
+        request: { entryId: entry.id, workspace },
       });
     } catch (error) {
       throw normalize(error);

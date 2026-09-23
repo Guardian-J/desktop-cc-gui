@@ -18,11 +18,28 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod config;
+pub(crate) mod probe;
 mod runtime;
 mod sources;
 
 use config::*;
 use sources::{engine_of_source, engine_support};
+
+
+/// 连接检测的目标解析：条目 id → 真实命令/地址（未脱敏，仅供探针使用）。
+pub(crate) fn probe_target(
+    entry_id: &str,
+    workspace: Option<&str>,
+) -> Result<probe::ProbeTarget, McpError> {
+    let (source, name) = entry_id
+        .split_once(':')
+        .ok_or_else(|| McpError::invalid("invalid MCP entry id"))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(McpError::invalid("MCP server name must not be empty"));
+    }
+    config::probe_target(source, name, workspace)
+}
 
 /// 写入同一路径的串行化锁：写入前回读 + 原子替换，配合这把锁避免本应用
 /// 内部并发写互相覆盖。Claude/Codex（config）与新引擎（sources）共用一把。

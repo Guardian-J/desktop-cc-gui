@@ -13,19 +13,23 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Lock from "lucide-react/dist/esm/icons/lock";
+import Activity from "lucide-react/dist/esm/icons/activity";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Search from "lucide-react/dist/esm/icons/search";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { Switch } from "@/components/base/switch/switch";
 import { CenteredSpinner, EmptyState } from "@/components/base/empty-state";
-import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
+import { Chip } from "@/components/base/chips/chip";
+import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
 import { LocalOnlyNotice } from "@/components/application/settings/local-only-notice";
 import { useChatStore } from "@/features/chat/store";
 import { isWeb } from "@/lib/transport";
 import { cx } from "@/utils/cx";
 import { McpDetailDialog } from "./McpDetailDialog";
+import { ProbeActionButton, ProbeStatusChip } from "./probe-ui";
+import { probeable, useMcpProbeStore } from "./probe-store";
 import { engineIdFromHash, engineLabel, readonlyReasonText } from "./labels";
 import type {
   McpConfigEntry,
@@ -46,12 +50,14 @@ function ConfigRow({
   entry,
   pending,
   selected,
+  workspacePath,
   onOpen,
   onToggle,
 }: {
   entry: McpConfigEntry;
   pending: boolean;
   selected: boolean;
+  workspacePath: string | null;
   onOpen: () => void;
   onToggle: (enabled: boolean) => void;
 }) {
@@ -87,11 +93,22 @@ function ConfigRow({
             </span>
           ) : null}
         </span>
-        <span className="w-full truncate text-caption-1-regular text-text-secondary" title={meta}>
-          {entry.transport ? `${entry.transport} · ` : ""}
-          {meta}
+        <span
+          className="flex w-full items-center gap-2 text-caption-1-regular text-text-secondary"
+          title={meta}
+        >
+          <span className="min-w-0 truncate">
+            {entry.transport ? `${entry.transport} · ` : ""}
+            {meta}
+          </span>
+          <span className="ml-auto">
+            <ProbeStatusChip entry={entry} />
+          </span>
         </span>
       </button>
+      {probeable(entry) ? (
+        <ProbeActionButton entry={entry} workspacePath={workspacePath} />
+      ) : null}
       {entry.writable ? (
         <Switch
           size="sm"
@@ -119,12 +136,14 @@ export function McpConfigList({
   entries,
   pendingId,
   selectedId,
+  workspacePath,
   onOpen,
   onToggle,
 }: {
   entries: McpConfigEntry[];
   pendingId: string | null;
   selectedId: string | null;
+  workspacePath: string | null;
   onOpen: (entry: McpConfigEntry) => void;
   onToggle: (entry: McpConfigEntry, enabled: boolean) => void;
 }) {
@@ -136,6 +155,7 @@ export function McpConfigList({
           entry={entry}
           pending={pendingId === entry.id}
           selected={selectedId === entry.id}
+          workspacePath={workspacePath}
           onOpen={() => onOpen(entry)}
           onToggle={(enabled) => onToggle(entry, enabled)}
         />
@@ -283,6 +303,9 @@ export function McpSection() {
   const [selected, setSelected] = useState<McpConfigEntry | null>(null);
   const refreshAction = useActionFeedback({ spin: true });
   const [toggleError, setToggleError] = useState<string | null>(null);
+  const probeAll = useMcpProbeStore((state) => state.probeAll);
+  const probingAll = useMcpProbeStore((state) => state.runningAll);
+  const probeError = useMcpProbeStore((state) => state.error);
 
   const engines = store.inventory?.engines ?? [];
   const engine = useMemo(
@@ -301,6 +324,10 @@ export function McpSection() {
   const showConfig = kind !== "runtime";
   const noEntries = (engine?.config.entries.length ?? 0) === 0;
   const searching = query.trim().length > 0;
+  const probeableCount = useMemo(
+    () => (engine?.config.entries ?? []).filter(probeable).length,
+    [engine],
+  );
 
   const handleToggle = (entry: McpConfigEntry, enabled: boolean) => {
     setToggleError(null);
@@ -316,28 +343,31 @@ export function McpSection() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <PillTabList className="flex-wrap">
+      <div className="flex flex-wrap items-center gap-1.5">
         {engines.map((item) => (
-          <PillTab
+          <Chip
             key={item.id}
-            isSelected={engine?.id === item.id}
-            onSelect={() => {
+            selected={engine?.id === item.id}
+            title={
+              item.config.entries.length > 0
+                ? t("mcp.tabCount", { count: item.config.entries.length })
+                : engineLabel(item.id)
+            }
+            onClick={() => {
               setEngineId(item.id);
               setSelected(null);
             }}
           >
-            {engineLabel(item.id)}{" "}
-            {item.config.entries.length > 0 ? (
-              <span
-                className="ml-0.5 rounded-full bg-background-tertiary-default px-1.5 text-caption-1-regular text-text-tertiary"
-                title={t("mcp.tabCount", { count: item.config.entries.length })}
-              >
-                {item.config.entries.length}
-              </span>
-            ) : null}
-          </PillTab>
+            <span className="flex items-center gap-1">
+              <EngineIcon engine={item.id} size={12} />
+              {engineLabel(item.id)}
+              {item.config.entries.length > 0 ? (
+                <span className="text-text-tertiary">{item.config.entries.length}</span>
+              ) : null}
+            </span>
+          </Chip>
         ))}
-      </PillTabList>
+      </div>
 
       <div className="flex items-center gap-2">
         <Input
@@ -349,6 +379,18 @@ export function McpSection() {
           size="small"
           className="flex-1"
         />
+        <Button
+          variant="secondary"
+          size="small"
+          title={t("mcp.probe.hint")}
+          disabled={store.loading || probingAll || probeableCount === 0}
+          leadingIcon={Activity}
+          onClick={() =>
+            void probeAll(engine?.config.entries ?? [], activeWorkspace)
+          }
+        >
+          {t("mcp.probe.checkAll")}
+        </Button>
         <Button
           variant="secondary"
           size="small"
@@ -365,20 +407,13 @@ export function McpSection() {
 
       <div className="flex flex-wrap items-center gap-1.5">
         {(["all", "config", "runtime"] as const).map((value) => (
-          <button
+          <Chip
             key={value}
-            type="button"
-            aria-pressed={kind === value}
+            selected={kind === value}
             onClick={() => setKind(value)}
-            className={cx(
-              "rounded-full px-2 py-0.5 text-caption-1-regular transition-colors",
-              kind === value
-                ? "bg-background-tertiary-default text-text-primary"
-                : "bg-background-secondary-default text-text-secondary hover:bg-background-tertiary-default",
-            )}
           >
             {t(`mcp.filter.${value}`)}
-          </button>
+          </Chip>
         ))}
         <span className="ml-1 text-caption-1-regular text-text-tertiary">
           {t("mcp.count", {
@@ -408,6 +443,12 @@ export function McpSection() {
       {toggleError ? (
         <p role="alert" className="text-body-2-regular text-text-error-primary">
           {toggleError}
+        </p>
+      ) : null}
+
+      {probeError ? (
+        <p role="alert" className="text-body-2-regular text-text-error-primary">
+          {probeError}
         </p>
       ) : null}
 
@@ -448,6 +489,7 @@ export function McpSection() {
               entries={filteredEntries}
               pendingId={store.pendingId}
               selectedId={selected?.id ?? null}
+              workspacePath={activeWorkspace}
               onOpen={setSelected}
               onToggle={handleToggle}
             />
@@ -463,6 +505,7 @@ export function McpSection() {
         <McpDetailDialog
           entry={selected}
           pending={store.pendingId === selected.id}
+          workspacePath={activeWorkspace}
           onToggle={(enabled) => handleToggle(selected, enabled)}
           onClose={() => setSelected(null)}
         />

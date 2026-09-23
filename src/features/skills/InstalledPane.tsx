@@ -21,8 +21,8 @@ import { ModalShell } from "@/components/dialogs";
 import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
 import { cx } from "@/utils/cx";
 import { skillsHubApi } from "./api";
+import { Chip } from "@/components/base/chips/chip";
 import {
-  Chip,
   FeedbackLine,
   SourceBadge,
   TargetEngines,

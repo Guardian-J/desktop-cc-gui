@@ -12,9 +12,11 @@
 //! 走 serde_json 的 preserve_order（保留键序），再经 `settings::atomic_write`
 //! 原子替换。所有写入先做内容哈希比对，外部修改后拒绝覆盖。
 
+use super::probe::ProbeTarget;
 use super::sources::{
-    source_spec, SourceSpec, SOURCE_CLAUDE_LOCAL, SOURCE_CLAUDE_PROJECT, SOURCE_CLAUDE_USER,
-    SOURCE_CODEX_PROJECT, SOURCE_CODEX_USER,
+    probe_target_from_json, probe_target_from_toml, source_spec, SourceSpec, CLAUDE_FIELDS,
+    SOURCE_CLAUDE_LOCAL, SOURCE_CLAUDE_PROJECT, SOURCE_CLAUDE_USER, SOURCE_CODEX_PROJECT,
+    SOURCE_CODEX_USER, REASON_NEEDS_WORKSPACE,
 };
 use super::{parse_json, McpConfigEntry, McpConfigSection, McpError, McpSourceError, WRITE_LOCK};
 use serde_json::{Map, Value};
@@ -106,6 +108,70 @@ pub(super) fn engine_source_infos(
     }
 }
 
+/// 连接检测用：重新读配置取原始条目（未脱敏，只在本后端使用）。
+pub(super) fn probe_target(
+    source: &str,
+    name: &str,
+    workspace: Option<&str>,
+) -> Result<ProbeTarget, McpError> {
+    let missing = || McpError::not_found(format!("配置文件中不存在 MCP 服务「{name}」"));
+    match source {
+        SOURCE_CLAUDE_USER | SOURCE_CLAUDE_LOCAL => {
+            let path = claude_user_config_path();
+            let raw = read_text(&path)?;
+            let root = parse_json(&raw, &path.to_string_lossy())?;
+            let servers = if source == SOURCE_CLAUDE_USER {
+                root.get("mcpServers")
+            } else {
+                let workspace = require_workspace(workspace)?;
+                root.get("projects")
+                    .and_then(Value::as_object)
+                    .and_then(|projects| project_entry(projects, workspace))
+                    .and_then(|entry| entry.get("mcpServers"))
+            };
+            let object = servers
+                .and_then(Value::as_object)
+                .and_then(|servers| servers.get(name))
+                .and_then(Value::as_object)
+                .ok_or_else(missing)?;
+            Ok(probe_target_from_json(object, false, CLAUDE_FIELDS))
+        }
+        SOURCE_CLAUDE_PROJECT => {
+            let workspace = require_workspace(workspace)?;
+            let path = claude_project_config_path(Path::new(workspace));
+            let raw = read_text(&path)?;
+            let root = parse_json(&raw, &path.to_string_lossy())?;
+            let object = root
+                .get("mcpServers")
+                .and_then(Value::as_object)
+                .and_then(|servers| servers.get(name))
+                .and_then(Value::as_object)
+                .ok_or_else(missing)?;
+            Ok(probe_target_from_json(object, false, CLAUDE_FIELDS))
+        }
+        SOURCE_CODEX_USER | SOURCE_CODEX_PROJECT => {
+            let path = if source == SOURCE_CODEX_USER {
+                codex_user_config_path()
+            } else {
+                let workspace = require_workspace(workspace)?;
+                codex_project_config_path(Path::new(workspace))
+            };
+            let raw = read_text(&path)?;
+            let document = raw.parse::<DocumentMut>().map_err(|error| {
+                McpError::format(format!("{}: invalid TOML: {error}", path.display()))
+            })?;
+            let table = document
+                .get("mcp_servers")
+                .and_then(|item| item.as_table_like())
+                .and_then(|servers| servers.get(name))
+                .and_then(|item| item.as_table_like())
+                .ok_or_else(missing)?;
+            Ok(probe_target_from_toml(table, CLAUDE_FIELDS))
+        }
+        _ => super::sources::probe_target(source, name, workspace),
+    }
+}
+
 pub(super) fn read_config_entries(workspace: Option<&str>) -> McpConfigSection {
     let mut section = McpConfigSection {
         entries: Vec::new(),
@@ -168,7 +234,9 @@ pub(super) fn read_config_entries(workspace: Option<&str>) -> McpConfigSection {
     section
 }
 
-/// `~/.claude.json`：顶层 user 服务 + 当前工作区 local 服务。
+/// `~/.claude.json`：顶层 user 服务 + 当前工作区 local 服务。停用状态来自
+/// `projects[<workspace>].disabledMcpServers`（Claude Code TUI 的「停用（本项目）」
+/// 就是写这个键，已用 `claude mcp list` 对拍：列表里显示 ⊘ Disabled）。
 fn read_claude_json(
     path: &Path,
     source: &str,
@@ -177,26 +245,62 @@ fn read_claude_json(
     let raw = read_text(path)?;
     let version = file_hash(raw.as_bytes());
     let root = parse_json(&raw, &path.to_string_lossy())?;
-    let mut entries = parse_claude_servers(root.get("mcpServers"), path, source, &version, &[])?;
+    let project = workspace.and_then(|workspace| {
+        root.get("projects")
+            .and_then(Value::as_object)
+            .and_then(|projects| project_entry(projects, workspace))
+    });
+    let project_disabled = disabled_names(project.and_then(|entry| entry.get("disabledMcpServers")));
+    let mut entries = parse_claude_servers(
+        root.get("mcpServers"),
+        path,
+        source,
+        &version,
+        &[],
+        &project_disabled,
+        workspace.is_some(),
+    )?;
     // local 作用域：projects[<workspace>].mcpServers，只属于当前工作区。
-    if let Some(workspace) = workspace {
-        if let Some(projects) = root.get("projects").and_then(Value::as_object) {
-            if let Some(entry) = projects.get(workspace) {
-                let mut local = parse_claude_servers(
-                    entry.get("mcpServers"),
-                    path,
-                    SOURCE_CLAUDE_LOCAL,
-                    &version,
-                    &[],
-                )?;
-                entries.append(&mut local);
-            }
-        }
+    if let Some(entry) = project {
+        let mut local = parse_claude_servers(
+            entry.get("mcpServers"),
+            path,
+            SOURCE_CLAUDE_LOCAL,
+            &version,
+            &[],
+            &project_disabled,
+            true,
+        )?;
+        entries.append(&mut local);
     }
     Ok(entries)
 }
 
-/// 工作区 `.mcp.json`：project 服务，启用状态来自 `.claude/settings.local.json`。
+/// 项目键可能是规范化路径（Claude Code 用 realpath 作键）：先按原样查，
+/// 再试 canonicalize，避免符号链接路径读不到 local 配置。
+fn project_entry<'a>(projects: &'a Map<String, Value>, workspace: &str) -> Option<&'a Value> {
+    if let Some(entry) = projects.get(workspace) {
+        return Some(entry);
+    }
+    let canonical = std::fs::canonicalize(workspace).ok()?;
+    projects.get(canonical.to_string_lossy().as_ref())
+}
+
+fn disabled_names(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 工作区 `.mcp.json`：project 服务，启用状态来自 `.claude/settings.local.json`
+/// 的审批列表与 `.claude.json` 的项目停用列表。
 fn read_claude_project(workspace: &Path) -> Result<Vec<McpConfigEntry>, McpError> {
     let path = claude_project_config_path(workspace);
     let raw = read_text(&path)?;
@@ -204,21 +308,45 @@ fn read_claude_project(workspace: &Path) -> Result<Vec<McpConfigEntry>, McpError
     let root = parse_json(&raw, &path.to_string_lossy())?;
     let settings_path = claude_project_settings_path(workspace);
     let settings = read_approval_lists(&settings_path)?;
+    let disabled = read_project_disabled(&claude_user_config_path(), workspace);
     parse_claude_servers(
         root.get("mcpServers"),
         &path,
         SOURCE_CLAUDE_PROJECT,
         &version,
         &settings,
+        &disabled,
+        true,
     )
 }
 
+/// `.claude.json` 里该工作区的 `disabledMcpServers`（读不到就是空列表）。
+fn read_project_disabled(claude_json_path: &Path, workspace: &Path) -> Vec<String> {
+    let Some(workspace) = workspace.to_str() else {
+        return Vec::new();
+    };
+    let Ok(raw) = read_text(claude_json_path) else {
+        return Vec::new();
+    };
+    let Ok(root) = parse_json(&raw, &claude_json_path.to_string_lossy()) else {
+        return Vec::new();
+    };
+    root.get("projects")
+        .and_then(Value::as_object)
+        .and_then(|projects| project_entry(projects, workspace))
+        .map(|entry| disabled_names(entry.get("disabledMcpServers")))
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn parse_claude_servers(
     servers: Option<&Value>,
     path: &Path,
     source: &str,
     version: &str,
     approval: &[Value],
+    project_disabled: &[String],
+    has_workspace: bool,
 ) -> Result<Vec<McpConfigEntry>, McpError> {
     let spec = source_spec(source).ok_or_else(|| McpError::internal("unknown MCP source"))?;
     let mut entries = Vec::new();
@@ -241,20 +369,22 @@ fn parse_claude_servers(
             continue;
         };
         // 停用列表优先；未登记的服务保持 Claude Code 的项目服务默认（可用），
-        // `enableAllProjectMcpServers` 与显式启用列表都不改变这一点。
-        let enabled = if source == SOURCE_CLAUDE_PROJECT {
+        // `enableAllProjectMcpServers` 与显式启用列表都不改变这一点。项目键里的
+        // `disabledMcpServers` 对任何作用域都生效（TUI 的「停用（本项目）」）。
+        let enabled = if project_disabled.iter().any(|item| item == name) {
+            false
+        } else if source == SOURCE_CLAUDE_PROJECT {
             !listed(disabled_list, name)
         } else {
             true
         };
-        entries.push(build_entry(
-            &spec,
-            name,
-            path,
-            version,
-            enabled,
-            spec_object,
-        ));
+        let mut entry = build_entry(&spec, name, path, version, enabled, spec_object);
+        // 用户 / local 作用域的启停写按项目存的列表：没有工作区就没有写入位置。
+        if matches!(source, SOURCE_CLAUDE_USER | SOURCE_CLAUDE_LOCAL) && !has_workspace {
+            entry.writable = false;
+            entry.readonly_reason_code = Some(REASON_NEEDS_WORKSPACE.to_string());
+        }
+        entries.push(entry);
     }
     Ok(entries)
 }
@@ -532,6 +662,12 @@ pub(super) fn write_enabled(
             )?;
             reread_entry(&config_path, source, name, Some(workspace_path))
         }
+        SOURCE_CLAUDE_USER | SOURCE_CLAUDE_LOCAL => {
+            let workspace = require_workspace(workspace)?;
+            let path = claude_user_config_path();
+            set_claude_disabled_in(&path, workspace, name, enabled, expected_version)?;
+            reread_entry(&path, source, name, Some(Path::new(workspace)))
+        }
         _ => super::sources::write_enabled(source, name, enabled, expected_version, workspace),
     }
 }
@@ -547,7 +683,7 @@ fn reread_entry(
     config_path: &Path,
     source: &str,
     name: &str,
-    _workspace: Option<&Path>,
+    workspace: Option<&Path>,
 ) -> Result<McpConfigEntry, McpError> {
     let entries = if config_path
         .extension()
@@ -555,6 +691,13 @@ fn reread_entry(
         .unwrap_or(false)
     {
         read_codex_toml(config_path, source)?
+    } else if matches!(source, SOURCE_CLAUDE_USER | SOURCE_CLAUDE_LOCAL) {
+        // `.claude.json`：写入的是项目停用列表，回读 user + local 两个作用域。
+        read_claude_json(
+            config_path,
+            source,
+            workspace.and_then(|path| path.to_str()),
+        )?
     } else {
         let raw = read_text(config_path)?;
         let version = file_hash(raw.as_bytes());
@@ -579,6 +722,8 @@ fn reread_entry(
                 source,
                 &version,
                 &settings,
+                &[],
+                true,
             )?
         } else {
             Vec::new()
@@ -642,6 +787,92 @@ fn set_codex_enabled_in(
     };
     server.insert("enabled", toml_value(enabled));
     crate::settings::atomic_write(path, &document.to_string()).map_err(McpError::internal)
+}
+
+/// Claude 用户 / local 作用域的启停：写 `~/.claude.json` 里该项目的
+/// `disabledMcpServers` 列表（与 Claude Code TUI 的「停用（本项目）」同一把开关；
+/// 已用 `claude mcp list` 对拍：列表里显示 µDisable）。服务定义本身不动；
+/// 项目记录不存在时不新建（用户可能从未在该目录启动过 CLI）。
+fn set_claude_disabled_in(
+    path: &Path,
+    workspace: &str,
+    name: &str,
+    enabled: bool,
+    expected_version: &str,
+) -> Result<(), McpError> {
+    let raw = read_text(path)?;
+    let current = file_hash(raw.as_bytes());
+    if !expected_version.is_empty() && current != expected_version {
+        return Err(McpError::conflict("配置文件已被外部修改，请刷新后重试"));
+    }
+    let mut root = parse_json(&raw, &path.to_string_lossy())?;
+    let exists = root
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .map(|servers| servers.contains_key(name))
+        .unwrap_or(false)
+        || root
+            .get("projects")
+            .and_then(Value::as_object)
+            .and_then(|projects| project_entry(projects, workspace))
+            .and_then(|entry| entry.get("mcpServers"))
+            .and_then(Value::as_object)
+            .map(|servers| servers.contains_key(name))
+            .unwrap_or(false);
+    if !exists {
+        return Err(McpError::not_found(format!(
+            "配置文件中不存在 MCP 服务「{name}」"
+        )));
+    }
+    let projects = root
+        .get_mut("projects")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| McpError::not_found("配置文件中没有这个项目的记录，未做修改"))?;
+    let key = workspace_key(projects, workspace)
+        .ok_or_else(|| McpError::not_found("配置文件中没有这个项目的记录，未做修改"))?;
+    let project = projects
+        .get_mut(&key)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| McpError::format("projects 条目不是对象，未做修改"))?;
+    let mut disabled = match project.get("disabledMcpServers") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(_) => {
+            return Err(McpError::format(
+                "disabledMcpServers 不是数组，未做修改",
+            ))
+        }
+    };
+    disabled.retain(|item| item != name);
+    if !enabled {
+        disabled.push(name.to_string());
+    }
+    if disabled.is_empty() {
+        project.remove("disabledMcpServers");
+    } else {
+        project.insert(
+            "disabledMcpServers".to_string(),
+            Value::Array(disabled.into_iter().map(Value::String).collect()),
+        );
+    }
+    let mut text = serde_json::to_string_pretty(&root)
+        .map_err(|error| McpError::internal(error.to_string()))?;
+    text.push('\n');
+    crate::settings::atomic_write(path, &text).map_err(McpError::internal)
+}
+
+/// 项目键可能是规范化路径（Claude Code 用 realpath 作键）。
+fn workspace_key(projects: &Map<String, Value>, workspace: &str) -> Option<String> {
+    if projects.contains_key(workspace) {
+        return Some(workspace.to_string());
+    }
+    let canonical = std::fs::canonicalize(workspace).ok()?;
+    let key = canonical.to_string_lossy().into_owned();
+    projects.contains_key(&key).then_some(key)
 }
 
 /// Claude 项目级：服务定义留在 `.mcp.json`，启停写入
@@ -913,41 +1144,149 @@ mod tests {
     }
 
     #[test]
-    fn claude_json_lists_user_and_local_scopes_readonly() {
+    fn claude_json_scopes_share_the_project_disable_list() {
         let dir = TempDir::new("claude-json");
         let path = dir.path().join(".claude.json");
         let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_key = workspace.to_string_lossy().into_owned();
         std::fs::write(
             &path,
             format!(
-                r#"{{"mcpServers":{{"user-server":{{"command":"npx"}}}},"projects":{{"{}":{{"mcpServers":{{"local-server":{{"url":"https://x/mcp"}}}}}}}}}}"#,
-                workspace.to_string_lossy()
+                r#"{{"mcpServers":{{"user-server":{{"command":"npx"}}}},"projects":{{"{workspace_key}":{{"mcpServers":{{"local-server":{{"url":"https://x/mcp"}}}},"disabledMcpServers":["user-server"]}}}}}}"#
             ),
         )
         .unwrap();
-        let entries = read_claude_json(
-            &path,
-            SOURCE_CLAUDE_USER,
-            Some(&workspace.to_string_lossy()),
-        )
-        .unwrap();
+        let entries = read_claude_json(&path, SOURCE_CLAUDE_USER, Some(&workspace_key)).unwrap();
         let user = entries
             .iter()
             .find(|entry| entry.source == SOURCE_CLAUDE_USER)
             .unwrap();
-        assert!(!user.writable);
-        assert!(user.readonly_reason.is_some());
+        // 用户级服务被项目停用列表关掉，且现在可以就地启停。
+        assert!(!user.enabled);
+        assert!(user.writable);
         let local = entries
             .iter()
             .find(|entry| entry.source == SOURCE_CLAUDE_LOCAL)
             .unwrap();
-        assert!(!local.writable);
         assert_eq!(local.name, "local-server");
+        assert!(local.writable);
+        assert!(local.enabled);
+
+        // 无工作区：读得到但写不了（停用列表按项目存）。
+        let without = read_claude_json(&path, SOURCE_CLAUDE_USER, None).unwrap();
+        assert!(!without[0].writable);
+        assert_eq!(
+            without[0].readonly_reason_code.as_deref(),
+            Some(REASON_NEEDS_WORKSPACE)
+        );
+    }
+
+    #[test]
+    fn claude_user_toggle_writes_the_project_disable_list() {
+        // `write_enabled` 走 claude_user_config_path()：把 CLAUDE_CONFIG_DIR 指到
+        // 临时目录，既不碰真实 ~/.claude.json，也覆盖派发 + 写入 + 回读整条链。
+        let _guard = crate::paths::HOME_ENV_LOCK.lock();
+        let dir = TempDir::new("claude-toggle");
+        let path = dir.path().join(".claude.json");
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_key = workspace.to_string_lossy().into_owned();
+        let original = format!(
+            "{{\n  \"mcpServers\": {{\n    \"alpha\": {{ \"command\": \"npx\" }}\n  }},\n  \"projects\": {{\n    \"{workspace_key}\": {{}}\n  }}\n}}\n"
+        );
+        std::fs::write(&path, &original).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", dir.path());
+
+        // 形如 Claude Code TUI 的「停用（本项目）」：写项目键里的 disabledMcpServers。
+        let entry = write_enabled(
+            "claude_user:alpha",
+            false,
+            &file_hash(original.as_bytes()),
+            Some(&workspace_key),
+        )
+        .unwrap();
+        assert!(!entry.enabled);
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["projects"][&workspace_key]["disabledMcpServers"],
+            serde_json::json!(["alpha"])
+        );
+        // 服务定义本身不动：不往条目里塞 enabled 字段。
+        assert!(written["mcpServers"]["alpha"]["command"] == "npx");
+        assert!(written["mcpServers"]["alpha"].get("enabled").is_none());
+
+        // 重新启用：名字从列表里消失（空列表整键删除）。
+        let entry = write_enabled(
+            "claude_user:alpha",
+            true,
+            &file_hash(&std::fs::read(&path).unwrap()),
+            Some(&workspace_key),
+        )
+        .unwrap();
+        assert!(entry.enabled);
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            written["projects"][&workspace_key]
+                .get("disabledMcpServers")
+                .is_none(),
+            "empty list is dropped"
+        );
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+    }
+
+    #[test]
+    fn claude_user_toggle_needs_a_workspace_and_a_known_server() {
+        let _guard = crate::paths::HOME_ENV_LOCK.lock();
+        let dir = TempDir::new("claude-toggle-guard");
+        let path = dir.path().join(".claude.json");
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_key = workspace.to_string_lossy().into_owned();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"alpha":{"command":"npx"}},"projects":{}}"#,
+        )
+        .unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", dir.path());
+
+        // 没有工作区：停用列表按项目存，没有写入位置。
+        let error = write_enabled("claude_user:alpha", false, "", None).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        // 项目记录不存在：不新建，也不写。
+        let error =
+            write_enabled("claude_user:alpha", false, "", Some(&workspace_key)).unwrap_err();
+        assert_eq!(error.code, "not_found");
+
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"mcpServers":{{"alpha":{{"command":"npx"}}}},"projects":{{"{workspace_key}":{{}}}}}}"#
+            ),
+        )
+        .unwrap();
+        // 服务不存在：拒绝。
+        let error = write_enabled(
+            "claude_user:ghost",
+            false,
+            &file_hash(&std::fs::read(&path).unwrap()),
+            Some(&workspace_key),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "not_found");
+        // 版本冲突：拒绝覆盖外部改动，文件保持原样。
+        let error =
+            write_enabled("claude_user:alpha", false, "stale", Some(&workspace_key)).unwrap_err();
+        assert_eq!(error.code, "conflict");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("alpha"));
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
     }
 
     #[test]
     fn write_enabled_rejects_readonly_and_unknown_sources() {
-        let error = write_enabled("claude_user:alpha", true, "", None).unwrap_err();
+        let error = write_enabled("kimi_user:alpha", true, "", None).unwrap_err();
         assert_eq!(error.code, "readonly");
         let error = write_enabled("bogus:alpha", true, "", None).unwrap_err();
         assert_eq!(error.code, "invalid_input");

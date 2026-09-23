@@ -138,3 +138,23 @@ export type McpErrorCode =
   | "permission"
   | "invalid_input"
   | "internal";
+
+/** 「本应用检测」的连接结果：与 CLI 会话上报的运行时状态分开表达。 */
+export type McpProbeStatus = "connected" | "needs_auth" | "failed" | "unsupported";
+
+export interface McpProbeResult {
+  status: McpProbeStatus;
+  message: string | null;
+  tools: string[];
+  serverName: string | null;
+  protocolVersion: string | null;
+  elapsedMs: number;
+}
+
+/** 一次检测的展示状态：结果 + 采集时间 + 对应的配置版本。 */
+export interface McpProbeState {
+  result: McpProbeResult;
+  checkedAt: number;
+  /** 配置内容的哈希；外部改了配置就把旧结果当过期丢掉。 */
+  version: string;
+}
