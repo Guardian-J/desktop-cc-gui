@@ -6,7 +6,7 @@ import {
   sessionKey,
   type ActiveSession,
 } from "./persistence";
-import { moveStreamingFlag } from "./stream";
+import { moveRetryingFlag, moveStreamingFlag } from "./stream";
 import { emitSessionActivated } from "@/features/plugins/runtime/events";
 import { getConversationModeState } from "@/features/plugins/conversation/state";
 import type { ChatStore } from "./types";
@@ -314,8 +314,8 @@ export function createTabActions(
           openTabs,
           active: nextActive,
           bySession,
-          drafts,
           streamingByKey: moveStreamingFlag(s.streamingByKey, oldKey, newKey),
+          retryingByKey: moveRetryingFlag(s.retryingByKey, oldKey, newKey),
         };
       });
       if (retargets) emitSessionActivated(engine, null);

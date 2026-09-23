@@ -32,6 +32,7 @@ function ThreadItem({
   pinned = false,
   isSelected = false,
   streaming = false,
+  retrying = false,
   unseen = false,
   isDraft = false,
   tabIndex,
@@ -74,7 +75,10 @@ function ThreadItem({
         )}
         {streaming ? (
           <span
-            className="sidebar-thread-status sidebar-thread-status-processing"
+            className={cx(
+              "sidebar-thread-status sidebar-thread-status-processing",
+              retrying && "sidebar-thread-status-retrying",
+            )}
             role="status"
             aria-label={t("chat.sessionRunning")}
             title={t("chat.sessionRunning")}
