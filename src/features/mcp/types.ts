@@ -4,14 +4,54 @@
  * "connected in a session" must never be collapsed into one state.
  */
 
-export type McpEngineId = "claude" | "codex";
+export type McpEngineId =
+  | "claude"
+  | "codex"
+  | "kimi"
+  | "grok"
+  | "omp"
+  | "opencode"
+  | "agy"
+  | "qoder"
+  | "qoder-cn"
+  | "dsh"
+  | "pi";
 
+/** Backend source ids; the UI only renders them (`mcp.source.<id>`). */
 export type McpConfigSource =
   | "claude_user"
   | "claude_local"
   | "claude_project"
   | "codex_user"
-  | "codex_project";
+  | "codex_project"
+  | "kimi_user"
+  | "kimi_local"
+  | "kimi_project"
+  | "grok_user"
+  | "grok_project"
+  | "omp_user"
+  | "omp_project"
+  | "opencode_user"
+  | "opencode_project"
+  | "agy_user"
+  | "agy_project"
+  | "qoder_user"
+  | "qoder_local"
+  | "qoder_project"
+  | "qoder_cn_user"
+  | "qoder_cn_local"
+  | "qoder_cn_project"
+  | "dsh_profile";
+
+/** native（原生支持）/ plugin（由插件提供）/ none（不内置 MCP）。 */
+export type McpEngineSupport = "native" | "plugin" | "none";
+
+/** A file this page reads for the engine, whether or not it exists yet. */
+export interface McpSourceInfo {
+  source: McpConfigSource;
+  path: string;
+  exists: boolean;
+}
 
 export interface McpConfigEntry {
   /** Backend-generated id (`source:name`); the UI only echoes it back. */
@@ -21,7 +61,7 @@ export interface McpConfigEntry {
   source: McpConfigSource;
   scope: "user" | "project";
   path: string;
-  format: "json" | "toml";
+  format: "json" | "toml" | "yaml";
   enabled: boolean;
   transport: string | null;
   command: string | null;
@@ -32,6 +72,9 @@ export interface McpConfigEntry {
   headerKeys: string[];
   writable: boolean;
   readonlyReason: string | null;
+  /** Localizable reason code (`mcp.readonlyReason.<code>`); absent on older
+   *  sources that still ship a literal reason string. */
+  readonlyReasonCode?: string | null;
   /** Content hash at read time; a mismatch on write means an external edit. */
   version: string;
 }
@@ -75,6 +118,9 @@ export interface McpRuntimeSection {
 export interface McpEngineInventory {
   id: McpEngineId;
   available: boolean;
+  support: McpEngineSupport;
+  /** Sources this page reads (missing files included). */
+  sources: McpSourceInfo[];
   config: McpConfigSection;
   runtime: McpRuntimeSection;
 }

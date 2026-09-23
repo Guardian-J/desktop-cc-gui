@@ -36,6 +36,7 @@ import { rememberContextWindow, resolveContextMax } from "../context-window-memo
 import { useWorkspaceUIHooks, workspaceAllowedEngines } from "../workspace-ui-bridge";
 import { ConversationModePane, ConversationModePicker } from "@/features/plugins/conversation/ConversationModeHost";
 import { useConversationMode } from "@/features/plugins/conversation/use-conversation-mode";
+import { McpCommandPanel } from "@/features/mcp/McpCommandPanel";
 
 
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -501,6 +502,9 @@ export const ChatConversation = memo(function ChatConversation({
         onBranchSelect={handleBranchSelect}
         startNewChat={startNewChat}
       />
+
+      {/* `/mcp`：当前会话引擎的 MCP 清单（与设置页共享同一份数据）。 */}
+      <McpCommandPanel />
     </>
   );
 });

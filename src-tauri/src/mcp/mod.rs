@@ -19,8 +19,14 @@ use std::sync::Arc;
 
 mod config;
 mod runtime;
+mod sources;
 
 use config::*;
+use sources::{engine_of_source, engine_support};
+
+/// 写入同一路径的串行化锁：写入前回读 + 原子替换，配合这把锁避免本应用
+/// 内部并发写互相覆盖。Claude/Codex（config）与新引擎（sources）共用一把。
+pub(super) static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 // `runtime` is called from the engine event pipeline (register/record/end),
 // so its (pub(crate)) items must stay re-exported at crate scope.
 pub(crate) use runtime::*;
@@ -88,6 +94,9 @@ pub(crate) struct McpConfigEntry {
     pub(crate) header_keys: Vec<String>,
     pub(crate) writable: bool,
     pub(crate) readonly_reason: Option<String>,
+    /// 只读原因码（UI 按 `mcp.readonlyReason.<code>` 本地化）；旧来源为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) readonly_reason_code: Option<String>,
     /// 读取时的文件内容哈希；写入时回读比对，不一致即冲突。
     pub(crate) version: String,
 }
@@ -98,6 +107,16 @@ pub(crate) struct McpSourceError {
     pub(crate) source: String,
     pub(crate) path: String,
     pub(crate) message: String,
+}
+
+/// 一个被读取的来源文件：即使尚未创建也会列出，让空状态能说明本页看了
+/// 哪些位置。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpSourceInfo {
+    pub(crate) source: String,
+    pub(crate) path: String,
+    pub(crate) exists: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,6 +155,10 @@ pub(crate) struct McpRuntimeSection {
 pub(crate) struct McpEngineInventory {
     pub(crate) id: String,
     pub(crate) available: bool,
+    /// native（原生支持）/ plugin（由插件提供）/ none（不内置 MCP）。
+    pub(crate) support: String,
+    /// 该引擎会被读取的来源文件（未创建的也列出）。
+    pub(crate) sources: Vec<McpSourceInfo>,
     pub(crate) config: McpConfigSection,
     pub(crate) runtime: McpRuntimeSection,
 }
@@ -157,7 +180,8 @@ pub(crate) struct McpSetEnabledRequest {
     pub(crate) workspace: Option<String>,
 }
 
-/// 配置清单：Claude / Codex 各自聚合配置条目、来源级错误与运行时状态。
+/// 配置清单：每个引擎都有独立分区；运行时可查询的引擎给快照，其余显式
+/// 标注「当前构建无法查询」，不假装没有服务。
 #[tauri::command]
 pub(crate) async fn mcp_inventory(
     db: tauri::State<'_, Arc<crate::db::Db>>,
@@ -174,20 +198,11 @@ pub(crate) async fn mcp_inventory(
             .map(|engine| engine.available)
             .unwrap_or(false)
     };
-    let config = read_config_entries(workspace.as_deref());
+    let mut config = read_config_entries(workspace.as_deref());
+    // 其余引擎的声明式来源（Kimi / Grok / OMP / OpenCode / Antigravity /
+    // Qoder / dsh）追加到同一份清单，按 engine 过滤后分给各自的 tab。
+    sources::append_entries(&mut config, workspace.as_deref());
     let collected_at = now_ms();
-
-    let claude_runtime = runtime::claude_section(workspace.as_deref());
-    let codex_runtime = McpRuntimeSection {
-        // Localized by the UI; `unsupported` means "this build cannot query
-        // it", and no CLI/MCP process is ever started just to list servers.
-        status: "unsupported".to_string(),
-        reason: None,
-        workspace: None,
-        session_id: None,
-        collected_at: None,
-        entries: Vec::new(),
-    };
 
     let by_engine = |engine: &str, runtime: McpRuntimeSection| {
         let mut section = McpConfigSection {
@@ -200,7 +215,7 @@ pub(crate) async fn mcp_inventory(
             errors: config
                 .errors
                 .iter()
-                .filter(|error| error.source.starts_with(engine))
+                .filter(|error| engine_of_source(&error.source) == Some(engine))
                 .cloned()
                 .collect(),
         };
@@ -210,19 +225,44 @@ pub(crate) async fn mcp_inventory(
                 .cmp(&b.source)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
+        let mut sources = crate::mcp::config::engine_source_infos(engine, workspace.as_deref());
+        sources.extend(sources::engine_source_infos(engine, workspace.as_deref()));
         McpEngineInventory {
             id: engine.to_string(),
             available: available(engine),
+            support: engine_support(engine).to_string(),
+            sources,
             config: section,
             runtime,
         }
     };
 
+    let engines = crate::config::ENGINES
+        .iter()
+        .map(|engine| {
+            // 目前只有 Claude 的会话会广播 MCP 快照；其余引擎保留
+            // 「不支持查询」的显式状态。
+            let runtime = if *engine == "claude" {
+                runtime::claude_section(workspace.as_deref())
+            } else {
+                McpRuntimeSection {
+                    // Localized by the UI; `unsupported` means "this build cannot
+                    // query it", and no CLI/MCP process is ever started just to
+                    // list servers.
+                    status: "unsupported".to_string(),
+                    reason: None,
+                    workspace: None,
+                    session_id: None,
+                    collected_at: None,
+                    entries: Vec::new(),
+                }
+            };
+            by_engine(engine, runtime)
+        })
+        .collect();
+
     Ok(McpInventory {
-        engines: vec![
-            by_engine("claude", claude_runtime),
-            by_engine("codex", codex_runtime),
-        ],
+        engines,
         collected_at,
     })
 }

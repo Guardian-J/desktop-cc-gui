@@ -6,6 +6,7 @@ import { mentionToken } from "@/components/application/ai-chat/file-tags";
 import { pickFiles } from "@/lib/platform";
 import { useChatStore, type ActiveSession } from "../store";
 import { matchAppCommand } from "@/components/application/ai-chat/app-commands";
+import { useMcpPanel } from "@/features/mcp/panel";
 import { recordPrompt } from "../prompt-history";
 import { IMAGE_EXTENSIONS } from "./use-composer-images";
 
@@ -58,9 +59,10 @@ export function useComposerActions({
       recordPrompt(value);
       setDraft(sessionKey, "");
       clearImages();
-      // App-level commands ("/new", "/compact") never reach the engine —
-      // headless/protocol launches can't interpret them. A user-defined
-      // catalog command of the same name takes precedence (matchAppCommand).
+      // App-level commands ("/new", "/compact", "/mcp") never reach the
+      // engine — headless/protocol launches can't interpret them. A
+      // user-defined catalog command of the same name takes precedence
+      // (matchAppCommand).
       if (images.length === 0) {
         const command = matchAppCommand(value, active.workspacePath);
         if (command === "new") {
@@ -69,6 +71,10 @@ export function useComposerActions({
         }
         if (command === "compact" && active.sessionId && !streaming) {
           void compactContext();
+          return;
+        }
+        if (command === "mcp") {
+          useMcpPanel.getState().openPanel();
           return;
         }
       }

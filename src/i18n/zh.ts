@@ -275,6 +275,7 @@ export const zh = {
     slashAppNew: "新建会话(ccgui 内置)",
     slashAppClear: "清空上下文并新建会话(ccgui 内置)",
     slashAppCompact: "压缩当前会话上下文(ccgui 内置)",
+    slashAppMcp: "查看当前 CLI 的 MCP 服务",
     refreshUsage: "刷新用量",
     refreshUsageTooltip: "重新获取当前会话最新上下文占用",
     refreshing: "刷新中…",
@@ -1606,10 +1607,31 @@ export const zh = {
     disabled: "配置已停用",
     builtin: "内置",
     readonly: "只读",
+    readonlyReason: {
+      unverified_write:
+        "该来源的启停开关还未在本机真实 CLI 上验证，这里只读展示；可在详情里打开配置文件手动修改",
+      shared_project_file:
+        "共享的项目 .mcp.json：各 CLI 的生效规则不同（这里按该文件自身的字段展示），只读",
+      grok_project_toggle:
+        "Grok 的项目级启停还要同步改用户级 disabled_mcp_servers，为避免只改一半，这里只读",
+      dsh_plugin:
+        "dsh 的 MCP 由插件提供（每台服务一个 dsh-mcp-client 实例），请在 profile 的 cordis 配置里增删",
+      jsonc_readonly:
+        "该文件是 JSONC（带注释）：写入会丢掉注释，这里只读；请在编辑器里改",
+    },
+    support: {
+      none: "{{name}} 未内置 MCP：这里不伪造来源。它仍可通过扩展机制接入 MCP。",
+      plugin: "{{name}} 的 MCP 由插件提供：下面列出 profile 里声明的 MCP 插件实例。",
+    },
+    sources: {
+      title: "本页读取这些文件",
+      missing: "（尚未创建）",
+    },
     transportUnknown: "未声明传输方式",
     notInstalled: "该 CLI 未安装：配置仍可查看，新会话安装后按配置生效。",
     desktopOnly: "远程网页不支持本机 MCP 配置的读取与写入；请在桌面应用里管理。",
     count: "配置 {{config}} 项 · 运行时 {{runtime}} 项",
+    tabCount: "{{count}} 项配置",
     filter: {
       all: "全部",
       config: "配置",
@@ -1621,6 +1643,24 @@ export const zh = {
       claude_project: "项目 .mcp.json",
       codex_user: "用户配置",
       codex_project: "项目配置",
+      kimi_user: "用户 mcp.json",
+      kimi_local: "工作区 .kimi-code/mcp.json",
+      kimi_project: "项目 .mcp.json（共享）",
+      grok_user: "用户 config.toml",
+      grok_project: "项目 .grok/config.toml",
+      omp_user: "用户 mcp.json",
+      omp_project: "项目 .omp/mcp.json",
+      opencode_user: "用户 opencode.json",
+      opencode_project: "项目 opencode.json",
+      agy_user: "用户 mcp_config.json",
+      agy_project: "工作区 .agents/mcp_config.json",
+      qoder_user: "用户 settings.json",
+      qoder_local: "工作区 settings.local.json",
+      qoder_project: "项目 .mcp.json（共享）",
+      qoder_cn_user: "用户 settings.json",
+      qoder_cn_local: "工作区 settings.local.json",
+      qoder_cn_project: "项目 .mcp.json（共享）",
+      dsh_profile: "Profile 插件配置",
     },
     scope: {
       user: "用户级",
@@ -1661,7 +1701,13 @@ export const zh = {
       env: "环境变量名",
       headers: "请求头名",
       path: "配置文件",
+      reveal: "打开位置",
       restartHint: "改动对新会话生效；本应用不会重启或停止你正在运行的会话。",
+    },
+    command: {
+      title: "MCP",
+      heading: "MCP 服务 · {{name}}",
+      manage: "在设置中管理",
     },
   },
 

@@ -203,6 +203,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.40 | 2026-09-23 | MCP 覆盖全部已接入 CLI：新增 Kimi / Grok / OMP / OpenCode / Antigravity / Qoder（含 CN）/ dsh 来源，PI 显式标注不内置 MCP；grok、opencode 开放启停（本机 CLI 验证过语义），其余来源只读并给可本地化的原因码；清单为空时列出本页读取的来源文件，页签支持引擎深链；输入框 `/mcp`（选择器点击或提交）弹出当前引擎的 MCP 面板，与设置页共用同一份数据；§3 补两条规则、§7 登记面板刷新 |
 | v0.39 | 2026-09-23 | 终端路径链接改为修饰键点击才唤起文件管理器：macOS `⌥`+点击、Windows/Linux `Ctrl`+点击，普通单击不再直接触发；macOS 同步关闭 xterm 的 `altClickMovesCursor` 让出该手势，Windows/Linux 保留；§3 补充规则 |
 | v0.38 | 2026-09-23 | Skills 发现页可看详情：行主体点开弹窗，按需回仓库读 `SKILL.md`（描述 + 正文 + 安装），读不到时说人话并给仓库入口；skills.sh 的 id 与仓库目录名按「同名 / 去仓库前缀 / `:`→`-`」对齐，安装与详情同一套规则（修掉 vercel-labs 这类条目的 `SKILL.md not found`）；§3 补充规则 |
 | v0.37 | 2026-09-23 | Skills 行内不再挂「纳管」按钮：本地技能的纳管入口只在详情面板（勾选「同步到」的引擎同样会触发纳管），行内只剩引擎同步态与可选的「更新」；§3 补充规则 |

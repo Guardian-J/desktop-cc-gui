@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   McpConfigEntry,
+  McpEngineInventory,
   McpInventory,
   McpRuntimeSection,
 } from "./types";
@@ -27,6 +28,7 @@ vi.mock("@/lib/transport", () => ({ isWeb: false }));
 
 import "@/lib/i18n";
 import { useChatStore } from "@/features/chat/store";
+import { engineLabel } from "./labels";
 import { McpSection } from "./McpSection";
 
 declare global {
@@ -95,18 +97,33 @@ function noSession(): McpRuntimeSection {
   };
 }
 
+/** One engine partition; defaults to a plain native engine with no config. */
+function engine(
+  id: McpEngineInventory["id"],
+  overrides: Partial<McpEngineInventory> = {},
+): McpEngineInventory {
+  return {
+    id,
+    available: true,
+    support: "native",
+    sources: [],
+    config: { entries: [], errors: [] },
+    runtime: noSession(),
+    ...overrides,
+  };
+}
+
 function payload(overrides: Partial<McpInventory> = {}): McpInventory {
   return {
     engines: [
-      {
-        id: "claude",
-        available: true,
+      engine("claude", {
         config: { entries: [claudeUser(), claudeProject()], errors: [] },
-        runtime: noSession(),
-      },
-      {
-        id: "codex",
+      }),
+      engine("codex", {
         available: false,
+        sources: [
+          { source: "codex_user", path: "/home/u/.codex/config.toml", exists: true },
+        ],
         config: {
           entries: [
             {
@@ -119,6 +136,7 @@ function payload(overrides: Partial<McpInventory> = {}): McpInventory {
               format: "toml",
               enabled: true,
               writable: true,
+              readonlyReason: null,
             },
           ],
           errors: [],
@@ -131,7 +149,22 @@ function payload(overrides: Partial<McpInventory> = {}): McpInventory {
           collectedAt: null,
           entries: [],
         },
-      },
+      }),
+      engine("kimi", {
+        sources: [
+          {
+            source: "kimi_user",
+            path: "/home/u/.kimi-code/mcp.json",
+            exists: false,
+          },
+          {
+            source: "kimi_local",
+            path: "/ws/.kimi-code/mcp.json",
+            exists: false,
+          },
+        ],
+      }),
+      engine("pi", { available: false, support: "none" }),
     ],
     collectedAt: 1,
     ...overrides,
@@ -156,6 +189,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   useChatStore.setState({ active: null });
+  window.location.hash = "";
 });
 
 async function renderSection() {
@@ -169,6 +203,15 @@ function buttonExact(text: string): HTMLButtonElement {
     (item) => item.textContent?.trim() === text,
   );
   if (!button) throw new Error(`button not found: ${text}`);
+  return button;
+}
+
+/** Engine pill: label (+ optional count badge) inside an aria-pressed tab. */
+function engineTab(label: string): HTMLButtonElement {
+  const button = [
+    ...document.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
+  ].find((item) => (item.textContent ?? "").trim().startsWith(label));
+  if (!button) throw new Error(`engine tab not found: ${label}`);
   return button;
 }
 
@@ -191,7 +234,7 @@ describe("McpSection", () => {
   it("switches engines and shows the not-installed notice for Codex", async () => {
     await renderSection();
     await act(async () => {
-      buttonExact("Codex CLI").click();
+      engineTab("Codex CLI").click();
     });
     expect(document.body.textContent).toContain("gamma");
     expect(document.body.textContent).not.toContain("alpha");
@@ -227,9 +270,7 @@ describe("McpSection", () => {
     api.inventory.mockResolvedValue(
       payload({
         engines: [
-          {
-            id: "claude",
-            available: true,
+          engine("claude", {
             config: {
               entries: [],
               errors: [
@@ -240,8 +281,7 @@ describe("McpSection", () => {
                 },
               ],
             },
-            runtime: noSession(),
-          },
+          }),
           payload().engines[1],
         ],
       }),
@@ -250,6 +290,92 @@ describe("McpSection", () => {
     expect(document.body.textContent).toContain("invalid JSON");
     expect(document.body.textContent).toContain("/ws/.mcp.json");
     expect(document.body.textContent).toContain("当前引擎没有可展示的 MCP 配置");
+  });
+
+  it("renders a tab per engine, including ones without MCP", async () => {
+    await renderSection();
+    for (const label of ["Claude Code", "Codex CLI", "Kimi CLI", "PI CLI"]) {
+      expect(engineTab(label)).toBeTruthy();
+    }
+    await act(async () => {
+      engineTab("PI CLI").click();
+    });
+    expect(document.body.textContent).toContain("PI CLI 未内置 MCP");
+    // No config inventory is faked for an engine that has no MCP at all.
+    expect(document.body.textContent).not.toContain("配置清单");
+  });
+
+  it("covers every engine the backend drives (mirrors config::ENGINES)", async () => {
+    const all = [
+      "claude",
+      "kimi",
+      "grok",
+      "codex",
+      "pi",
+      "omp",
+      "dsh",
+      "agy",
+      "opencode",
+      "qoder",
+      "qoder-cn",
+    ] as const;
+    api.inventory.mockResolvedValue(payload({
+      engines: all.map((id) => engine(id, { support: id === "pi" ? "none" : "native" })),
+    }));
+    await renderSection();
+    const labels = all.map((id) => engineLabel(id));
+    // 每个引擎都有页签与品牌名（后端 ENGINES → CLI_DISPLAY_NAMES 无缺口）。
+    expect(labels).toHaveLength(11);
+    expect(new Set(labels).size).toBe(11);
+    for (const label of labels) {
+      expect(engineTab(label)).toBeTruthy();
+    }
+  });
+
+  it("lists the source files it reads when an engine has no entries yet", async () => {
+    await renderSection();
+    await act(async () => {
+      engineTab("Kimi CLI").click();
+    });
+    expect(document.body.textContent).toContain("本页读取这些文件");
+    expect(document.body.textContent).toContain("/home/u/.kimi-code/mcp.json");
+    expect(document.body.textContent).toContain("/ws/.kimi-code/mcp.json");
+    expect(document.body.textContent).toContain("（尚未创建）");
+  });
+
+  it("localizes the read-only reason code and deep links the engine tab", async () => {
+    api.inventory.mockResolvedValue(
+      payload({
+        engines: [
+          payload().engines[0],
+          engine("kimi", {
+            config: {
+              entries: [
+                {
+                  ...claudeProject(),
+                  id: "kimi_user:alpha",
+                  engine: "kimi",
+                  source: "kimi_user",
+                  path: "/home/u/.kimi-code/mcp.json",
+                  writable: false,
+                  readonlyReason: null,
+                  readonlyReasonCode: "unverified_write",
+                },
+              ],
+              errors: [],
+            },
+          }),
+        ],
+      }),
+    );
+    window.location.hash = "#/settings?page=mcp&engine=kimi";
+    await renderSection();
+    // The deep link selected Kimi without a click.
+    expect(engineTab("Kimi CLI").getAttribute("aria-pressed")).toBe("true");
+    // The lock title carries the localized reason, not the raw code.
+    expect(document.body.textContent).not.toContain("unverified_write");
+    const lock = document.querySelector<HTMLElement>('[title*="还未在本机真实 CLI 上验证"]');
+    expect(lock).toBeTruthy();
   });
 
   it("searches runtime entries too, with a distinct no-match message", async () => {

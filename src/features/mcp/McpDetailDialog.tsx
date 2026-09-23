@@ -1,11 +1,16 @@
 /**
  * One MCP config entry in detail: where it lives, how it connects, the
  * (already redacted) endpoint and variable *names* (never values) and the
- * enable switch for writable sources. Read-only sources state why.
+ * enable switch for writable sources. Read-only sources state why and can
+ * still reveal their config file.
  */
 import { useTranslation } from "react-i18next";
+import { Button } from "@/components/base/buttons/button";
 import { Switch } from "@/components/base/switch/switch";
 import { ModalShell } from "@/components/dialogs";
+import { ipc } from "@/lib/ipc";
+import { isWeb } from "@/lib/transport";
+import { readonlyReasonText } from "./labels";
 import type { McpConfigEntry } from "./types";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -31,6 +36,7 @@ export function McpDetailDialog({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const readonlyReason = readonlyReasonText(t, entry);
   return (
     <ModalShell
       onClose={onClose}
@@ -38,10 +44,19 @@ export function McpDetailDialog({
       className="w-[480px] max-w-[94vw]"
       dialogClassName="flex flex-col gap-3"
     >
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="truncate text-title-3-medium text-text-primary" title={entry.name}>
+      <div className="flex items-center gap-2">
+        <h3 className="min-w-0 flex-1 truncate text-title-3-medium text-text-primary" title={entry.name}>
           {entry.name}
         </h3>
+        {!isWeb ? (
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => void ipc.revealInFileManager(entry.path)}
+          >
+            {t("mcp.detail.reveal")}
+          </Button>
+        ) : null}
         {entry.writable ? (
           <Switch
             size="sm"
@@ -91,9 +106,9 @@ export function McpDetailDialog({
           <span className="break-all font-mono text-caption-1-regular">{entry.path}</span>
         </Row>
       </div>
-      {!entry.writable && entry.readonlyReason ? (
+      {!entry.writable ? (
         <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
-          {entry.readonlyReason}
+          {readonlyReason}
         </p>
       ) : null}
       <p className="text-caption-1-regular text-text-tertiary">{t("mcp.detail.restartHint")}</p>

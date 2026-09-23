@@ -12,21 +12,15 @@
 //! 走 serde_json 的 preserve_order（保留键序），再经 `settings::atomic_write`
 //! 原子替换。所有写入先做内容哈希比对，外部修改后拒绝覆盖。
 
-use super::{parse_json, McpConfigEntry, McpConfigSection, McpError, McpSourceError};
+use super::sources::{
+    source_spec, SourceSpec, SOURCE_CLAUDE_LOCAL, SOURCE_CLAUDE_PROJECT, SOURCE_CLAUDE_USER,
+    SOURCE_CODEX_PROJECT, SOURCE_CODEX_USER,
+};
+use super::{parse_json, McpConfigEntry, McpConfigSection, McpError, McpSourceError, WRITE_LOCK};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use toml_edit::{value as toml_value, DocumentMut};
-
-/// 写入同一路径的串行化锁：写入前回读 + 原子替换，配合这把锁避免本应用
-/// 内部并发写互相覆盖。
-static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
-const SOURCE_CLAUDE_USER: &str = "claude_user";
-const SOURCE_CLAUDE_LOCAL: &str = "claude_local";
-const SOURCE_CLAUDE_PROJECT: &str = "claude_project";
-const SOURCE_CODEX_USER: &str = "codex_user";
-const SOURCE_CODEX_PROJECT: &str = "codex_project";
 
 pub(super) fn file_hash(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -38,7 +32,7 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, McpError> {
     std::fs::read(path).map_err(|error| McpError::from_io(error, path))
 }
 
-fn read_text(path: &Path) -> Result<String, McpError> {
+pub(super) fn read_text(path: &Path) -> Result<String, McpError> {
     let bytes = read_bytes(path)?;
     String::from_utf8(bytes)
         .map_err(|error| McpError::format(format!("{}: invalid UTF-8: {error}", path.display())))
@@ -71,45 +65,46 @@ fn codex_project_config_path(workspace: &Path) -> PathBuf {
     workspace.join(".codex").join("config.toml")
 }
 
-/// 来源定义：把条目标识前缀、引擎、作用域和只读原因收在一处。
-struct SourceSpec {
-    id: String,
-    engine: &'static str,
-    scope: &'static str,
-    writable: bool,
-    readonly_reason: Option<&'static str>,
-}
-
-fn source_spec(id: &str) -> Option<SourceSpec> {
-    let (engine, scope, writable, reason): (&'static str, &'static str, bool, Option<&'static str>) =
-        match id {
-            SOURCE_CLAUDE_USER => (
-                "claude",
-                "user",
-                false,
-                Some("Claude Code 未在该来源提供可验证的原生停用开关，这里只读展示；请在 Claude Code 内管理"),
-            ),
-            SOURCE_CLAUDE_LOCAL => (
-                "claude",
-                "project",
-                false,
-                Some("local 作用域存在用户配置里，没有按服务停用的原生开关，这里只读展示"),
-            ),
-            SOURCE_CLAUDE_PROJECT => ("claude", "project", true, None),
-            SOURCE_CODEX_USER => ("codex", "user", true, None),
-            SOURCE_CODEX_PROJECT => ("codex", "project", true, None),
-            _ => return None,
-        };
-    Some(SourceSpec {
-        id: id.to_string(),
-        engine,
-        scope,
-        writable,
-        readonly_reason: reason,
-    })
-}
-
 // ===== 读取与解析 =====
+
+/// Claude / Codex 的来源文件清单（含尚未创建的首选路径）。
+pub(super) fn engine_source_infos(
+    engine: &str,
+    workspace: Option<&str>,
+) -> Vec<super::McpSourceInfo> {
+    let info = |source: &str, path: PathBuf| super::McpSourceInfo {
+        source: source.to_string(),
+        exists: path.is_file(),
+        path: path.to_string_lossy().into_owned(),
+    };
+    match engine {
+        "claude" => {
+            let user_path = claude_user_config_path();
+            let mut sources = vec![
+                info(SOURCE_CLAUDE_USER, user_path.clone()),
+                info(SOURCE_CLAUDE_LOCAL, user_path),
+            ];
+            if let Some(workspace) = workspace {
+                sources.push(info(
+                    SOURCE_CLAUDE_PROJECT,
+                    claude_project_config_path(Path::new(workspace)),
+                ));
+            }
+            sources
+        }
+        "codex" => {
+            let mut sources = vec![info(SOURCE_CODEX_USER, codex_user_config_path())];
+            if let Some(workspace) = workspace {
+                sources.push(info(
+                    SOURCE_CODEX_PROJECT,
+                    codex_project_config_path(Path::new(workspace)),
+                ));
+            }
+            sources
+        }
+        _ => Vec::new(),
+    }
+}
 
 pub(super) fn read_config_entries(workspace: Option<&str>) -> McpConfigSection {
     let mut section = McpConfigSection {
@@ -301,7 +296,7 @@ fn build_entry(
         id: format!("{}:{}", spec.id, name),
         engine: spec.engine.to_string(),
         name: name.to_string(),
-        source: spec.id.clone(),
+        source: spec.id.to_string(),
         scope: spec.scope.to_string(),
         path: path.to_string_lossy().into_owned(),
         format: "json".to_string(),
@@ -314,11 +309,12 @@ fn build_entry(
         header_keys,
         writable: spec.writable,
         readonly_reason: spec.readonly_reason.map(str::to_string),
+        readonly_reason_code: spec.readonly_reason_code.map(str::to_string),
         version: version.to_string(),
     }
 }
 
-fn object_keys(value: Option<&Value>) -> Vec<String> {
+pub(super) fn object_keys(value: Option<&Value>) -> Vec<String> {
     let mut keys: Vec<String> = value
         .and_then(Value::as_object)
         .map(|object| object.keys().cloned().collect())
@@ -385,7 +381,7 @@ fn read_codex_toml(path: &Path, source: &str) -> Result<Vec<McpConfigEntry>, Mcp
             id: format!("{}:{}", spec.id, name),
             engine: spec.engine.to_string(),
             name: name.to_string(),
-            source: spec.id.clone(),
+            source: spec.id.to_string(),
             scope: spec.scope.to_string(),
             path: path.to_string_lossy().into_owned(),
             format: "toml".to_string(),
@@ -398,6 +394,7 @@ fn read_codex_toml(path: &Path, source: &str) -> Result<Vec<McpConfigEntry>, Mcp
             header_keys: Vec::new(),
             writable: spec.writable,
             readonly_reason: spec.readonly_reason.map(str::to_string),
+            readonly_reason_code: spec.readonly_reason_code.map(str::to_string),
             version: version.clone(),
         };
         entry.env_keys.sort();
@@ -500,6 +497,7 @@ pub(super) fn write_enabled(
         return Err(McpError::new(
             "readonly",
             spec.readonly_reason
+                .or(spec.readonly_reason_code)
                 .unwrap_or("this MCP source is read-only"),
         ));
     }
@@ -534,10 +532,7 @@ pub(super) fn write_enabled(
             )?;
             reread_entry(&config_path, source, name, Some(workspace_path))
         }
-        _ => Err(McpError::new(
-            "readonly",
-            "this MCP source is read-only in the current build",
-        )),
+        _ => super::sources::write_enabled(source, name, enabled, expected_version, workspace),
     }
 }
 

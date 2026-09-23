@@ -285,6 +285,7 @@ export const en: Messages = {
     slashAppNew: "Start a new chat (ccgui built-in)",
     slashAppClear: "Clear context and start a new chat (ccgui built-in)",
     slashAppCompact: "Compact this session's context (ccgui built-in)",
+    slashAppMcp: "Show this CLI's MCP servers",
     refreshUsage: "Refresh usage",
     refreshUsageTooltip: "Re-fetch latest context usage for current session",
     refreshing: "Refreshing…",
@@ -1641,10 +1642,31 @@ export const en: Messages = {
     disabled: "Disabled in config",
     builtin: "Built-in",
     readonly: "Read-only",
+    readonlyReason: {
+      unverified_write:
+        "The enable switch for this source is not verified against the real CLI on this machine — read-only here; open the config file from the details to edit it manually",
+      shared_project_file:
+        "Shared project .mcp.json: each CLI applies its own rules (this page shows the file's own field), so it is read-only",
+      grok_project_toggle:
+        "Grok's project toggle also rewrites the user-level disabled_mcp_servers list; read-only so we never write half of it",
+      dsh_plugin:
+        "dsh serves MCP through plugins (one dsh-mcp-client instance per server); add or remove them in the profile's cordis config",
+      jsonc_readonly:
+        "This file is JSONC (it carries comments): writing would drop them, so it is read-only here — edit it in your editor",
+    },
+    support: {
+      none: "{{name}} does not ship MCP: no source is invented for it. Its extension mechanism can still add MCP.",
+      plugin: "{{name}} serves MCP through plugins: the MCP plugin instances declared in the profile are listed below.",
+    },
+    sources: {
+      title: "Files this page reads",
+      missing: "(not created yet)",
+    },
     transportUnknown: "Transport not declared",
     notInstalled: "This CLI is not installed: configuration is still visible and applies once a new session runs.",
     desktopOnly: "Remote web access cannot read or write local MCP config; manage it in the desktop app.",
     count: "{{config}} configured · {{runtime}} runtime",
+    tabCount: "{{count}} configured",
     filter: {
       all: "All",
       config: "Config",
@@ -1656,6 +1678,24 @@ export const en: Messages = {
       claude_project: "Project .mcp.json",
       codex_user: "User config",
       codex_project: "Project config",
+      kimi_user: "User mcp.json",
+      kimi_local: "Workspace .kimi-code/mcp.json",
+      kimi_project: "Project .mcp.json (shared)",
+      grok_user: "User config.toml",
+      grok_project: "Project .grok/config.toml",
+      omp_user: "User mcp.json",
+      omp_project: "Project .omp/mcp.json",
+      opencode_user: "User opencode.json",
+      opencode_project: "Project opencode.json",
+      agy_user: "User mcp_config.json",
+      agy_project: "Workspace .agents/mcp_config.json",
+      qoder_user: "User settings.json",
+      qoder_local: "Workspace settings.local.json",
+      qoder_project: "Project .mcp.json (shared)",
+      qoder_cn_user: "User settings.json",
+      qoder_cn_local: "Workspace settings.local.json",
+      qoder_cn_project: "Project .mcp.json (shared)",
+      dsh_profile: "Profile plugin config",
     },
     scope: {
       user: "User",
@@ -1696,7 +1736,13 @@ export const en: Messages = {
       env: "Environment keys",
       headers: "Header keys",
       path: "Config file",
+      reveal: "Show in file manager",
       restartHint: "Changes apply to new sessions; running sessions are never restarted or stopped.",
+    },
+    command: {
+      title: "MCP",
+      heading: "MCP servers · {{name}}",
+      manage: "Manage in settings",
     },
   },
 };

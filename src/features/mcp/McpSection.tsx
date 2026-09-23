@@ -1,13 +1,14 @@
 /**
  * 设置 → 能力扩展 → MCP.
  *
- * Engine tabs (Claude Code / Codex) over two separate lists: the config
- * inventory (what the CLI files declare, with enable switches only for
- * sources whose write semantics are verified) and the runtime inventory
- * (what a live session actually connected, workspace- and session-scoped,
- * with its collection time). Not-installed engines still show their config;
- * a vendor's runtime that this app cannot query says so instead of pretending
- * there are no servers.
+ * Every engine the app can drive gets a tab, whether or not it ships MCP
+ * support: the config inventory (what the CLI files declare, enable switches
+ * only for sources whose write semantics are verified) and the runtime
+ * inventory (what a live session actually connected, workspace- and
+ * session-scoped, with its collection time). Engines that carry MCP through
+ * plugins say so; engines without MCP say so instead of showing an empty
+ * list as if nothing were configured. A vendor's runtime that this app cannot
+ * query states that rather than pretending there are no servers.
  */
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -20,13 +21,19 @@ import { Switch } from "@/components/base/switch/switch";
 import { CenteredSpinner, EmptyState } from "@/components/base/empty-state";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
 import { ActionFeedbackIcon, useActionFeedback } from "@/components/base/action-feedback";
-import { CLI_DISPLAY_NAMES } from "@/components/foundations/icons/engine-brands";
 import { LocalOnlyNotice } from "@/components/application/settings/local-only-notice";
 import { useChatStore } from "@/features/chat/store";
 import { isWeb } from "@/lib/transport";
 import { cx } from "@/utils/cx";
 import { McpDetailDialog } from "./McpDetailDialog";
-import type { McpConfigEntry, McpEngineId, McpRuntimeSection } from "./types";
+import { engineIdFromHash, engineLabel, readonlyReasonText } from "./labels";
+import type {
+  McpConfigEntry,
+  McpEngineId,
+  McpEngineInventory,
+  McpRuntimeSection,
+  McpSourceInfo,
+} from "./types";
 import { useMcpInventory } from "./useMcpInventory";
 
 type KindFilter = "all" | "config" | "runtime";
@@ -52,6 +59,7 @@ function ConfigRow({
   const meta = entry.command
     ? `${entry.command}${entry.argsCount > 0 ? ` +${entry.argsCount}` : ""}`
     : (entry.url ?? t("mcp.transportUnknown"));
+  const readonlyReason = readonlyReasonText(t, entry);
   return (
     <li
       className={cx(
@@ -89,22 +97,54 @@ function ConfigRow({
           size="sm"
           aria-label={t("mcp.toggle", { name: entry.name })}
           isSelected={entry.enabled}
+          isDisabled={pending}
           onChange={onToggle}
         />
       ) : (
         <span
           className="flex size-6 items-center justify-center text-text-tertiary"
-          title={entry.readonlyReason ?? t("mcp.readonly")}
+          title={readonlyReason}
         >
           <Lock className="size-4" aria-hidden />
-          <span className="sr-only">{entry.readonlyReason ?? t("mcp.readonly")}</span>
+          <span className="sr-only">{readonlyReason}</span>
         </span>
       )}
     </li>
   );
 }
 
-function RuntimeBlock({
+/** Config rows for one engine; shared by the settings page and the `/mcp`
+ *  panel so both surfaces show identical state. */
+export function McpConfigList({
+  entries,
+  pendingId,
+  selectedId,
+  onOpen,
+  onToggle,
+}: {
+  entries: McpConfigEntry[];
+  pendingId: string | null;
+  selectedId: string | null;
+  onOpen: (entry: McpConfigEntry) => void;
+  onToggle: (entry: McpConfigEntry, enabled: boolean) => void;
+}) {
+  return (
+    <ul className="flex flex-col gap-1">
+      {entries.map((entry) => (
+        <ConfigRow
+          key={entry.id}
+          entry={entry}
+          pending={pendingId === entry.id}
+          selected={selectedId === entry.id}
+          onOpen={() => onOpen(entry)}
+          onToggle={(enabled) => onToggle(entry, enabled)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+export function RuntimeBlock({
   section,
   filter,
   query,
@@ -184,20 +224,70 @@ function RuntimeBlock({
   );
 }
 
+/** Where this page looks for the engine's config; missing files still show so
+ *  an empty inventory never reads as "this CLI has no MCP support". */
+export function McpSourceHint({ sources }: { sources: McpSourceInfo[] }) {
+  const { t } = useTranslation();
+  if (sources.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1 rounded-2lg bg-background-tertiary-default px-3 py-2">
+      <span className="text-caption-1-medium text-text-secondary">
+        {t("mcp.sources.title")}
+      </span>
+      {sources.map((info) => (
+        <span
+          key={`${info.source}:${info.path}`}
+          className="flex flex-wrap items-baseline gap-x-2 text-caption-1-regular text-text-tertiary"
+        >
+          <span className="shrink-0">{t(`mcp.source.${info.source}`)}</span>
+          <span className="min-w-0 break-all font-mono" title={info.path}>
+            {info.path}
+          </span>
+          {!info.exists ? <span className="shrink-0">{t("mcp.sources.missing")}</span> : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Engine-level support statement for the selected tab. */
+function SupportNote({ engine }: { engine: McpEngineInventory }) {
+  const { t } = useTranslation();
+  const name = engineLabel(engine.id);
+  if (engine.support === "none") {
+    return (
+      <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
+        {t("mcp.support.none", { name })}
+      </p>
+    );
+  }
+  if (engine.support === "plugin") {
+    return (
+      <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
+        {t("mcp.support.plugin", { name })}
+      </p>
+    );
+  }
+  return null;
+}
+
 export function McpSection() {
   const { t } = useTranslation();
   const activeWorkspace = useChatStore((state) => state.active?.workspacePath ?? null);
   const store = useMcpInventory(activeWorkspace);
-  const [engineId, setEngineId] = useState<McpEngineId>("claude");
+  const [engineId, setEngineId] = useState<McpEngineId>(
+    (engineIdFromHash(window.location.hash) as McpEngineId | null) ?? "claude",
+  );
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<KindFilter>("all");
   const [selected, setSelected] = useState<McpConfigEntry | null>(null);
   const refreshAction = useActionFeedback({ spin: true });
   const [toggleError, setToggleError] = useState<string | null>(null);
 
+  const engines = store.inventory?.engines ?? [];
   const engine = useMemo(
-    () => store.inventory?.engines.find((item) => item.id === engineId) ?? null,
-    [store.inventory, engineId],
+    () => engines.find((item) => item.id === engineId) ?? engines[0] ?? null,
+    [engines, engineId],
   );
 
   const filteredEntries = useMemo(() => {
@@ -209,6 +299,15 @@ export function McpSection() {
   }, [engine, query]);
 
   const showConfig = kind !== "runtime";
+  const noEntries = (engine?.config.entries.length ?? 0) === 0;
+  const searching = query.trim().length > 0;
+
+  const handleToggle = (entry: McpConfigEntry, enabled: boolean) => {
+    setToggleError(null);
+    void store.setEnabled(entry, enabled).catch((error: unknown) => {
+      setToggleError(error instanceof Error ? error.message : String(error));
+    });
+  };
 
   // Desktop-only (web dispatch excludes mcp_inventory / mcp_set_enabled).
   if (isWeb) {
@@ -217,17 +316,25 @@ export function McpSection() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <PillTabList>
-        {(["claude", "codex"] as const).map((id) => (
+      <PillTabList className="flex-wrap">
+        {engines.map((item) => (
           <PillTab
-            key={id}
-            isSelected={engineId === id}
+            key={item.id}
+            isSelected={engine?.id === item.id}
             onSelect={() => {
-              setEngineId(id);
+              setEngineId(item.id);
               setSelected(null);
             }}
           >
-            {CLI_DISPLAY_NAMES[id] ?? id}
+            {engineLabel(item.id)}{" "}
+            {item.config.entries.length > 0 ? (
+              <span
+                className="ml-0.5 rounded-full bg-background-tertiary-default px-1.5 text-caption-1-regular text-text-tertiary"
+                title={t("mcp.tabCount", { count: item.config.entries.length })}
+              >
+                {item.config.entries.length}
+              </span>
+            ) : null}
           </PillTab>
         ))}
       </PillTabList>
@@ -304,7 +411,9 @@ export function McpSection() {
         </p>
       ) : null}
 
-      {!engine ? null : !engine.available ? (
+      {engine ? <SupportNote engine={engine} /> : null}
+
+      {engine && engine.support !== "none" && !engine.available ? (
         <p className="rounded-2lg bg-background-tertiary-default px-3 py-2 text-caption-1-regular text-text-secondary">
           {t("mcp.notInstalled")}
         </p>
@@ -324,38 +433,29 @@ export function McpSection() {
         </ul>
       ) : null}
 
-      {engine && showConfig ? (
+      {engine && engine.support !== "none" && showConfig ? (
         <section className="flex flex-col gap-2">
           <SectionTitle>{t("mcp.config.title")}</SectionTitle>
           {filteredEntries.length === 0 ? (
-            <EmptyState className="py-6">
-              <p className="text-body-2-regular">{t("mcp.config.empty")}</p>
-            </EmptyState>
+            <>
+              <EmptyState className="py-6">
+                <p className="text-body-2-regular">{t("mcp.config.empty")}</p>
+              </EmptyState>
+              {noEntries && !searching ? <McpSourceHint sources={engine.sources} /> : null}
+            </>
           ) : (
-            <ul className="flex flex-col gap-1">
-              {filteredEntries.map((entry) => (
-                <ConfigRow
-                  key={entry.id}
-                  entry={entry}
-                  pending={store.pendingId === entry.id}
-                  selected={selected?.id === entry.id}
-                  onOpen={() => setSelected(entry)}
-                  onToggle={(enabled) => {
-                    setToggleError(null);
-                    void store.setEnabled(entry, enabled).catch((error: unknown) => {
-                      setToggleError(
-                        error instanceof Error ? error.message : String(error),
-                      );
-                    });
-                  }}
-                />
-              ))}
-            </ul>
+            <McpConfigList
+              entries={filteredEntries}
+              pendingId={store.pendingId}
+              selectedId={selected?.id ?? null}
+              onOpen={setSelected}
+              onToggle={handleToggle}
+            />
           )}
         </section>
       ) : null}
 
-      {engine ? (
+      {engine && engine.support !== "none" ? (
         <RuntimeBlock section={engine.runtime} filter={kind} query={query} />
       ) : null}
 
@@ -363,14 +463,7 @@ export function McpSection() {
         <McpDetailDialog
           entry={selected}
           pending={store.pendingId === selected.id}
-          onToggle={(enabled) => {
-            setToggleError(null);
-            void store
-              .setEnabled(selected, enabled)
-              .catch((error: unknown) =>
-                setToggleError(error instanceof Error ? error.message : String(error)),
-              );
-          }}
+          onToggle={(enabled) => handleToggle(selected, enabled)}
           onClose={() => setSelected(null)}
         />
       ) : null}
