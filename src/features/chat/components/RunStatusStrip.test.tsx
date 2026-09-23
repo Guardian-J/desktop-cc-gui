@@ -593,4 +593,62 @@ describe("RunStatusStrip", () => {
     expect(pill("任务").textContent).toContain("1/1");
     expect(container.querySelector(".animate-ping")).toBeNull();
   });
+
+  it("drills down into task detail and execution status on click, and returns on back", async () => {
+    const messages: Message[] = [
+      msg(1, "user", "create task"),
+      {
+        seq: 2,
+        role: "tool",
+        text: "todo",
+        ts: null,
+        args: { op: "init" },
+        result: {
+          details: {
+            phases: [
+              {
+                name: "Diagnose",
+                tasks: [
+                  {
+                    content: "定位页面查询零条数原因",
+                    status: "completed",
+                    detail: "排查数据库连接池与实体映射",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      msg(3, "assistant", "done"),
+    ];
+
+    seed(messages, false);
+    await renderStrip();
+    await click(pill("任务"));
+
+    // Find the task row button and click it to drill down
+    const row = container.querySelector<HTMLButtonElement>("[data-todo-item-key]")!;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain("定位页面查询零条数原因");
+    await click(row);
+
+    // Overlay is open
+    const overlay = container.querySelector("[data-testid='todo-detail-overlay']");
+    expect(overlay).not.toBeNull();
+    expect(overlay?.textContent).toContain("定位页面查询零条数原因");
+    expect(overlay?.textContent).toContain("Diagnose");
+    expect(overlay?.textContent).toContain("已完成");
+    expect(overlay?.textContent).toContain("排查数据库连接池与实体映射");
+
+    // Focus moved to back button
+    const back = container.querySelector<HTMLButtonElement>("[aria-label='返回任务列表']");
+    expect(document.activeElement).toBe(back);
+
+    // Click back to return to the task list
+    await click(back!);
+    expect(container.querySelector("[data-testid='todo-detail-overlay']")).toBeNull();
+    expect(container.querySelectorAll("[data-todo-item-key]")).toHaveLength(1);
+    expect(document.activeElement?.getAttribute("data-todo-item-key")).toBe("定位页面查询零条数原因");
+  });
 });

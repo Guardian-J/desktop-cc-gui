@@ -40,6 +40,9 @@ export interface TodoItem {
   id?: string | null;
   content: string;
   status: TodoStatus;
+  phase?: string | null;
+  reason?: string | null;
+  detail?: string | null;
 }
 
 /** Todo-list payload on todo-class tool rows: replace = full snapshot,

@@ -322,6 +322,6 @@ describe("subagent counting", () => {
       }),
     ];
     const items = deriveTodoList(messages);
-    expect(items).toEqual([{ content: "实现功能", status: "complete" }]);
+    expect(items).toEqual([{ content: "实现功能", status: "complete", phase: "impl", reason: undefined, detail: undefined }]);
   });
 });

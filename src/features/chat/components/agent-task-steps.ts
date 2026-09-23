@@ -491,6 +491,11 @@ function parseTodoFromResult(result: unknown): TodosPayload | null {
   const items: TodoItem[] = [];
   for (const phase of phases) {
     if (!phase || typeof phase !== "object") continue;
+    const phaseName = typeof (phase as Record<string, unknown>).name === "string"
+      ? ((phase as Record<string, unknown>).name as string).trim()
+      : typeof (phase as Record<string, unknown>).phase === "string"
+        ? ((phase as Record<string, unknown>).phase as string).trim()
+        : undefined;
     const tasks = (phase as Record<string, unknown>).tasks;
     if (!Array.isArray(tasks)) continue;
     for (const task of tasks) {
@@ -509,7 +514,15 @@ function parseTodoFromResult(result: unknown): TodosPayload | null {
       } else if (rawStatus === "abandoned" || rawStatus === "dropped") {
         status = "dropped";
       }
-      items.push({ content, status });
+      const reason = typeof t.blocker === "string" ? t.blocker.trim() : typeof t.reason === "string" ? t.reason.trim() : undefined;
+      const detail = typeof t.detail === "string" ? t.detail.trim() : typeof t.description === "string" ? t.description.trim() : undefined;
+      items.push({
+        content,
+        status,
+        phase: phaseName || (typeof t.phase === "string" ? t.phase.trim() : undefined),
+        reason: reason || undefined,
+        detail: detail || undefined,
+      });
     }
   }
   if (items.length === 0) return null;
@@ -566,6 +579,9 @@ export function deriveTodoList(messages: Message[]): TodoItem[] {
           ...existing,
           ...patch,
           content: patch.content ? patch.content : existing.content,
+          phase: patch.phase ?? existing.phase,
+          reason: patch.reason ?? existing.reason,
+          detail: patch.detail ?? existing.detail,
         };
       } else if (patch.content) {
         items = [...items, patch];
