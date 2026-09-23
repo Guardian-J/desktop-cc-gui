@@ -252,11 +252,11 @@ function Pill({
   );
 }
 
-function TodoRows({ items }: { items: TodoItem[] }) {
+function TodoRows({ items, live }: { items: TodoItem[]; live: boolean }) {
   const { t } = useTranslation();
   const statusText: Record<TodoItem["status"], string> = {
     pending: t("chat.todoStatusPending"),
-    active: t("chat.agentStatusRunning"),
+    active: live ? t("chat.agentStatusRunning") : t("chat.todoStatusPending"),
     complete: t("chat.agentStatusDone"),
     blocked: t("chat.todoStatusBlocked"),
     dropped: "",
@@ -275,7 +275,7 @@ function TodoRows({ items }: { items: TodoItem[] }) {
             </svg>
           ) : item.status === "active" ? (
             <span className="grid size-3.5 place-items-center">
-              <BreathingDot active={true} />
+              <BreathingDot active={live} />
             </span>
           ) : item.status === "blocked" ? (
             <span className="grid size-3.5 place-items-center">
@@ -520,7 +520,7 @@ function RunStatusPanel({
           className="mb-1.5 max-h-[min(40vh,280px)] overflow-y-auto rounded-md border border-dashed border-border-button-default bg-background-primary-default shadow-[0_8px_24px_rgba(0,0,0,0.08)]"
         >
           {section === "subagent" && <SubagentRows steps={steps} />}
-          {section === "todo" && <TodoRows items={todos} />}
+          {section === "todo" && <TodoRows items={todos} live={live} />}
           {section === "files" && (
             <FileRows files={files} perFile={perFile} total={total} live={live} />
           )}
@@ -538,6 +538,7 @@ function RunStatusPills({
   todos,
   files,
   stats,
+  streaming,
   onToggle,
 }: {
   section: SectionId | null;
@@ -545,13 +546,14 @@ function RunStatusPills({
   todos: TodoItem[];
   files: string[];
   stats: FileStat | null;
+  streaming: boolean;
   onToggle: (id: SectionId) => void;
 }) {
   const { t } = useTranslation();
   const completedCount = steps.filter((step) => step.state === "complete").length;
-  const anyRunning = completedCount < steps.length;
+  const anyRunning = streaming && completedCount < steps.length;
   const todosDone = todos.filter((item) => item.status === "complete").length;
-  const todosRunning = todos.some((item) => item.status === "active");
+  const todosRunning = streaming && todos.some((item) => item.status === "active");
   return (
     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5" role="tablist">
       {todos.length > 0 && (
@@ -623,16 +625,16 @@ export const RunStatusStrip = memo(function RunStatusStrip({
   const streaming = useChatStore((s) =>
     sessionKey ? (s.bySession[sessionKey]?.streaming ?? false) : false,
   );
+  const allHistory = useMemo(
+    () => (subagentHistory.length ? [...subagentHistory, ...messages] : messages),
+    [subagentHistory, messages],
+  );
   const steps = useMemo(
-    () => deriveAgentTaskSteps(
-      subagentHistory.length ? [...subagentHistory, ...messages] : messages,
-      streaming,
-      engine,
-    ),
-    [subagentHistory, messages, streaming, engine],
+    () => deriveAgentTaskSteps(allHistory, streaming, engine),
+    [allHistory, streaming, engine],
   );
   const files = useMemo(() => deriveEditedFiles(messages), [messages]);
-  const todos = useMemo(() => deriveTodoList(messages), [messages]);
+  const todos = useMemo(() => deriveTodoList(allHistory), [allHistory]);
   const buildEditLineStats = useMemo(createEditLineStatsBuilder, [sessionKey]);
   const sessionStats = useMemo(() => buildEditLineStats(messages), [buildEditLineStats, messages]);
 
@@ -704,6 +706,7 @@ export const RunStatusStrip = memo(function RunStatusStrip({
             todos={todos}
             files={files}
             stats={total}
+            streaming={streaming}
             onToggle={toggleSection}
           />
         ) : (

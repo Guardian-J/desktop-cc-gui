@@ -430,11 +430,19 @@ fn subagent_history_until(messages: &[Message], fold: &SubagentFold, start: usiz
 }
 
 fn is_subagent_history_tool(message: &Message) -> bool {
-    if message.args.as_ref().is_some_and(|args| args.get("tasks").is_some() || args.get("ids").is_some()) {
+    if message.todos.is_some() {
+        return true;
+    }
+    if message.args.as_ref().is_some_and(|args| {
+        args.get("tasks").is_some()
+            || args.get("ids").is_some()
+            || args.get("todos").is_some()
+            || args.get("op").is_some()
+    }) {
         return true;
     }
     if message.result.as_ref().and_then(|result| result.get("details")).is_some_and(|details| {
-        ["jobs", "peers", "progress"].iter().any(|key| details.get(key).is_some())
+        ["jobs", "peers", "progress", "phases"].iter().any(|key| details.get(key).is_some())
             || details.get("op").and_then(serde_json::Value::as_str) == Some("jobs")
     }) {
         return true;
@@ -442,8 +450,8 @@ fn is_subagent_history_tool(message: &Message) -> bool {
     let head = message.text.split('·').next().unwrap_or_default().trim().to_ascii_lowercase();
     let first = head.split(|c: char| c.is_whitespace() || c == '/' || c == '\\').next().unwrap_or_default().replace('-', "_");
     matches!(first.as_str(), "task" | "agent" | "spawn" | "spawn_agent" | "spawn_subagent"
-        | "workflow" | "run_workflow" | "pipeline" | "dispatch" | "dispatch_agent" | "delegate")
-        || ["spawn agent", "agent swarm", "agent_swarm", "workflow", "subagent"].iter().any(|name| head.contains(name))
+        | "workflow" | "run_workflow" | "pipeline" | "dispatch" | "dispatch_agent" | "delegate" | "todo")
+        || ["spawn agent", "agent swarm", "agent_swarm", "workflow", "subagent", "todo"].iter().any(|name| head.contains(name))
 }
 
 fn subagent_history_row(message: &Message, delegation: bool) -> Message {
@@ -462,7 +470,7 @@ fn subagent_history_row(message: &Message, delegation: bool) -> Message {
                 None => serde_json::Value::Bool(true),
             })
         } else { None },
-        todos: None,
+        todos: if delegation { message.todos.clone() } else { None },
         usage: None,
         model: None,
         effort: None,

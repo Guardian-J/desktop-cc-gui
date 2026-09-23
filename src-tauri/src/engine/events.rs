@@ -354,27 +354,29 @@ pub(crate) fn parse_todo_args(args: &Value) -> Option<TodosPayload> {
     }
 
     // TaskUpdate tool call support: MUST have `taskId`
-    if let Some(task_id) = args
-        .get("taskId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let content = args
-            .get("subject")
+    if args.get("op").is_none() {
+        if let Some(task_id) = args
+            .get("taskId")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or("");
-        let status = todo_status(args.get("status").and_then(Value::as_str));
-        return Some(TodosPayload {
-            items: vec![TodoItem {
-                id: Some(task_id.to_string()),
-                content: content.to_string(),
-                status: status.to_string(),
-            }],
-            replace: false,
-        });
+        {
+            let content = args
+                .get("subject")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("");
+            let status = todo_status(args.get("status").and_then(Value::as_str));
+            return Some(TodosPayload {
+                items: vec![TodoItem {
+                    id: Some(task_id.to_string()),
+                    content: content.to_string(),
+                    status: status.to_string(),
+                }],
+                replace: false,
+            });
+        }
     }
 
     let op = args.get("op").and_then(Value::as_str)?;

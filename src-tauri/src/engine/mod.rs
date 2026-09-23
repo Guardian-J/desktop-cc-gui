@@ -34,8 +34,8 @@ pub(crate) use resolve::command_for_binary;
 // Event types and tool-call/todo payload helpers (events.rs).
 pub use events::{EngineEvent, TodoItem, TodosPayload};
 pub(crate) use events::{
-    assistant_message, parse_todo_args, parse_tool_args_value, push_session_id, safe_prompt_arg,
-    tool_call_message, tool_call_patch, tool_path_arg, tool_result_patch,
+    assistant_message, parse_todo_args, parse_todo_result, parse_tool_args_value, push_session_id,
+    safe_prompt_arg, tool_call_message, tool_call_patch, tool_path_arg, tool_result_patch,
 };
 // Live child-process registry (registry.rs).
 pub use registry::{ChildEntry, ProcessRegistry};

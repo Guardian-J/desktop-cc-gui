@@ -1,4 +1,4 @@
-import type { Message, TodoItem } from "@/lib/ipc";
+import type { Message, TodoItem, TodosPayload } from "@/lib/ipc";
 
 export type AgentTaskStepState = "active" | "complete";
 
@@ -403,6 +403,8 @@ export function deriveAgentTaskSteps(
         }
       }
     }
+    const hasLaterAssistant = messages.slice(i + 1).some((m) => m.role === "assistant");
+    const settledTurn = !streaming && (!isCurrentTurn || hasLaterAssistant);
 
     const info = extractSubagentTaskInfo(message);
     const state = settled ? "complete" : "active";
@@ -410,27 +412,26 @@ export function deriveAgentTaskSteps(
       steps.push({
         key: String(message.seq),
         label: info.label,
-        state,
+        state: settledTurn ? "complete" : state,
         subagentType: info.subagentType,
         detail: info.detail,
       });
       continue;
     }
     for (const ref of refs) {
-      // A re-spawn reports back under a disambiguated id, so the dispatch and
-      // the later wait are one agent under two names: the row carries the id
-      // the runtime actually reported, and both names are spent at once.
       const runtimeId = runtimeIds.get(ref.id) ?? ref.id;
       if (seen.has(ref.id) || seen.has(runtimeId)) continue;
       seen.add(ref.id);
       seen.add(runtimeId);
-      // A `hub` call names ids and nothing else; kind and assignment come from
-      // the dispatch that spawned the id.
       const source = ref.agent && ref.detail ? undefined : resolveDispatch(ref.id, dispatched);
+      const reportedState = states.get(runtimeId) ?? states.get(ref.id);
+      const finalState = settledTurn
+        ? "complete"
+        : (reportedState ?? state);
       steps.push({
         key: `${message.seq}:${runtimeId}`,
         label: ref.label && ref.label !== ref.id ? ref.label : runtimeId,
-        state: states.get(runtimeId) ?? states.get(ref.id) ?? state,
+        state: finalState,
         subagentType: ref.agent ?? source?.agent ?? info.subagentType ?? toolHead(message.text),
         detail: ref.detail ?? source?.detail ?? info.detail,
       });
@@ -470,6 +471,50 @@ export function deriveEditedFiles(messages: Message[]): string[] {
  * a patch matched by id or content (start/done/block/unblock), and "dropped"
  * removes the item. Session-scoped like the edited-files pill.
  */
+function parseTodoFromResult(result: unknown): TodosPayload | null {
+  if (!result) return null;
+  let parsed = result;
+  if (typeof result === "string") {
+    try {
+      parsed = JSON.parse(result);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const details = record.details && typeof record.details === "object"
+    ? record.details as Record<string, unknown>
+    : record;
+  const phases = details.phases;
+  if (!Array.isArray(phases)) return null;
+  const items: TodoItem[] = [];
+  for (const phase of phases) {
+    if (!phase || typeof phase !== "object") continue;
+    const tasks = (phase as Record<string, unknown>).tasks;
+    if (!Array.isArray(tasks)) continue;
+    for (const task of tasks) {
+      if (!task || typeof task !== "object") continue;
+      const t = task as Record<string, unknown>;
+      const content = typeof t.content === "string" ? t.content.trim() : "";
+      if (!content) continue;
+      const rawStatus = typeof t.status === "string" ? t.status.trim().toLowerCase() : "";
+      let status: TodoItem["status"] = "pending";
+      if (rawStatus === "completed" || rawStatus === "complete" || rawStatus === "done") {
+        status = "complete";
+      } else if (rawStatus === "in_progress" || rawStatus === "active" || rawStatus === "running") {
+        status = "active";
+      } else if (rawStatus === "blocked") {
+        status = "blocked";
+      } else if (rawStatus === "abandoned" || rawStatus === "dropped") {
+        status = "dropped";
+      }
+      items.push({ content, status });
+    }
+  }
+  if (items.length === 0) return null;
+  return { items, replace: true };
+}
 export function deriveTodoList(messages: Message[]): TodoItem[] {
   let items: TodoItem[] = [];
 
@@ -492,10 +537,10 @@ export function deriveTodoList(messages: Message[]): TodoItem[] {
   }
 
   for (const message of messages) {
-    const payload = message.todos;
+    const payload = parseTodoFromResult(message.result) ?? message.todos;
     if (!payload) continue;
     if (payload.replace) {
-      items = payload.items.filter((item) => item.status !== "dropped");
+      items = payload.items.filter((item: TodoItem) => item.status !== "dropped");
       continue;
     }
     for (const patch of payload.items) {
