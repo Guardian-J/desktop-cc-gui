@@ -13,6 +13,7 @@ use crate::event_sink;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(test)]
 use tokio::process::Command;
@@ -144,6 +145,14 @@ pub(crate) struct TurnState {
     saw_any_output: bool,
     pending_terminal: Option<(String, Value)>,
     exit_confirmed: bool,
+    /// Start of the model-generation window currently open, if any.
+    gen_open_since: Option<Instant>,
+    /// The open window was opened by an explicit start marker
+    /// (`Generation{active:true}`), so only an explicit end / usage report
+    /// may close it — tool rows stream inside such a response.
+    gen_explicit: bool,
+    /// Generation milliseconds closed but not yet attached to a usage report.
+    gen_ms: u64,
 }
 impl TurnState {
     pub(crate) fn new(preassigned: Option<String>) -> Self {
@@ -156,6 +165,9 @@ impl TurnState {
             saw_any_output: false,
             pending_terminal: None,
             exit_confirmed: false,
+            gen_open_since: None,
+            gen_explicit: false,
+            gen_ms: 0,
         }
     }
 
@@ -167,6 +179,31 @@ impl TurnState {
         kind: &str,
         data: Value,
     ) {
+        self.push_meta(sink, run_id, engine_id, kind, data, None)
+    }
+
+    /// Push a usage/done report carrying the measured generation window.
+    fn push_with_gen_ms(
+        &mut self,
+        sink: &Arc<event_sink::EventSink>,
+        run_id: &str,
+        engine_id: &str,
+        kind: &str,
+        data: Value,
+        gen_ms: Option<u64>,
+    ) {
+        self.push_meta(sink, run_id, engine_id, kind, data, gen_ms)
+    }
+
+    fn push_meta(
+        &mut self,
+        sink: &Arc<event_sink::EventSink>,
+        run_id: &str,
+        engine_id: &str,
+        kind: &str,
+        data: Value,
+        gen_ms: Option<u64>,
+    ) {
         if !self.exit_confirmed
             && run_id.starts_with("pa-")
             && matches!(engine_id, "pi" | "codex")
@@ -176,7 +213,7 @@ impl TurnState {
             return;
         }
         self.seq += 1;
-        sink.push(serde_json::json!({
+        let mut payload = serde_json::json!({
             "runId": run_id,
             "sessionId": self.native_session_id,
             "engine": engine_id,
@@ -189,7 +226,42 @@ impl TurnState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0),
-        }));
+        });
+        if let Some(gen_ms) = gen_ms {
+            // Measured generation window (stream open → close, tool execution
+            // excluded) for the report that just landed. Absent on every
+            // report the host could not time; consumers fall back to
+            // consecutive-report timing in that case.
+            payload["genMs"] = Value::from(gen_ms);
+        }
+        sink.push(payload);
+    }
+
+    /// Mark the model as generating: opens the window when none is open.
+    /// `explicit` records an engine-provided start marker (message_start),
+    /// which only an explicit end or a usage report may close.
+    fn gen_begin(&mut self, explicit: bool) {
+        if self.gen_open_since.is_none() {
+            self.gen_open_since = Some(Instant::now());
+            self.gen_explicit = explicit;
+        }
+    }
+
+    /// Close the open window, accumulating its span.
+    fn gen_end(&mut self) {
+        if let Some(since) = self.gen_open_since.take() {
+            self.gen_ms += since.elapsed().as_millis() as u64;
+        }
+        self.gen_explicit = false;
+    }
+
+    /// Close the open window and consume the accumulated span as this
+    /// report's `genMs`. None when nothing measurable was collected, so the
+    /// consumer keeps its report-to-report fallback.
+    fn take_gen_ms(&mut self) -> Option<u64> {
+        self.gen_end();
+        let ms = std::mem::take(&mut self.gen_ms);
+        (ms > 0).then_some(ms)
     }
 
     pub(crate) fn confirm_exit(&mut self, core: &TurnCore) {
@@ -239,20 +311,34 @@ impl TurnCore {
             return;
         }
         match event {
-            EngineEvent::Delta(text) => state.push(
-                &self.sink,
-                &self.run_id,
-                &self.engine_id,
-                "delta",
-                Value::String(text),
-            ),
-            EngineEvent::Thinking(text) => state.push(
-                &self.sink,
-                &self.run_id,
-                &self.engine_id,
-                "thinking",
-                Value::String(text),
-            ),
+            EngineEvent::Delta(text) => {
+                state.gen_begin(false);
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "delta",
+                    Value::String(text),
+                )
+            }
+            EngineEvent::Thinking(text) => {
+                state.gen_begin(false);
+                state.push(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "thinking",
+                    Value::String(text),
+                )
+            }
+            EngineEvent::Generation { active } => {
+                // Internal marker: never streamed, only folded into genMs.
+                if active {
+                    state.gen_begin(true);
+                } else {
+                    state.gen_end();
+                }
+            }
             EngineEvent::Message {
                 role,
                 text,
@@ -262,6 +348,17 @@ impl TurnCore {
                 result,
                 patch,
             } => {
+                // A tool row opening (or its arg patch), or a completed
+                // assistant snapshot (codex/kimi report whole messages), ends
+                // the response stream that preceded it. Windows opened by an
+                // explicit start marker keep running: claude streams tool
+                // arguments inside the same response and closes it at
+                // message_stop.
+                let response_end = role == "assistant"
+                    || (role == "tool" && result.is_none());
+                if response_end && !state.gen_explicit {
+                    state.gen_end();
+                }
                 let mut payload = serde_json::json!({ "role": role, "text": text });
                 if let Some(path) = path {
                     payload["path"] = Value::String(path);
@@ -291,9 +388,18 @@ impl TurnCore {
             EngineEvent::AttemptEnd { error } => state.attempt_error = error,
             EngineEvent::SessionId(id) => self.adopt_session_id(state, &id, true),
             EngineEvent::Usage(usage) => {
-                state.push(&self.sink, &self.run_id, &self.engine_id, "usage", usage)
+                let gen_ms = state.take_gen_ms();
+                state.push_with_gen_ms(
+                    &self.sink,
+                    &self.run_id,
+                    &self.engine_id,
+                    "usage",
+                    usage,
+                    gen_ms,
+                )
             }
             EngineEvent::Error(error) => {
+                state.gen_end();
                 state.saw_error = true;
                 crate::mcp::mark_run_ended(&self.run_id);
                 state.push(
@@ -323,6 +429,7 @@ impl TurnCore {
                 // Not terminal: compaction is a mid-turn pause while the CLI
                 // summarizes; the UI swaps its status label until the end
                 // event (or turn settle) clears it.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -334,6 +441,7 @@ impl TurnCore {
             EngineEvent::Warn(error) => {
                 // Not terminal: no saw_error — EOF settle still decides the
                 // turn's fate if the CLI gives up after this notice.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -351,6 +459,7 @@ impl TurnCore {
                 // request. The frontend renders it as live progress in the
                 // run status line (not as an error banner) and clears it on
                 // the next content event.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -366,6 +475,7 @@ impl TurnCore {
             } => {
                 // Not terminal either: the CLI works around the denial and
                 // the turn continues — the UI offers the grant alongside.
+                state.gen_end();
                 state.push(
                     &self.sink,
                     &self.run_id,
@@ -382,6 +492,7 @@ impl TurnCore {
                 // Park the ask: the answer command rebuilds updatedInput from
                 // this exact input (the control protocol wants the full tool
                 // input back, with the answers merged in).
+                state.gen_end();
                 if let Some(entry) = self.registry.get(&self.run_id) {
                     if let Ok(mut questions) = entry.questions.lock() {
                         questions.insert(request_id.clone(), input.clone());
@@ -484,6 +595,7 @@ impl TurnCore {
                 );
             }
             EngineEvent::Done { session_id, usage } => {
+                let gen_ms = state.take_gen_ms();
                 state.saw_done = true;
                 crate::mcp::mark_run_ended(&self.run_id);
                 if let Some(id) = session_id {
@@ -492,12 +604,13 @@ impl TurnCore {
                 // The turn is over: EOF the interactive stdin so the CLI
                 // exits instead of waiting for a next message forever.
                 self.registry.close_stdin(&self.run_id);
-                state.push(
+                state.push_with_gen_ms(
                     &self.sink,
                     &self.run_id,
                     &self.engine_id,
                     "done",
                     serde_json::json!({ "usage": usage }),
+                    gen_ms,
                 );
             }
         }
@@ -1174,6 +1287,61 @@ mod terminal_event_tests {
                 assert_eq!(events[0]["kind"], if fail { "error" } else { "done" });
             }
         }
+    }
+
+    #[tokio::test]
+    async fn usage_reports_carry_the_measured_generation_window() {
+        let collector = Arc::new(Collector::default());
+        let core = TurnCore {
+            sink: event_sink::EventSink::new(collector.clone()),
+            registry: Arc::new(ProcessRegistry::default()),
+            engine_id: "pi".into(),
+            run_id: "gen-ms-test".into(),
+        };
+        let mut state = TurnState::new(Some("session".into()));
+        let tool_start = || EngineEvent::Message {
+            role: "tool".into(),
+            text: "read".into(),
+            path: None,
+            todos: None,
+            args: None,
+            result: None,
+            patch: false,
+        };
+
+        // Explicit window: a mid-response tool row (claude streams tool args
+        // inside the same message) must not close it.
+        core.dispatch_event(&mut state, EngineEvent::Generation { active: true });
+        core.dispatch_event(&mut state, EngineEvent::Delta("hi".into()));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        core.dispatch_event(&mut state, tool_start());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        core.dispatch_event(
+            &mut state,
+            EngineEvent::Usage(serde_json::json!({"output_tokens": 3})),
+        );
+
+        // Implicit (delta-opened) window: the tool row closes it, so the
+        // next usage report only measures what ran before the tool.
+        core.dispatch_event(&mut state, EngineEvent::Delta("mid".into()));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        core.dispatch_event(&mut state, tool_start());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        core.dispatch_event(
+            &mut state,
+            EngineEvent::Usage(serde_json::json!({"output_tokens": 3})),
+        );
+
+        core.sink.flush();
+        let events = collector.0.lock().unwrap();
+        let usages: Vec<u64> = events
+            .iter()
+            .filter(|event| event["kind"] == "usage")
+            .filter_map(|event| event.get("genMs").and_then(Value::as_u64))
+            .collect();
+        assert_eq!(usages.len(), 2, "both usage reports carry genMs");
+        assert!(usages[0] >= 200, "explicit window ignored the tool row: {usages:?}");
+        assert!(usages[1] < 200, "implicit window closed at the tool row: {usages:?}");
     }
 
     #[tokio::test]

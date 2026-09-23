@@ -31,6 +31,11 @@ pub enum EngineEvent {
     SessionId(String),
     /// Token usage snapshot from the engine.
     Usage(Value),
+    /// Throughput accounting marker (never streamed to the UI): a model
+    /// response's stream opened (`active: true`) or closed (`active: false`).
+    /// `reader.rs` folds the spans into the next usage report's `genMs` wire
+    /// field, which plugins use to compute generation speed.
+    Generation { active: bool },
     /// Engine-reported error.
     Error(String),
     /// Non-terminal engine notice (e.g. an upstream 429 the CLI is

@@ -1,5 +1,12 @@
 # @ccgui/plugin-sdk changelog
 
+## 0.3.15 — 2026-09-23
+- **payload 增强**：引擎事件 wire payload 新增 `genMs`（宿主实测生成窗口毫秒数）——只出现在 `usage` / `done` 事件上，计量该报告对应的模型
+  真实生成时间：从响应流打开（引擎 message_start，或首个文本/思考 delta）
+  到流关闭，工具执行、用户等待与轮间隔全部排除。插件用它算 tok/s
+  （output token ÷ 生成窗口）即得不含工具等待的生成速度；字段缺失时
+  回退旧的相邻报告 `ts` 间隔。首个消费者：token-meter 插件。
+
 ## 0.3.14 — 2026-09-23
 - `ui:conversation-mode` / `ctx.ui.registerConversationMode({ key?, label, component })`
   注册当前会话内的替代界面。`PluginConversationProps` 提供稳定的 `conversationId`、

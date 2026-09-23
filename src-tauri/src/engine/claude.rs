@@ -717,6 +717,9 @@ fn parse_stream_event(
         return;
     };
     match event.get("type").and_then(Value::as_str) {
+        Some("message_start") => out.push(EngineEvent::Generation { active: true }),
+        // Decode window closes after the last block (tool arguments included).
+        Some("message_stop") => out.push(EngineEvent::Generation { active: false }),
         Some("content_block_delta") => parse_content_block_delta(pending, event, out),
         // Tool calls surface at block start with `input: {}`; the real
         // arguments stream in as `input_json_delta` and flush on stop.
@@ -1008,6 +1011,27 @@ mod tests {
             [EngineEvent::QuestionSettled { request_id }] => assert_eq!(request_id, "req-3"),
             other => panic!("expected settled event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stream_message_boundaries_open_and_close_the_generation_window() {
+        let engine = ClaudeEngine::new();
+        let start = serde_json::json!({
+            "type": "stream_event",
+            "event": { "type": "message_start", "message": { "id": "msg_1" } }
+        })
+        .to_string();
+        let stop = serde_json::json!({
+            "type": "stream_event",
+            "event": { "type": "message_stop" }
+        })
+        .to_string();
+        let mut out = Vec::new();
+        engine.parse_line(&start, &mut out);
+        engine.parse_line(&stop, &mut out);
+        assert_eq!(out.len(), 2);
+        assert!(matches!(&out[0], EngineEvent::Generation { active: true }));
+        assert!(matches!(&out[1], EngineEvent::Generation { active: false }));
     }
 
     #[test]

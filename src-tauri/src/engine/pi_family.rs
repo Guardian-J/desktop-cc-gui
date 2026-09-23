@@ -604,6 +604,7 @@ fn parse_pi_family_line(line: &str, out: &mut Vec<EngineEvent>) {
             | "tool_execution_start"
             | "tool_execution_end"
             | "message_end"
+            | "message_start"
             | "turn_end"
             | "agent_end"
             | "auto_retry_start"
@@ -622,6 +623,9 @@ fn parse_pi_family_line(line: &str, out: &mut Vec<EngineEvent>) {
         return;
     };
     match event_type {
+        // Response stream opens: reader.rs starts the genMs window here so
+        // TTFT and tool-argument decoding are counted, not just text deltas.
+        "message_start" => out.push(EngineEvent::Generation { active: true }),
         "session" => {
             push_session_id(&value, "id", out);
         }
@@ -997,6 +1001,17 @@ mod tests {
                 !out.iter().any(|e| matches!(e, EngineEvent::Effort(_))),
                 "got {out:?}"
             );
+        }
+    }
+
+    #[test]
+    fn message_start_opens_the_generation_window() {
+        let mut out = Vec::new();
+        let line = r#"{"type":"message_start","message":{"role":"assistant","content":[]}}"#;
+        parse_pi_family_line(line, &mut out);
+        match &out[..] {
+            [EngineEvent::Generation { active: true }] => {}
+            other => panic!("expected generation start, got {other:?}"),
         }
     }
 

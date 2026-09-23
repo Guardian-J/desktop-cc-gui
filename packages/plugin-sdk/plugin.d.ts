@@ -6,7 +6,7 @@
  * 插件仓用法（包未发布 npm 前的过渡方案）：复制本文件为插件仓的
  * `src/ccgui-plugin.d.ts`，首行版本戳必须与所用宿主 SDK 一致。
  *
- * @ccgui/plugin-sdk v0.3.14
+ * @ccgui/plugin-sdk v0.3.15
  */
 
 /** 宿主实现的 SDK 契约版本。 */
@@ -256,13 +256,18 @@ export interface PluginContext {
   events: {
     /** 事件总线（权限 events）。宿主话题：`usage://updated`（引擎 usage
      *  事件透传，payload 为完整 EngineEventPayload `{ runId, sessionId,
-     *  engine, seq, kind, data, ts? }`，data 是引擎原始 usage JSON）；
+     *  engine, seq, kind, data, ts?, genMs? }`，data 是引擎原始 usage JSON）；
      *  `usage://done`（0.3.8 起，引擎 done 事件透传，data.usage 携带
      *  该轮最终用量——claude/grok 等只经 Done 上报用量的引擎由此对插件
      *  可见）；`session://activated`（0.3.8 起，活动会话切换，payload
      *  `{ engine, sessionId }`，pending 标签 sessionId 为 null，无活动
      *  标签时两者皆 null）；`composer://draft`（payload { text }，草稿
-     *  变化/清空/会话切换均发射）。 */
+     *  变化/清空/会话切换均发射）。
+     *
+     *  `genMs`（0.3.15 起，仅 `usage`/`done` 携带）：该报告对应的宿主实测
+     *  生成窗口毫秒——从响应流打开到流关闭，工具执行、用户等待与轮间隔
+     *  全部排除。插件按 `output tokens ÷ genMs` 即得不含工具等待的生成速度；
+     *  字段缺失（旧宿主 / 未计时的报告）时回退相邻报告 `ts` 间隔。 */
     on(topic: string, cb: (data: unknown) => void): Disposer;
     emit(topic: string, data: unknown): void;
   };

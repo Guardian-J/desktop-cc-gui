@@ -27,6 +27,12 @@ export interface EngineEventPayload {
   /** Emit-side timestamp (Unix ms), stamped in TurnState::push. Absent from
    *  payloads produced before SDK 0.3.8. */
   ts?: number;
+  /** Host-measured generation window (ms) for `usage`/`done` reports: the
+   *  model's actual stream span (first delta / message_start → message_stop
+   *  / usage), with tool execution and idle time excluded. Absent when the
+   *  report could not be timed; consumers fall back to report-to-report
+   *  timing. Since SDK 0.3.15. */
+  genMs?: number;
 }
 
 /** Batched engine events arrive as an array under a single event name. */
