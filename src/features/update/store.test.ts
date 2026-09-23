@@ -29,7 +29,7 @@ function reset() {
     downloadedBytes: 0,
     totalBytes: undefined,
   });
-  useReleaseNotesTabStore.setState({ open: false, active: false });
+  useReleaseNotesTabStore.setState({ open: false, active: false, unreadVersion: undefined });
   invokeMock.mockReset();
   checkMock.mockReset();
 }
@@ -136,5 +136,31 @@ describe("release-notes tab", () => {
     expect(useUpdateStore.getState().stage).toBe("idle");
     expect(useUpdateStore.getState().version).toBeUndefined();
     expect(useUpdateStore.getState().notesRelease).toEqual({ version: "1.0.9", date: undefined, body: "notes" });
+  });
+
+  it("a discovered update leaves no unread marker (the toast already asks for action)", async () => {
+    checkMock.mockResolvedValue({ version: "1.0.9", body: "notes", close: vi.fn() });
+
+    await useUpdateStore.getState().checkForUpdates();
+
+    expect(useReleaseNotesTabStore.getState().unreadVersion).toBeUndefined();
+  });
+
+  it("closing the tab clears the upgrade announcement's unread marker", () => {
+    useReleaseNotesTabStore.getState().announceNewVersion("1.0.9");
+    expect(useReleaseNotesTabStore.getState()).toMatchObject({
+      open: true,
+      active: true,
+      unreadVersion: "1.0.9",
+    });
+
+    useReleaseNotesTabStore.getState().close();
+
+    // 关掉页签 = 看过了：页签圆点与页头「新版本」一起消失。
+    expect(useReleaseNotesTabStore.getState()).toMatchObject({
+      open: false,
+      active: false,
+      unreadVersion: undefined,
+    });
   });
 });

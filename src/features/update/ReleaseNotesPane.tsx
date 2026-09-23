@@ -9,7 +9,8 @@ import RefreshCcw from "lucide-react/dist/esm/icons/refresh-ccw";
 import { ActionFeedbackIcon, useActionFeedback, type ActionFeedback } from "@/components/base/action-feedback";
 import { Button } from "@/components/base/buttons/button";
 import { cx } from "@/utils/cx";
-import { CHANGELOG_DATA, type ChangelogEntry } from "@/version/changelog";
+import { CHANGELOG_DATA, changelogEntryFor, type ChangelogEntry } from "@/version/changelog";
+import { useReleaseNotesTabStore } from "./notes-tab";
 import { useUpdateDescription } from "./stage-message";
 import { useUpdateStore, type UpdateStage } from "./store";
 
@@ -60,17 +61,11 @@ function ChangelogMarkdown({ text }: { text: string }) {
   );
 }
 
-/** 版本号比较：两边都去掉可选前缀 v，忽略大小写。 */
-function sameVersion(a: string, b: string): boolean {
-  return a.trim().replace(/^v/i, "").toLowerCase() === b.trim().replace(/^v/i, "").toLowerCase();
-}
-
 /** 本地版本记录里与 `version` 同名的条目；没有版本号（手动打开页签）时取最新
  *  一条，读到的就是最近一次发布的说明。有版本号但没有对应条目时不回落到
  *  别的版本——不能把 v1.0.7 的说明挂在 v1.0.8 的标题下。 */
 function localEntryFor(version?: string): ChangelogEntry | undefined {
-  if (!version) return CHANGELOG_DATA[0];
-  return CHANGELOG_DATA.find((entry) => sameVersion(entry.version, version));
+  return version ? changelogEntryFor(version) : CHANGELOG_DATA[0];
 }
 
 /**
@@ -81,6 +76,10 @@ function localEntryFor(version?: string): ChangelogEntry | undefined {
  * → 「该版本未附带说明」。页签在发现新版本时自动打开，但本身不依赖更新
  * 状态：更新被「稍后」关掉后仍可继续读说明（`notesRelease` 不随 dismiss 清空）。
  *
+ * 升级后首启（`upgrade-announcement.ts`）会宣布一次本地记录的版本说明，并在
+ * 未读期间给页签圆点与页头的「新版本」标记——那个场景没有待更新版本，版本号
+ * 来自页签 store 的 `unreadVersion`。
+ *
  * 页头就是更新入口：发现新版本给「立即更新」，任何时候都能就地「检查更新」
  * （结果行复用设置页同一份文案，见 `useUpdateDescription`）。
  */
@@ -88,6 +87,7 @@ function localEntryFor(version?: string): ChangelogEntry | undefined {
 function ReleaseHeader({
   displayVersion,
   displayDate,
+  unread,
   stage,
   checkFeedback,
   onUpdate,
@@ -95,6 +95,8 @@ function ReleaseHeader({
 }: {
   displayVersion: string | undefined;
   displayDate: string | undefined;
+  /** 升级后首启的未读标记：版本号旁挂「新版本」。 */
+  unread: boolean;
   stage: UpdateStage;
   checkFeedback: ActionFeedback;
   onUpdate: () => void;
@@ -110,6 +112,11 @@ function ReleaseHeader({
         {displayVersion && (
           <span className="shrink-0 rounded-full bg-background-tertiary-default px-2 py-0.5 text-caption-1-medium text-text-secondary">
             v{displayVersion}
+          </span>
+        )}
+        {unread && (
+          <span className="shrink-0 rounded-full bg-pill-tab-blue-selected-background px-2 py-0.5 text-caption-1-medium text-accent-500">
+            {t("changelog.newVersion")}
           </span>
         )}
         {displayDate && (
@@ -216,6 +223,7 @@ export function ReleaseNotesPane() {
   const stage = useUpdateStore((s) => s.stage);
   const version = useUpdateStore((s) => s.version);
   const notesRelease = useUpdateStore((s) => s.notesRelease);
+  const unreadVersion = useReleaseNotesTabStore((s) => s.unreadVersion);
   const downloadedBytes = useUpdateStore((s) => s.downloadedBytes);
   const totalBytes = useUpdateStore((s) => s.totalBytes);
   const error = useUpdateStore((s) => s.error);
@@ -227,9 +235,9 @@ export function ReleaseNotesPane() {
   // 对号，失败信息由结果行用 role="alert" 说明。
   const checkAction = useActionFeedback({ spin: true });
 
-  // 页签标题上的版本：优先本次检测结果，其次是最近一次发现的快照，
-  // 最后才是本地最新条目（手动打开、还没有任何更新检查时）。
-  const announced = version ?? notesRelease?.version;
+  // 页签标题上的版本：优先本次检测结果，其次是最近一次发现的快照，再次是升级
+  // 后首启宣布的未读版本，最后才是本地最新条目（手动打开、还没有任何更新检查时）。
+  const announced = version ?? notesRelease?.version ?? unreadVersion;
   const local = useMemo(() => localEntryFor(announced), [announced]);
   const displayVersion = announced ?? local?.version;
   const displayDate = notesRelease?.date ?? local?.date;
@@ -251,6 +259,7 @@ export function ReleaseNotesPane() {
       <ReleaseHeader
         displayVersion={displayVersion}
         displayDate={displayDate}
+        unread={unreadVersion !== undefined}
         stage={stage}
         checkFeedback={checkAction.feedback}
         onUpdate={() => void startUpdate()}

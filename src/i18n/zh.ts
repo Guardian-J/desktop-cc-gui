@@ -883,6 +883,7 @@ export const zh = {
   },
   changelog: {
     title: "版本更新",
+    newVersion: "新版本",
   },
   terminal: {
     toggle: "终端",

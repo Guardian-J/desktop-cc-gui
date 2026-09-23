@@ -917,6 +917,7 @@ export const en: Messages = {
   },
   changelog: {
     title: "Release Notes",
+    newVersion: "New version",
   },
   terminal: {
     toggle: "Terminal",

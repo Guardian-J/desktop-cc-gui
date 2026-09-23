@@ -17,7 +17,11 @@ export type UpdateStage =
   | "latest"
   | "error";
 
-/** 发现新版本时从更新清单抓下来的说明快照（Tauri manifest 的 notes）。 */
+/**
+ * 发现新版本时从更新清单抓下来的说明快照（Tauri manifest 的 notes）。升级后
+ * 首启宣布的版本不写这里：那个场景没有待更新版本，版本号来自 `notes-tab` 的
+ * unreadVersion，正文读本地版本记录（见 upgrade-announcement.ts）。
+ */
 export interface ReleaseNotesSnapshot {
   version: string;
   /** ISO publish date from the manifest, when it has one. */

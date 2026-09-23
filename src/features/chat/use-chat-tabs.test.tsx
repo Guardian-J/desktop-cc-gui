@@ -10,8 +10,10 @@ import {
 import { PLUGIN_HUB_TAB_KEY, usePluginHubStore } from "@/features/plugins/hub/store";
 import { useBetaFeaturesStore } from "@/features/settings/beta-features";
 import { RELEASE_NOTES_TAB_KEY, useReleaseNotesTabStore } from "@/features/update/notes-tab";
+import i18n from "@/lib/i18n";
 import { useChatStore } from "./store";
 import { useChatTabs } from "./use-chat-tabs";
+import type { SessionTabItem } from "./components/SessionTab";
 
 /**
  * 内测入口（设置 → 其他 → 内测功能）的展示 gate：关闭时浏览器/任务工作台
@@ -40,6 +42,11 @@ function Probe() {
     notesOpen,
     notesActive,
   } = useChatTabs({ setDialog: () => {} });
+  // 未读标记只挂在版本更新页签上；页签条按公共 SessionTabItem 渲染，这里也按它读。
+  const notesTab: SessionTabItem | undefined = tabItems.find(
+    (item) => item.key === RELEASE_NOTES_TAB_KEY,
+  );
+  const notesUnread = notesTab?.unread ?? "";
   return (
     <div>
       <span data-testid="keys">{tabItems.map((item) => item.key).join(",")}</span>
@@ -52,6 +59,7 @@ function Probe() {
       <span data-testid="mission-active">{String(missionActive)}</span>
       <span data-testid="notes-open">{String(notesOpen)}</span>
       <span data-testid="notes-active">{String(notesActive)}</span>
+      <span data-testid="notes-unread">{notesUnread}</span>
     </div>
   );
 }
@@ -75,7 +83,7 @@ beforeEach(() => {
   resetMissionStore();
   useMissionStore.setState({ open: true, active: true });
   usePluginHubStore.setState({ open: false, active: false, view: "market" });
-  useReleaseNotesTabStore.setState({ open: false, active: false });
+  useReleaseNotesTabStore.setState({ open: false, active: false, unreadVersion: undefined });
   useBetaFeaturesStore.setState({ features: {} });
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -161,5 +169,18 @@ describe("useChatTabs beta entry gate", () => {
       usePluginHubStore.setState({ active: false });
     });
     expect(text("active")).toBe(RELEASE_NOTES_TAB_KEY);
+  });
+
+  it("marks the release-notes tab unread until the user closes it", () => {
+    // 升级后首启（upgrade-announcement.ts）：页签带未读标记，关掉即已读。
+    useReleaseNotesTabStore.getState().announceNewVersion("1.0.9");
+    render();
+    expect(text("notes-unread")).toBe(i18n.t("changelog.newVersion"));
+
+    act(() => {
+      useReleaseNotesTabStore.getState().close();
+    });
+    expect(text("notes-unread")).toBe("");
+    expect(text("keys")).toBe("");
   });
 });

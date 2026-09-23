@@ -105,9 +105,11 @@ export function useChatTabs({
   // 插件中心页签（原生单实例）：侧栏「插件」入口的落地页。
   const hubOpen = usePluginHubStore((s) => s.open);
   const hubActive = usePluginHubStore((s) => s.active);
-  // 版本更新说明页签（原生单实例）：更新检查发现新版本时自动打开。
+  // 版本更新说明页签（原生单实例）：更新检查发现新版本时自动打开，升级后首启
+  // 也可能带着未读标记出现（见 upgrade-announcement.ts）。
   const notesOpen = useReleaseNotesTabStore((s) => s.open);
   const notesActive = useReleaseNotesTabStore((s) => s.active);
+  const notesUnread = useReleaseNotesTabStore((s) => s.unreadVersion);
   // 内测入口关闭时对应的中心面整体隐藏（store 状态保留，重新开启即恢复）。
   const browserEntryEnabled = useBetaFeature("newBrowser");
   const missionEntryEnabled = useBetaFeature("missionWorkbench");
@@ -254,10 +256,12 @@ export function useChatTabs({
               title: t("changelog.title"),
               icon: Sparkles as LucideIcon,
               streaming: false,
+              // 升级后首启的未读标记：页签挂强调色圆点，关掉页签即消失。
+              unread: notesUnread ? t("changelog.newVersion") : undefined,
             },
           ]
         : [],
-    [notesOpen, t],
+    [notesOpen, notesUnread, t],
   );
   const tabItems = useMemo(
     () => [

@@ -14,6 +14,7 @@ vi.mock("@/lib/platform", () => ({
 import i18n from "@/lib/i18n";
 import { CHANGELOG_DATA } from "@/version/changelog";
 import { ReleaseNotesPane } from "./ReleaseNotesPane";
+import { useReleaseNotesTabStore } from "./notes-tab";
 import { useUpdateStore } from "./store";
 
 // React 18's act() requires this flag to be set by the test environment.
@@ -52,6 +53,7 @@ describe("ReleaseNotesPane", () => {
       startUpdate: startUpdateSpy,
       checkForUpdates: checkForUpdatesSpy,
     });
+    useReleaseNotesTabStore.setState({ open: true, active: true, unreadVersion: undefined });
     checkForUpdatesSpy.mockClear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -80,6 +82,13 @@ describe("ReleaseNotesPane", () => {
     );
   }
 
+  /** 页头版本号旁的「新版本」胶囊：按元素精确匹配，不在正文里找这个词——
+   *  更新说明正文本来就会写「新版本」。 */
+  function hasNewVersionPill(): boolean {
+    const label = i18n.t("changelog.newVersion");
+    return [...container.querySelectorAll("span")].some((el) => el.textContent === label);
+  }
+
   it("renders the discovered release's manifest notes, not the local entry", async () => {
     useUpdateStore.setState({
       stage: "available",
@@ -103,6 +112,25 @@ describe("ReleaseNotesPane", () => {
 
     expect(container.textContent).toContain(`v${newest.version}`);
     expect(container.textContent).toContain(newestMarker);
+    // 手动打开（没有升级宣布）不带「新版本」标记。
+    expect(hasNewVersionPill()).toBe(false);
+  });
+
+  it("announces the upgraded version from the local history with the 新版本 marker", async () => {
+    // 升级后首启：没有待更新版本（version/notesRelease 都空），版本号来自
+    // 页签 store 的 unreadVersion——正文必须是那个版本自己的条目。
+    const upgraded = CHANGELOG_DATA[1];
+    const upgradedMarker = upgraded.content.zh.match(/\*\*(.+?)\*\*/)?.[1] ?? "";
+    useReleaseNotesTabStore.setState({ open: true, active: true, unreadVersion: upgraded.version });
+    await render();
+
+    expect(container.textContent).toContain(`v${upgraded.version}`);
+    expect(container.textContent).toContain(upgradedMarker);
+    expect(hasNewVersionPill()).toBe(true);
+    // 最新一条的说明不能顶替宣布版本（版本号与正文同源）。
+    expect(container.textContent).not.toContain(newestMarker);
+    // 没有待更新版本就不摆「立即更新」。
+    expect(button("立即更新")).toBeUndefined();
   });
 
   it("checks for updates in place and reports the already-latest result", async () => {

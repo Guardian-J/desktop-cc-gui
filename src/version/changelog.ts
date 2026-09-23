@@ -16,6 +16,17 @@ export interface ChangelogEntry {
   };
 }
 
+/** 版本号比较：两边都去掉可选前缀 v，忽略大小写。 */
+export function sameVersion(a: string, b: string): boolean {
+  return a.trim().replace(/^v/i, "").toLowerCase() === b.trim().replace(/^v/i, "").toLowerCase();
+}
+
+/** 本地版本记录里与 `version` 同名的条目；没有就是没有——不回落相邻版本，
+ *  否则会把 v1.0.7 的说明挂在 v1.0.8 的标题下。 */
+export function changelogEntryFor(version: string): ChangelogEntry | undefined {
+  return CHANGELOG_DATA.find((entry) => sameVersion(entry.version, version));
+}
+
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
     version: "1.0.8",
