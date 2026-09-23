@@ -9,6 +9,7 @@ import {
 } from "@/features/mission/store";
 import { PLUGIN_HUB_TAB_KEY, usePluginHubStore } from "@/features/plugins/hub/store";
 import { useBetaFeaturesStore } from "@/features/settings/beta-features";
+import { RELEASE_NOTES_TAB_KEY, useReleaseNotesTabStore } from "@/features/update/notes-tab";
 import { useChatStore } from "./store";
 import { useChatTabs } from "./use-chat-tabs";
 
@@ -36,6 +37,8 @@ function Probe() {
     pluginHubActive,
     missionOpen,
     missionActive,
+    notesOpen,
+    notesActive,
   } = useChatTabs({ setDialog: () => {} });
   return (
     <div>
@@ -47,6 +50,8 @@ function Probe() {
       <span data-testid="hub-active">{String(pluginHubActive)}</span>
       <span data-testid="mission-open">{String(missionOpen)}</span>
       <span data-testid="mission-active">{String(missionActive)}</span>
+      <span data-testid="notes-open">{String(notesOpen)}</span>
+      <span data-testid="notes-active">{String(notesActive)}</span>
     </div>
   );
 }
@@ -70,6 +75,7 @@ beforeEach(() => {
   resetMissionStore();
   useMissionStore.setState({ open: true, active: true });
   usePluginHubStore.setState({ open: false, active: false, view: "market" });
+  useReleaseNotesTabStore.setState({ open: false, active: false });
   useBetaFeaturesStore.setState({ features: {} });
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -82,6 +88,7 @@ afterEach(() => {
   useBrowserStore.setState({ tabs: [], activeId: null });
   resetMissionStore();
   usePluginHubStore.setState({ open: false, active: false, view: "market" });
+  useReleaseNotesTabStore.setState({ open: false, active: false });
 });
 
 function render() {
@@ -138,5 +145,21 @@ describe("useChatTabs beta entry gate", () => {
     expect(text("hub-open")).toBe("true");
     expect(text("hub-active")).toBe("true");
     expect(text("active")).toBe(PLUGIN_HUB_TAB_KEY);
+  });
+
+  it("shows the auto-opened release-notes tab last and routes the active key to it", () => {
+    // 更新检查发现新版本：页签自己挂在条尾，且不抢已在视的插件中心。
+    usePluginHubStore.setState({ open: true, active: true, view: "market" });
+    useReleaseNotesTabStore.setState({ open: true, active: true });
+    render();
+    expect(text("keys")).toBe(`${PLUGIN_HUB_TAB_KEY},${RELEASE_NOTES_TAB_KEY}`);
+    expect(text("notes-open")).toBe("true");
+    expect(text("notes-active")).toBe("true");
+    expect(text("active")).toBe(PLUGIN_HUB_TAB_KEY);
+
+    act(() => {
+      usePluginHubStore.setState({ active: false });
+    });
+    expect(text("active")).toBe(RELEASE_NOTES_TAB_KEY);
   });
 });

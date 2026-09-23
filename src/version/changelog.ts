@@ -1,10 +1,10 @@
 /**
- * Release notes shown in Settings → About → 版本记录 (ChangelogDialog).
- * Newest first; add an entry at release time. Content is bilingual — the
- * dialog shows both when available, ordered by the active UI language.
+ * Release notes shown in the release-notes center tab (ReleaseNotesPane).
+ * Newest first; add an entry at release time. Content is bilingual —
+ * the tab shows both when available, ordered by the active UI language.
  */
 
-/** Repo the dialog's Star banner links to; shared with Settings → About. */
+/** Repo the release-notes tab links to for the Star banner / about page. */
 export const GITHUB_REPO_URL = "https://github.com/zhukunpenglinyutong/desktop-cc-gui";
 
 export interface ChangelogEntry {

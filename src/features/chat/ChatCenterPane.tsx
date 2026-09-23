@@ -10,6 +10,7 @@ import type { DiffTarget } from "@/features/git/store";
 import type { EngineInfo, GitStatus, Workspace } from "@/lib/ipc";
 import { cx } from "@/utils/cx";
 import { creatorChatWorkspace, startCreatorChat } from "@/features/plugins/hub/creator-chat";
+import { ReleaseNotesPane } from "@/features/update/ReleaseNotesPane";
 import { focusComposerWhenVisible } from "@/features/chat/focus-composer";
 import { ChatConversation } from "./components/ChatConversation";
 import type { ActiveSession } from "./store";
@@ -79,6 +80,7 @@ function centerSurfaces(input: {
   activePluginTabId: string | null;
   pluginHubActive: boolean;
   missionActive: boolean;
+  notesActive: boolean;
   diffOpen: boolean;
 }): {
   chat: boolean;
@@ -87,6 +89,7 @@ function centerSurfaces(input: {
   plugin: boolean;
   hub: boolean;
   mission: boolean;
+  notes: boolean;
 } {
   if (input.diffOpen) {
     return {
@@ -96,30 +99,38 @@ function centerSurfaces(input: {
       plugin: false,
       hub: false,
       mission: false,
+      notes: false,
     };
   }
   const browserInView = input.activeBrowserId !== null;
   const pluginInView = input.activePluginTabId !== null;
   const hubInView = input.pluginHubActive && !input.missionActive;
   const missionInView = input.missionActive;
+  // 版本更新说明是最弱的单实例面：它由更新检查自动弹出，不该抢用户正在看的
+  // 插件中心 / 任务工作台（自动弹出时若前两者在视，页签高亮先落到自己的页签，
+  // 用户点一下即可切回来）。
+  const notesInView = input.notesActive && !missionInView && !hubInView;
   return {
     chat: !(
       input.activeFilePath ||
       browserInView ||
       pluginInView ||
       hubInView ||
-      missionInView
+      missionInView ||
+      notesInView
     ),
     editor:
       input.activeFilePath !== null &&
       !browserInView &&
       !pluginInView &&
       !hubInView &&
-      !missionInView,
-    browser: browserInView && !missionInView && !hubInView,
-    plugin: pluginInView && !missionInView && !hubInView,
+      !missionInView &&
+      !notesInView,
+    browser: browserInView && !missionInView && !hubInView && !notesInView,
+    plugin: pluginInView && !missionInView && !hubInView && !notesInView,
     hub: hubInView,
     mission: missionInView,
+    notes: notesInView,
   };
 }
 
@@ -141,6 +152,8 @@ export function ChatCenterPane({
   pluginHubActive,
   missionOpen,
   missionActive,
+  notesOpen,
+  notesActive,
   diffView,
   diffStatus,
   closeDiff,
@@ -165,6 +178,9 @@ export function ChatCenterPane({
   /** 任务工作台中心页签：是否打开 / 是否在视。 */
   missionOpen: boolean;
   missionActive: boolean;
+  /** 版本更新说明中心页签（更新检查发现新版本时自动打开）：是否打开 / 是否在视。 */
+  notesOpen: boolean;
+  notesActive: boolean;
   diffView: { workspacePath: string; target: DiffTarget } | null;
   diffStatus: GitStatus | undefined;
   closeDiff: () => void;
@@ -188,6 +204,7 @@ export function ChatCenterPane({
     activePluginTabId,
     pluginHubActive,
     missionActive,
+    notesActive,
     diffOpen: diffView !== null,
   });
   return (
@@ -254,6 +271,14 @@ export function ChatCenterPane({
           <Suspense fallback={<CenteredSpinner />}>
             <MissionWorkbench />
           </Suspense>
+        </Surface>
+      )}
+
+      {/* 版本更新说明（更新检查发现新版本时自动打开的原生单实例页签）：
+          只切可见性，读到的进度/滚动位置不因切走而丢。 */}
+      {notesOpen && (
+        <Surface visible={surfaces.notes}>
+          <ReleaseNotesPane />
         </Surface>
       )}
 

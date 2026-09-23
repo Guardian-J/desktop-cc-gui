@@ -3,6 +3,7 @@ import { commandRegistry } from "@ccgui/plugin-sdk";
 import { dismissCenterSurfaces } from "@/features/chat/center-surfaces";
 import { useShortcutsStore } from "@/features/shortcuts/store";
 import { usePluginHubStore } from "@/features/plugins/hub/store";
+import { useReleaseNotesTabStore } from "@/features/update/notes-tab";
 
 /**
  * Builtin palette commands, registered through the same commandRegistry the
@@ -54,6 +55,18 @@ commandRegistry.register({
     window.location.hash = "#/";
     dismissCenterSurfaces();
     usePluginHubStore.getState().openHub("market");
+  },
+});
+commandRegistry.register({
+  id: "builtin:openReleaseNotes",
+  title: () => i18n.t("commands.openReleaseNotes"),
+  keywords: keywords("commands.openReleaseNotesKeywords"),
+  // 更新说明是聊天路由上的中心页签：先离开设置浮层，再让其他中心面让位
+  // （同插件入口），否则页签高亮与画面不一致（见 center-surfaces.ts）。
+  run: () => {
+    window.location.hash = "#/";
+    dismissCenterSurfaces();
+    useReleaseNotesTabStore.getState().openTab();
   },
 });
 commandRegistry.register({

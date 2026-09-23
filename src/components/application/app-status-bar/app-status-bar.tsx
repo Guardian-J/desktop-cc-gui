@@ -13,8 +13,8 @@ import { useTauriEvent } from "@/hooks/use-tauri-event";
 import { cx } from "@/utils/cx";
 import { compareByOrder, pluginIdFromRegistryKey, statusBarRegistry, useRegistry } from "@ccgui/plugin-sdk";
 import { PluginBoundary } from "@/features/plugins/boundary/PluginBoundary";
-import { ChangelogDialog } from "@/features/settings/ChangelogDialog";
-import { CHANGELOG_DATA, GITHUB_REPO_URL } from "@/version/changelog";
+import { dismissCenterSurfaces } from "@/features/chat/center-surfaces";
+import { useReleaseNotesTabStore } from "@/features/update/notes-tab";
 import { registerShortcutHandler } from "@/features/shortcuts/runtime";
 import { PerformanceDiagnosticsDialog } from "@/features/settings/PerformanceDiagnostics";
 
@@ -54,7 +54,6 @@ export function AppStatusBar() {
   const [zoomPct, setZoomPct] = useState(readZoomPct);
   const [sync, setSync] = useState<ScanProgress | null>(null);
   const [version, setVersion] = useState<string | null>(null);
-  const [showChangelog, setShowChangelog] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const pluginItems = useRegistry(statusBarRegistry);
   // zone (SDK 0.3.8): "start" chips render left-aligned ahead of the
@@ -265,21 +264,20 @@ export function AppStatusBar() {
             <span className="text-text-disabled">·</span>
             <button
               type="button"
-              aria-label={t("settings.versionHistory")}
-              title={t("settings.versionHistoryDesc")}
+              aria-label={t("changelog.title")}
+              title={t("commands.openReleaseNotes")}
               className="shrink-0 cursor-pointer rounded px-1 transition-colors hover:bg-background-tertiary-hover hover:text-text-secondary"
-              onClick={() => setShowChangelog(true)}
+              // 版本号打开版本更新页签：先清掉其他中心面（同插件入口），再打开/
+              // 聚焦更新说明页签（版本历史翻页入口已随弹窗下线，见
+              // ReleaseNotesPane）。
+              onClick={() => {
+                dismissCenterSurfaces();
+                useReleaseNotesTabStore.getState().openTab();
+              }}
             >
               v{version}
             </button>
           </>
-        )}
-        {showChangelog && (
-          <ChangelogDialog
-            entries={CHANGELOG_DATA}
-            githubUrl={GITHUB_REPO_URL}
-            onClose={() => setShowChangelog(false)}
-          />
         )}
         {showDiagnostics && <PerformanceDiagnosticsDialog onClose={() => setShowDiagnostics(false)} />}
       </div>
