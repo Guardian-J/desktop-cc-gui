@@ -167,6 +167,7 @@ export const zh = {
     grantDismiss: "知道了",
     questionTitle: "需要你的选择",
     questionSubmit: "提交",
+    questionConfirmAndContinue: "确认本题并继续",
     questionSkip: "忽略",
     questionOther: "其他（自己填写）",
     questionOtherPlaceholder: "输入你的回答…",

@@ -172,6 +172,7 @@ export const en: Messages = {
     grantDismiss: "Got it",
     questionTitle: "Your input is needed",
     questionSubmit: "Submit",
+    questionConfirmAndContinue: "Confirm and continue",
     questionSkip: "Ignore",
     questionOther: "Other (type your own)",
     questionOtherPlaceholder: "Type your answer…",
