@@ -178,6 +178,14 @@ export default function ccguiAskBridge(pi: ExtensionAPI) {
 		if (!rawLevel || rawLevel === "off") return;
 		const effort = rawLevel;
 		const p = payload as Record<string, any>;
+		const api = ctx?.model?.api;
+		if (api === "google-generative-ai" || api === "google-gemini-cli" || api === "google-vertex") {
+			// Google 传输使用 generationConfig.thinkingConfig；Cloud Code Assist 会将下方
+			// 通用推理字段识别为未知 protobuf 字段并拒绝请求。
+			delete p.reasoning_effort;
+			delete p.reasoning;
+			return p;
+		}
 		if (ctx?.model?.api === "anthropic-messages") {
 			if (!p.output_config || typeof p.output_config !== "object") {
 				p.output_config = { effort };
