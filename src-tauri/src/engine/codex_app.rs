@@ -1058,6 +1058,18 @@ async fn handshake_and_turn(
     if let Some(model) = req.model.as_deref() {
         params["model"] = json!(model);
     }
+    if !codex_read_only::requested(req) {
+        if let Some(effort) = req.effort.as_deref() {
+            if let Some(obj) = params.as_object_mut() {
+                if !obj.contains_key("config") || obj["config"].is_null() {
+                    obj.insert("config".to_string(), json!({}));
+                }
+                if let Some(config) = obj.get_mut("config").and_then(Value::as_object_mut) {
+                    config.insert("model_reasoning_effort".to_string(), json!(effort));
+                }
+            }
+        }
+    }
     let key = server.request(method, params).await?;
     let result = server
         .pump(
@@ -1083,12 +1095,25 @@ async fn handshake_and_turn(
     if let Some(model) = result.get("model").and_then(Value::as_str) {
         core.dispatch_event(state, EngineEvent::Model(model.to_string()));
     }
+    let reported_effort = result
+        .get("reasoningEffort")
+        .or_else(|| result.pointer("/thread/reasoningEffort"))
+        .and_then(Value::as_str);
+    if let Some(effort) = req.effort.as_deref().or(reported_effort) {
+        core.dispatch_event(state, EngineEvent::Effort(effort.to_string()));
+    }
     // The turn id is needed to interrupt a cancelled turn, so it must be known
     // before the turn pump starts.
     let mut turn_params = json!({ "threadId": thread_id, "input": turn_input(req) });
     if codex_read_only::requested(req) {
         turn_params["approvalPolicy"] = json!("never");
         turn_params["sandboxPolicy"] = json!({"type":"readOnly","networkAccess":false});
+    }
+    if let Some(effort) = req.effort.as_deref() {
+        turn_params["effort"] = json!(effort);
+    }
+    if let Some(model) = req.model.as_deref() {
+        turn_params["model"] = json!(model);
     }
     let key = server.request("turn/start", turn_params).await?;
     let deadline = Instant::now() + PROMPT_TIMEOUT;

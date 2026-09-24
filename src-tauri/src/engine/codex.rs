@@ -270,6 +270,10 @@ impl Engine for CodexEngine {
             cmd.arg("-c");
             cmd.arg(format!("service_tier=\"{tier}\""));
         }
+        if let Some(effort) = req.effort.as_deref() {
+            cmd.arg("-c");
+            cmd.arg(format!("model_reasoning_effort=\"{effort}\""));
+        }
         Ok(BuiltCommand {
             command: cmd,
             stdin_payload: None,
@@ -816,6 +820,20 @@ mod tests {
         let args = argv(&req);
         assert!(args.iter().any(|a| a == "model_reasoning_effort=\"max\""));
         assert!(!args.iter().any(|a| a.contains("xhigh")));
+    }
+
+    #[test]
+    fn host_command_carries_effort_override() {
+        let mut req = base_req();
+        req.effort = Some("high".into());
+        let built = CodexEngine.host_command(&req, "fake-bin").unwrap();
+        let args: Vec<String> = built
+            .command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.iter().any(|a| a == "model_reasoning_effort=\"high\""));
     }
 
     fn parse(line: &str) -> Vec<EngineEvent> {
