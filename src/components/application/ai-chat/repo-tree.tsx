@@ -21,6 +21,101 @@ import { WorktreeProgressRow } from "@/features/worktree/WorktreeProgressRow";
 import type { AiChatRepo, AiChatThread, ThreadAction } from "@/components/application/ai-chat/sidebar-types";
 import { cx } from "@/utils/cx";
 
+/** Streaming/unseen status dot on a thread row; renders nothing when the
+ *  thread is neither streaming nor waiting to be seen. */
+function ThreadStatusDot({
+  streaming,
+  retrying,
+  unseen,
+}: {
+  streaming: boolean;
+  retrying: boolean;
+  unseen: boolean;
+}) {
+  const { t } = useTranslation();
+  if (streaming) {
+    return (
+      <span
+        className={cx(
+          "sidebar-thread-status sidebar-thread-status-processing",
+          retrying && "sidebar-thread-status-retrying",
+        )}
+        role="status"
+        aria-label={t("chat.sessionRunning")}
+        title={t("chat.sessionRunning")}
+      />
+    );
+  }
+  if (unseen) {
+    return (
+      <span
+        className="sidebar-thread-status sidebar-thread-status-unseen"
+        aria-label={t("chat.sessionUnseen")}
+        title={t("chat.sessionUnseen")}
+      />
+    );
+  }
+  return null;
+}
+
+/** Row-hover actions (pin / rename / delete). Drafts only offer delete. */
+function ThreadHoverActions({
+  id,
+  pinned,
+  isDraft,
+  onAction,
+}: {
+  id: string;
+  pinned: boolean;
+  isDraft: boolean;
+  onAction?: (id: string, action: ThreadAction) => void;
+}) {
+  const { t } = useTranslation();
+  if (!onAction) return null;
+  const iconClass = "text-foreground-icon-secondary hover:text-foreground-icon-primary";
+  return (
+    <span className="hidden shrink-0 items-center gap-1.5 group-hover:inline-flex">
+      {!isDraft && (
+        <button
+          type="button"
+          aria-label={pinned ? t("chat.unpin") : t("chat.pin")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onAction(id, "pin");
+          }}
+          className={iconClass}
+        >
+          <Pin className="size-3.5" aria-hidden />
+        </button>
+      )}
+      {!isDraft && (
+        <button
+          type="button"
+          aria-label={t("chat.renameSession")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onAction(id, "rename");
+          }}
+          className={iconClass}
+        >
+          <Pencil className="size-3.5" aria-hidden />
+        </button>
+      )}
+      <button
+        type="button"
+        aria-label={t("chat.deleteSession")}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAction(id, "delete");
+        }}
+        className={iconClass}
+      >
+        <Trash2 className="size-3.5" aria-hidden />
+      </button>
+    </span>
+  );
+}
+
 /** Chat row under an open repo — indented 36px, relative-time chip on the
  *  right, hover action icons (pin / rename / delete; archive lives in the
  *  right-click menu only). */
@@ -46,7 +141,6 @@ function ThreadItem({
   /** Right-click anywhere on the row: opens the thread context menu. */
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>, id: string) => void;
 }) {
-  const { t } = useTranslation();
   return (
     <div
       onContextMenu={
@@ -73,23 +167,7 @@ function ThreadItem({
             className="size-3 shrink-0 text-foreground-icon-secondary"
           />
         )}
-        {streaming ? (
-          <span
-            className={cx(
-              "sidebar-thread-status sidebar-thread-status-processing",
-              retrying && "sidebar-thread-status-retrying",
-            )}
-            role="status"
-            aria-label={t("chat.sessionRunning")}
-            title={t("chat.sessionRunning")}
-          />
-        ) : unseen ? (
-          <span
-            className="sidebar-thread-status sidebar-thread-status-unseen"
-            aria-label={t("chat.sessionUnseen")}
-            title={t("chat.sessionUnseen")}
-          />
-        ) : null}
+        <ThreadStatusDot streaming={streaming} retrying={retrying} unseen={unseen} />
         {/* Native title tooltip: hover a moment to read the full title when
             the row truncates it (same pattern as the repo row below). */}
         <span
@@ -106,46 +184,8 @@ function ThreadItem({
           {label}
         </span>
       </button>
-      {id && onAction && (
-        <span className="hidden shrink-0 items-center gap-1.5 group-hover:inline-flex">
-          {!isDraft && (
-            <button
-              type="button"
-              aria-label={pinned ? t("chat.unpin") : t("chat.pin")}
-              onClick={(event) => {
-                event.stopPropagation();
-                onAction(id, "pin");
-              }}
-              className="text-foreground-icon-secondary hover:text-foreground-icon-primary"
-            >
-              <Pin className="size-3.5" aria-hidden />
-            </button>
-          )}
-          {!isDraft && (
-            <button
-              type="button"
-              aria-label={t("chat.renameSession")}
-              onClick={(event) => {
-                event.stopPropagation();
-                onAction(id, "rename");
-              }}
-              className="text-foreground-icon-secondary hover:text-foreground-icon-primary"
-            >
-              <Pencil className="size-3.5" aria-hidden />
-            </button>
-          )}
-          <button
-            type="button"
-            aria-label={t("chat.deleteSession")}
-            onClick={(event) => {
-              event.stopPropagation();
-              onAction(id, "delete");
-            }}
-            className="text-foreground-icon-secondary hover:text-foreground-icon-primary"
-          >
-            <Trash2 className="size-3.5" aria-hidden />
-          </button>
-        </span>
+      {id && (
+        <ThreadHoverActions id={id} pinned={pinned} isDraft={isDraft} onAction={onAction} />
       )}
       {time ? (
         <span className="inline-flex shrink-0 items-center justify-center rounded-sm bg-background-tertiary-default px-1 py-px text-caption-2-medium whitespace-nowrap text-text-secondary group-hover:hidden">
@@ -677,11 +717,15 @@ function PagedThreadList({
 }) {
 
   const { t } = useTranslation();
-  // Pagination: 0 = 初始 limit 条, 1 = +50 条, 2 = 全部。
+  // Pagination: 0 = 初始 limit 条, 1 = +50 条, 2 = 全部。收起动画结束前组件保持
+  // 挂载，重开后重新挂载即从 page 0 开始；动画期间快速重开时在 render 中直接
+  // 调整（React 推荐的 adjust-state-during-render 模式，effect 会先闪一帧旧页）。
   const [page, setPage] = useState(0);
-  useEffect(() => {
+  const [prevExpanded, setPrevExpanded] = useState(expanded);
+  if (prevExpanded !== expanded) {
+    setPrevExpanded(expanded);
     if (expanded) setPage(0);
-  }, [expanded]);
+  }
   const { visibleThreads, hiddenCount } = paginateThreads(threads, threadLimit, page);
   const pageButtonClasses =
     "flex w-full cursor-pointer items-center rounded-2lg py-[5px] pr-2 pl-4 text-caption-1-medium text-text-tertiary transition-colors duration-150 ease hover:bg-background-secondary-hover hover:text-text-secondary";

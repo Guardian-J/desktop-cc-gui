@@ -652,9 +652,6 @@ export const en: Messages = {
     computerUseScreenRecordingDesc:
       "Capture the screen so the agent can tell what is on it.",
     computerUseOpenPane: "Open System Settings",
-    computerUseDragHint:
-      "A granted permission takes effect after restarting the app. If the app is not listed yet, drag the icon below into the list.",
-    computerUseDragApp: "Drag CC GUI into the list",
     computerUseUsage: "Usage",
     computerUseTrigger: "Start a computer-use turn",
     computerUseTriggerDesc:

@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { cx } from "@/utils/cx";
 import { useGitStore } from "@/features/git/store";
 import type { GitStatus, Message, TodoItem } from "@/lib/ipc";
@@ -262,6 +263,97 @@ function BackIcon() {
 
 /** One task's full assignment, overlaid on the list inside the same panel:
  *  allows drilling down into task details and execution status. */
+function TodoStatusGlyph({
+  status,
+  live,
+  wrap = false,
+}: {
+  status: TodoItem["status"];
+  live: boolean;
+  /** Row layout wraps the small glyphs in a sized grid cell; the detail
+   *  header places them inline. */
+  wrap?: boolean;
+}) {
+  const glyph =
+    status === "complete" ? (
+      <svg aria-hidden viewBox="0 0 14 14" className="size-3.5">
+        <circle cx="7" cy="7" r="7" fill="var(--color-status-unseen)" />
+        <path d="M4 7.5 5.646 9.146a.5.5 0 0 0 .708 0L10 5.5" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    ) : status === "active" ? (
+      <BreathingDot active={live} />
+    ) : status === "blocked" ? (
+      <span className="size-1.5 rounded-full bg-text-error-primary" />
+    ) : (
+      <span className="size-3.5 rounded-full border border-dashed border-border-checkbox-default" />
+    );
+  return wrap ? <span className="grid size-3.5 place-items-center">{glyph}</span> : glyph;
+}
+
+/** Status label for the todo list and detail header; `live` decides whether an
+ *  active row reads "running" or is still waiting. */
+function todoStatusLabel(
+  t: TFunction,
+  status: TodoItem["status"],
+  live: boolean,
+): string {
+  if (status === "complete") return t("chat.agentStatusDone");
+  if (status === "active") return live ? t("chat.agentStatusRunning") : t("chat.todoStatusPending");
+  if (status === "blocked") return t("chat.todoStatusBlocked");
+  if (status === "dropped") return "";
+  return t("chat.todoStatusPending");
+}
+
+/** Text tone shared by the todo status label in both layouts. */
+function todoStatusTone(status: TodoItem["status"], live: boolean): string {
+  if (status === "complete") return "text-[var(--color-status-unseen)]";
+  if (status === "blocked") return "text-text-error-primary";
+  if (status === "active" && live) return "text-blue-500";
+  return "text-text-secondary";
+}
+
+/** The detail body: the assignment, phase, live status, and long payloads. */
+function TodoDetailFields({
+  item,
+  statusLabel,
+  statusTone,
+}: {
+  item: TodoItem;
+  statusLabel: string;
+  statusTone: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-1.5 rounded bg-background-secondary-default p-2 text-caption-1-medium text-text-secondary">
+      <div>
+        <span className="text-text-tertiary">{t("chat.todoPill")}: </span>
+        <span className="text-text-primary select-text font-medium">{item.content}</span>
+      </div>
+      {item.phase && (
+        <div>
+          <span className="text-text-tertiary">{t("chat.todoPhase")}: </span>
+          <span className="text-text-primary select-text">{item.phase}</span>
+        </div>
+      )}
+      <div>
+        <span className="text-text-tertiary">{t("chat.todoExecutionStatus")}: </span>
+        <span className={cx("font-medium", statusTone)}>{statusLabel}</span>
+      </div>
+      {item.reason && (
+        <div className="rounded border border-red-500/20 bg-red-500/10 p-1.5 text-text-error-primary">
+          <span className="font-medium">{t("chat.todoBlockReason")}: </span>
+          <span className="select-text">{item.reason}</span>
+        </div>
+      )}
+      {item.detail && (
+        <pre className="max-h-40 overflow-y-auto rounded bg-background-tertiary-default/60 p-1.5 text-[12px] break-words whitespace-pre-wrap text-text-secondary select-text">
+          {item.detail}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function TodoDetail({
   item,
   live,
@@ -275,17 +367,9 @@ function TodoDetail({
   const backRef = useRef<HTMLButtonElement>(null);
   useEffect(() => backRef.current?.focus(), []);
 
-  const isComplete = item.status === "complete";
-  const isActive = item.status === "active";
-  const isBlocked = item.status === "blocked";
-
-  const statusLabel = isComplete
-    ? t("chat.agentStatusDone")
-    : isActive
-      ? (live ? t("chat.agentStatusRunning") : t("chat.todoStatusPending"))
-      : isBlocked
-        ? t("chat.todoStatusBlocked")
-        : t("chat.todoStatusPending");
+  const statusLabel = todoStatusLabel(t, item.status, live);
+  const statusTone = todoStatusTone(item.status, live);
+  const running = item.status === "active" && live;
 
   return (
     <div data-testid="todo-detail-overlay" className="flex flex-col gap-1 p-1">
@@ -310,72 +394,17 @@ function TodoDetail({
         </div>
         <span
           className={cx(
-            "ml-auto shrink-0 text-caption-2-medium flex items-center gap-1",
-            isComplete
-              ? "text-[var(--color-status-unseen)]"
-              : isBlocked
-                ? "text-text-error-primary"
-                : isActive && live
-                  ? "font-medium text-blue-500"
-                  : "text-text-secondary",
+            "ml-auto flex shrink-0 items-center gap-1 text-caption-2-medium",
+            statusTone,
+            running && "font-medium",
           )}
         >
-          {isComplete ? (
-            <svg aria-hidden viewBox="0 0 14 14" className="size-3.5">
-              <circle cx="7" cy="7" r="7" fill="var(--color-status-unseen)" />
-              <path d="M4 7.5 5.646 9.146a.5.5 0 0 0 .708 0L10 5.5" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          ) : isActive ? (
-            <BreathingDot active={live} />
-          ) : isBlocked ? (
-            <span className="size-1.5 rounded-full bg-text-error-primary" />
-          ) : (
-            <span className="size-3.5 rounded-full border border-dashed border-border-checkbox-default" />
-          )}
+          <TodoStatusGlyph status={item.status} live={live} />
           <span>{statusLabel}</span>
         </span>
       </div>
 
-      <div className="flex flex-col gap-1.5 rounded bg-background-secondary-default p-2 text-caption-1-medium text-text-secondary">
-        <div>
-          <span className="text-text-tertiary">{t("chat.todoPill")}: </span>
-          <span className="text-text-primary select-text font-medium">{item.content}</span>
-        </div>
-        {item.phase && (
-          <div>
-            <span className="text-text-tertiary">{t("chat.todoPhase")}: </span>
-            <span className="text-text-primary select-text">{item.phase}</span>
-          </div>
-        )}
-        <div>
-          <span className="text-text-tertiary">{t("chat.todoExecutionStatus")}: </span>
-          <span
-            className={cx(
-              "font-medium",
-              isComplete
-                ? "text-[var(--color-status-unseen)]"
-                : isBlocked
-                  ? "text-text-error-primary"
-                  : isActive && live
-                    ? "text-blue-500"
-                    : "text-text-secondary",
-            )}
-          >
-            {statusLabel}
-          </span>
-        </div>
-        {item.reason && (
-          <div className="rounded border border-red-500/20 bg-red-500/10 p-1.5 text-text-error-primary">
-            <span className="font-medium">{t("chat.todoBlockReason")}: </span>
-            <span className="select-text">{item.reason}</span>
-          </div>
-        )}
-        {item.detail && (
-          <pre className="max-h-40 overflow-y-auto rounded bg-background-tertiary-default/60 p-1.5 text-[12px] break-words whitespace-pre-wrap text-text-secondary select-text">
-            {item.detail}
-          </pre>
-        )}
-      </div>
+      <TodoDetailFields item={item} statusLabel={statusLabel} statusTone={statusTone} />
     </div>
   );
 }
@@ -430,22 +459,7 @@ function TodoRows({ items, live }: { items: TodoItem[]; live: boolean }) {
               title={item.content}
               className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-background-tertiary-default/50"
             >
-              {item.status === "complete" ? (
-                <svg aria-hidden viewBox="0 0 14 14" className="size-3.5">
-                  <circle cx="7" cy="7" r="7" fill="var(--color-status-unseen)" />
-                  <path d="M4 7.5 5.646 9.146a.5.5 0 0 0 .708 0L10 5.5" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              ) : item.status === "active" ? (
-                <span className="grid size-3.5 place-items-center">
-                  <BreathingDot active={live} />
-                </span>
-              ) : item.status === "blocked" ? (
-                <span className="grid size-3.5 place-items-center">
-                  <span className="size-1.5 rounded-full bg-text-error-primary" />
-                </span>
-              ) : (
-                <span className="size-3.5 rounded-full border border-dashed border-border-checkbox-default" />
-              )}
+              <TodoStatusGlyph status={item.status} live={live} wrap />
               <div className="flex min-w-0 items-center gap-1.5">
                 {item.phase && (
                   <span className="shrink-0 rounded border border-border-button-default bg-background-tertiary-default px-1 py-0.2 text-[10px] text-text-tertiary">
@@ -464,13 +478,8 @@ function TodoRows({ items, live }: { items: TodoItem[]; live: boolean }) {
               <span
                 className={cx(
                   "text-caption-2-medium shrink-0",
-                  item.status === "complete"
-                    ? "text-[var(--color-status-unseen)]"
-                    : item.status === "blocked"
-                      ? "text-text-error-primary"
-                      : item.status === "active" && live
-                        ? "text-blue-500 font-medium"
-                        : "text-text-secondary",
+                  todoStatusTone(item.status, live),
+                  item.status === "active" && live && "font-medium",
                 )}
               >
                 {statusText[item.status]}

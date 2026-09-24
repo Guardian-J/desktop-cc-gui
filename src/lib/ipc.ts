@@ -257,13 +257,6 @@ export interface ComputerUsePermissionStatus {
   osPermissionsRequired: boolean;
 }
 
-/** Drag source for the macOS grant flow: Settings panes only accept a real
- *  app drag, so the UI offers the bundle (and its icon) to drag. */
-export interface ComputerUseDragSource {
-  path: string;
-  icon: string;
-}
-
 /** One entry of an engine's model catalog (`--list-models` probe). */
 export interface EngineModel {
   /** Selector passed to `--model` ("provider/model"). */
@@ -1072,9 +1065,6 @@ export const ipc = {
   /** Deep-link the matching System Settings pane (macOS). */
   computerUseOpenPermissionSettings: (kind: "accessibility" | "screenRecording") =>
     invoke<void>("computer_use_open_permission_settings", { kind }),
-  /** The app bundle to drag into System Settings, plus its icon. */
-  computerUseDragSource: () =>
-    invoke<ComputerUseDragSource>("computer_use_drag_source"),
   /** Arm/disarm the global Esc-to-stop while a computer-use run is active. */
   computerUseSetActive: (active: boolean) =>
     invoke<void>("computer_use_set_active", { active }),

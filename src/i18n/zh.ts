@@ -628,9 +628,6 @@ export const zh = {
     computerUseScreenRecording: "屏幕录制",
     computerUseScreenRecordingDesc: "截取屏幕画面，供 Agent 判断当前状态。",
     computerUseOpenPane: "打开系统设置",
-    computerUseDragHint:
-      "授权后需重启应用生效。如果列表里还没有本应用，把下面的图标拖进去即可。",
-    computerUseDragApp: "把 CC GUI 拖进授权列表",
     computerUseUsage: "用法",
     computerUseTrigger: "发起一次电脑操控",
     computerUseTriggerDesc:

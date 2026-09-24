@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { ipc, type AppSettings, type PetPackage } from "@/lib/ipc";
@@ -44,18 +45,29 @@ const DEFAULT_STATE: NativePetState = {
 
 const IDLE_ANIMATIONS: readonly PetAnimation[] = ["stand", "rest", "lay"];
 
-export default function PetOverlayApp() {
-  const { t } = useTranslation();
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [pet, setPet] = useState<PetPackage | null>(null);
-  const [state, setState] = useState(DEFAULT_STATE);
-  const [frame, setFrame] = useState(0);
-  const [idleAnimation, setIdleAnimation] = useState<PetAnimation>("stand");
-  const [scale, setScale] = useState(DEFAULT_PET_SCALE);
-  const scaleRef = useRef(DEFAULT_PET_SCALE);
-  const [reducedMotion, setReducedMotion] = useState(false);
-  const renderScale = PET_BASE_SCALE * scale;
+/** Localized bubble text for the native activity feed; idle has no label. */
+function activityLabel(t: TFunction, activity: PetActivity): string {
+  switch (activity) {
+    case "thinking":
+      return t("settings.petActivityThinking");
+    case "tool":
+      return t("settings.petActivityTool");
+    case "command":
+      return t("settings.petActivityCommand");
+    case "waiting":
+      return t("settings.petActivityWaiting");
+    case "failed":
+      return t("settings.petActivityFailed");
+    case "completed":
+      return t("settings.petActivityCompleted");
+    default:
+      return "";
+  }
+}
 
+/** The overlay inherits the app's themed body; blank both so the transparent
+ *  window shows only the sprite and bubble. */
+function useTransparentHostWindow() {
   useEffect(() => {
     const root = document.documentElement;
     const body = document.body;
@@ -73,6 +85,23 @@ export default function PetOverlayApp() {
       body.style.overflow = previous.bodyOverflow;
     };
   }, []);
+}
+
+/** Native `pet://` state + the package/settings load. Scale is owned here
+ *  because the host pushes its own scale on `pet://scale`. */
+function usePetOverlayState() {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [pet, setPet] = useState<PetPackage | null>(null);
+  const [state, setState] = useState(DEFAULT_STATE);
+  const [scale, setScale] = useState(DEFAULT_PET_SCALE);
+  const scaleRef = useRef(DEFAULT_PET_SCALE);
+
+  const applyScale = useCallback((value: number | undefined) => {
+    const next = normalizePetScale(value);
+    scaleRef.current = next;
+    setScale(next);
+    return next;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,9 +109,7 @@ export default function PetOverlayApp() {
       setState({ ...DEFAULT_STATE, ...event.payload });
     });
     const unlistenScale = listen<number>("pet://scale", (event) => {
-      const next = normalizePetScale(event.payload);
-      scaleRef.current = next;
-      setScale(next);
+      const next = applyScale(event.payload);
       setSettings((current) => (current ? { ...current, petScale: next } : current));
     });
     void (async () => {
@@ -99,9 +126,7 @@ export default function PetOverlayApp() {
         if (cancelled) return;
         setSettings(next);
         setPet(packageData);
-        const initialScale = normalizePetScale(next.petScale);
-        setScale(initialScale);
-        scaleRef.current = initialScale;
+        applyScale(next.petScale);
         // Visibility is owned by the Rust host: pet_set_visible shows the
         // window once state is emitted. No JS show() here — the capability
         // set deliberately does not grant it.
@@ -114,8 +139,28 @@ export default function PetOverlayApp() {
       void unlistenState.then((dispose) => dispose());
       void unlistenScale.then((dispose) => dispose());
     };
-  }, []);
+  }, [applyScale]);
 
+  /** Cycle to the next preset scale; a failed native call rolls back. */
+  const cycleScale = useCallback(async () => {
+    const current = scaleRef.current;
+    const currentIndex = PET_SCALE_OPTIONS.findIndex((value) => Math.abs(value - current) < 0.001);
+    const next = PET_SCALE_OPTIONS[(currentIndex + 1) % PET_SCALE_OPTIONS.length];
+    applyScale(next);
+    try {
+      const applied = await ipc.setPetScale(next);
+      applyScale(applied);
+    } catch (error) {
+      applyScale(current);
+      console.warn("[pet-overlay] resize failed", error);
+    }
+  }, [applyScale]);
+
+  return { settings, pet, state, scale, cycleScale };
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reducedMotion, setReducedMotion] = useState(false);
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     const update = () => setReducedMotion(media.matches);
@@ -123,13 +168,14 @@ export default function PetOverlayApp() {
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
+  return reducedMotion;
+}
 
+/** Random idle pose while the pet is inactive; re-rolls on a slow timer. */
+function useIdleAnimation(active: boolean): PetAnimation {
+  const [idleAnimation, setIdleAnimation] = useState<PetAnimation>("stand");
   useEffect(() => {
-    setFrame(0);
-  }, [state.activity, state.cursorNearby, state.cursorOver, state.status]);
-
-  useEffect(() => {
-    if (state.status !== "idle" || state.cursorNearby || state.cursorOver) return;
+    if (!active) return;
     let timer: number | null = null;
     const changeIdleAnimation = () => {
       setIdleAnimation((current) => {
@@ -142,38 +188,37 @@ export default function PetOverlayApp() {
     return () => {
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [state.cursorNearby, state.cursorOver, state.status]);
+  }, [active]);
+  return idleAnimation;
+}
 
-  const animation = useMemo<PetAnimation>(() => {
-    if (state.cursorOver) return "jump";
-    if (state.status !== "idle") return state.status;
-    if (state.cursorNearby) return "idle";
-    return idleAnimation;
-  }, [idleAnimation, state.cursorNearby, state.cursorOver, state.status]);
-
-  const activityText =
-    state.activity === "thinking"
-      ? t("settings.petActivityThinking")
-      : state.activity === "tool"
-        ? t("settings.petActivityTool")
-        : state.activity === "command"
-          ? t("settings.petActivityCommand")
-          : state.activity === "waiting"
-            ? t("settings.petActivityWaiting")
-            : state.activity === "failed"
-              ? t("settings.petActivityFailed")
-              : state.activity === "completed"
-                ? t("settings.petActivityCompleted")
-                : "";
-  const sessionName = state.sessionName?.trim() ?? "";
-  const bubbleText = activityText
-    ? sessionName
-      ? t("settings.petActivityWithSession", {
-          session: sessionName,
-          status: activityText,
-        })
-      : activityText
-    : "";
+/** Sprite frame ticker: resets when the activity/cursor/status context
+ *  changes and steps at a cadence derived from the current animation. */
+function usePetFrame({
+  animation,
+  reducedMotion,
+  status,
+  activity,
+  cursorNearby,
+  cursorOver,
+}: {
+  animation: PetAnimation;
+  reducedMotion: boolean;
+  status: PetStatus;
+  activity: PetActivity;
+  cursorNearby: boolean;
+  cursorOver: boolean;
+}): number {
+  const contextKey = `${activity}|${cursorNearby}|${cursorOver}|${status}`;
+  const [frame, setFrame] = useState(0);
+  const [prevContextKey, setPrevContextKey] = useState(contextKey);
+  // React's adjust-state-during-render pattern (an effect would paint one
+  // stale atlas frame first): a new activity/cursor/status context restarts
+  // the animation from its first frame.
+  if (contextKey !== prevContextKey) {
+    setPrevContextKey(contextKey);
+    setFrame(0);
+  }
 
   useEffect(() => {
     const frameDelay = reducedMotion
@@ -182,12 +227,111 @@ export default function PetOverlayApp() {
         ? 125
         : animation === "lay"
           ? 420
-          : state.status === "waiting"
+          : status === "waiting"
             ? 520
             : 180;
     const id = window.setInterval(() => setFrame((value) => value + 1), frameDelay);
     return () => window.clearInterval(id);
-  }, [animation, reducedMotion, state.status]);
+  }, [animation, reducedMotion, status]);
+
+  return frame;
+}
+
+/** Status bubble above the sprite; `text` is the composed aria-live line. */
+function PetBubble({
+  text,
+  activityText,
+  sessionName,
+}: {
+  text: string;
+  activityText: string;
+  sessionName: string;
+}) {
+  return (
+    <div
+      className={`pet-bubble${text ? " pet-bubble-visible" : ""}`}
+      aria-live="polite"
+      aria-hidden={!text}
+      aria-label={text || undefined}
+    >
+      {sessionName ? <span className="pet-bubble-session">{sessionName}</span> : null}
+      <span className="pet-bubble-status">{activityText}</span>
+    </div>
+  );
+}
+
+/** The pet itself. A real button so the scale-cycle interaction is reachable
+ *  by keyboard (Enter/Space); `data-tauri-drag-region` keeps window dragging. */
+function PetSprite({
+  pet,
+  renderScale,
+  backgroundPosition,
+  onSavePosition,
+  onCycleScale,
+}: {
+  pet: PetPackage;
+  renderScale: number;
+  backgroundPosition: string;
+  onSavePosition: () => void;
+  onCycleScale: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-tauri-drag-region
+      className="pet-sprite outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+      aria-label={pet.description || pet.displayName}
+      style={{
+        position: "absolute",
+        left: ((PET_BUBBLE_WIDTH - PET_CELL_WIDTH) / 2) * renderScale,
+        bottom: 0,
+        width: PET_CELL_WIDTH * renderScale,
+        height: PET_CELL_HEIGHT * renderScale,
+        backgroundImage: `url(${pet.spritesheetDataUrl})`,
+        backgroundSize: `${PET_CELL_WIDTH * 8 * renderScale}px ${PET_CELL_HEIGHT * 11 * renderScale}px`,
+        backgroundPosition,
+      }}
+      onMouseUp={onSavePosition}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onCycleScale();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onCycleScale();
+        }
+      }}
+    />
+  );
+}
+
+export default function PetOverlayApp() {
+  const { t } = useTranslation();
+  useTransparentHostWindow();
+  const { settings, pet, state, scale, cycleScale } = usePetOverlayState();
+  const reducedMotion = usePrefersReducedMotion();
+  const idleActive =
+    state.status === "idle" && !state.cursorNearby && !state.cursorOver;
+  const idleAnimation = useIdleAnimation(idleActive);
+  const renderScale = PET_BASE_SCALE * scale;
+
+  const animation = useMemo<PetAnimation>(() => {
+    if (state.cursorOver) return "jump";
+    if (state.status !== "idle") return state.status;
+    if (state.cursorNearby) return "idle";
+    return idleAnimation;
+  }, [idleAnimation, state.cursorNearby, state.cursorOver, state.status]);
+
+  const frame = usePetFrame({
+    animation,
+    reducedMotion,
+    status: state.status,
+    activity: state.activity,
+    cursorNearby: state.cursorNearby,
+    cursorOver: state.cursorOver,
+  });
 
   const backgroundPosition = useMemo(
     () => atlasBackgroundPosition(animation, frame, state.lookDirection, pet?.frameCounts, renderScale),
@@ -208,24 +352,19 @@ export default function PetOverlayApp() {
     }
   };
 
-  const cycleScale = async () => {
-    const current = scaleRef.current;
-    const currentIndex = PET_SCALE_OPTIONS.findIndex((value) => Math.abs(value - current) < 0.001);
-    const next = PET_SCALE_OPTIONS[(currentIndex + 1) % PET_SCALE_OPTIONS.length];
-    scaleRef.current = next;
-    setScale(next);
-    try {
-      const applied = await ipc.setPetScale(next);
-      scaleRef.current = applied;
-      setScale(normalizePetScale(applied));
-    } catch (error) {
-      scaleRef.current = current;
-      setScale(current);
-      console.warn("[pet-overlay] resize failed", error);
-    }
-  };
-
   if (!pet || !settings) return null;
+
+  const activityText = activityLabel(t, state.activity);
+  const sessionName = state.sessionName?.trim() ?? "";
+  const bubbleText = activityText
+    ? sessionName
+      ? t("settings.petActivityWithSession", {
+          session: sessionName,
+          status: activityText,
+        })
+      : activityText
+    : "";
+
   return (
     <main
       aria-label={pet.displayName}
@@ -235,37 +374,18 @@ export default function PetOverlayApp() {
         width: PET_BUBBLE_WIDTH * renderScale,
         height: PET_CELL_HEIGHT * renderScale + PET_BUBBLE_HEIGHT,
       }}
-      onMouseUp={() => void savePosition()}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void cycleScale();
-      }}
     >
-      <div
-        className={`pet-bubble${bubbleText ? " pet-bubble-visible" : ""}`}
-        aria-live="polite"
-        aria-hidden={!bubbleText}
-        aria-label={bubbleText || undefined}
-      >
-        {sessionName ? <span className="pet-bubble-session">{sessionName}</span> : null}
-        <span className="pet-bubble-status">{activityText}</span>
-      </div>
-      <div
-        data-tauri-drag-region
-        className="pet-sprite"
-        role="img"
-        aria-label={pet.description || pet.displayName}
-        style={{
-          position: "absolute",
-          left: ((PET_BUBBLE_WIDTH - PET_CELL_WIDTH) / 2) * renderScale,
-          bottom: 0,
-          width: PET_CELL_WIDTH * renderScale,
-          height: PET_CELL_HEIGHT * renderScale,
-          backgroundImage: `url(${pet.spritesheetDataUrl})`,
-          backgroundSize: `${PET_CELL_WIDTH * 8 * renderScale}px ${PET_CELL_HEIGHT * 11 * renderScale}px`,
-          backgroundPosition,
-        }}
+      <PetBubble
+        text={bubbleText}
+        activityText={activityText}
+        sessionName={sessionName}
+      />
+      <PetSprite
+        pet={pet}
+        renderScale={renderScale}
+        backgroundPosition={backgroundPosition}
+        onSavePosition={() => void savePosition()}
+        onCycleScale={() => void cycleScale()}
       />
     </main>
   );

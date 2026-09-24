@@ -44,6 +44,15 @@ body {
 .pet-sprite {
   background-repeat: no-repeat;
   image-rendering: auto;
+  /* The sprite is a real <button> for keyboard access to the scale cycle;
+     strip the UA button chrome so only the sprite bitmap shows. */
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+  appearance: none;
 }
 
 .pet-bubble {

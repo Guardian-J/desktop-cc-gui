@@ -128,47 +128,6 @@ pub fn computer_use_open_permission_settings(kind: String) -> Result<(), String>
     }
 }
 
-// ==================== Drag-to-authorize source ====================
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DragSourceInfo {
-    /// What the user drops into a System Settings permission list: the .app
-    /// bundle in production, the executable itself in dev builds (TCC
-    /// authorizes either).
-    pub path: String,
-    /// Drag preview image.
-    pub icon: String,
-}
-
-fn app_bundle() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    exe.ancestors()
-        .find(|p| p.extension().is_some_and(|e| e == "app"))
-        .map(|p| p.to_path_buf())
-}
-
-#[tauri::command]
-pub fn computer_use_drag_source() -> Result<DragSourceInfo, String> {
-    let path = app_bundle()
-        .or_else(|| std::env::current_exe().ok())
-        .ok_or_else(|| "cannot resolve the app path for dragging".to_string())?;
-    let icns = path.join("Contents/Resources/icon.icns");
-    let dev_icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/icon.png");
-    let icon = if icns.exists() {
-        icns
-    } else if dev_icon.exists() {
-        dev_icon
-    } else {
-        // A bundle path still drags with its own Finder icon as preview.
-        path.clone()
-    };
-    Ok(DragSourceInfo {
-        path: path.to_string_lossy().into_owned(),
-        icon: icon.to_string_lossy().into_owned(),
-    })
-}
-
 // ==================== Esc-to-stop ====================
 
 static ESC_ARMED: AtomicBool = AtomicBool::new(false);

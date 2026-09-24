@@ -435,12 +435,13 @@ describe("SettingsPage capabilities rail", () => {
     expect(capabilitiesAt).toBeGreaterThan(cliAt);
     expect(workspaceAt).toBeGreaterThan(capabilitiesAt);
 
-    // Skills leads, MCP follows, 电脑操控 closes the group — all in the
-    // same static group.
+    // Skills leads, MCP follows — all in the same static group. The
+    // 电脑操控 entry is temporarily hidden (see sections.tsx).
     expect(itemsUnder("settings.groupCapabilities")).toEqual([
       i18n.t("settings.skills"),
       i18n.t("settings.mcp"),
-      i18n.t("settings.computerUse"),
+      // 电脑操控入口暂时隐藏：恢复时取消注释。
+      // i18n.t("settings.computerUse"),
     ]);
     // The new group is static (no fold toggle) like 系统/工作区.
     const capabilityHeading = [...document.querySelectorAll("nav span")].find(

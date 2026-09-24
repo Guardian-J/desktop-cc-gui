@@ -103,7 +103,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_drag::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -393,7 +392,6 @@ pub fn run() {
             // computer use
             computer_use::computer_use_permission_status,
             computer_use::computer_use_open_permission_settings,
-            computer_use::computer_use_drag_source,
             computer_use::computer_use_set_active,
             // MCP inventory (设置 → 能力扩展 → MCP); desktop-only — the
             // web bridge intentionally does not dispatch these.

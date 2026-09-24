@@ -23,6 +23,5 @@
     "dialog:default",
     "updater:default",
     "process:default"
-    ,"drag:default"
   ]
 }

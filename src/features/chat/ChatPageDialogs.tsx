@@ -126,7 +126,12 @@ export function ChatPageDialogs({
                 onConfirm={() => {
                   onClose();
                   void (async () => {
-                    for (const child of children) await removeOne(child.id);
+                    // 顺序执行（非并行）：每次 removeWorkspace 都会整体刷新工作区
+                    // 列表，并行的刷新可能乱序返回，把已注销的兄弟行又写回 state。
+                    await children.reduce(
+                      (chain, child) => chain.then(() => removeOne(child.id)),
+                      Promise.resolve(),
+                    );
                     await removeOne(parent.id);
                   })();
                 }}

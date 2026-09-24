@@ -1,27 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
-import GitBranch from "lucide-react/dist/esm/icons/git-branch";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2";
-import Search from "lucide-react/dist/esm/icons/search";
 import { ModalShell } from "@/components/dialogs";
 import { Button } from "@/components/base/buttons/button";
 import { Chip } from "@/components/base/chips/chip";
 import { Input } from "@/components/base/input/input";
 import { Switch } from "@/components/base/switch/switch";
 import {
-  Dropdown,
-  DropdownPopover,
-  DropdownTrigger,
-} from "@/components/base/dropdown/dropdown";
-import {
   ipc,
-  type BranchInfo,
   type PrPreview,
   type Workspace,
   type WorktreeCreateArgs,
 } from "@/lib/ipc";
-import { cx } from "@/utils/cx";
 import { useGitStore } from "@/features/git/store";
 import { useWorktreeStore } from "./store";
 import {
@@ -31,118 +20,158 @@ import {
   parsePrInput,
   suggestPrBranch,
 } from "./pr-input";
+import {
+  ExistingBranchFields,
+  NewBranchFields,
+  PrSourceFields,
+} from "./WorktreeCreateFields";
 
 type SourceTab = "pr" | "new" | "existing";
 
-/** Searchable branch picker mirroring the changes panel's branch dropdown
- *  (trigger + sticky search + scrollable rows). `blocked` names render as
- *  disabled plain rows with the reason — not as fake buttons. */
-function BranchCombobox({
-  branches,
-  value,
-  onSelect,
-  placeholder,
-  blocked,
-  blockedReason,
-  ariaLabel,
-  remoteLabel,
+/** PR fetch state for the PR tab: debounced resolve, with a second pass once
+ *  the title arrives (branch name gains the slug). The key guard stops the
+ *  loop when the suggestion stabilizes. */
+function usePrPreview({
+  tab,
+  prNumber,
+  prInput,
+  location,
+  locationTouched,
+  parentPath,
 }: {
-  branches: BranchInfo[];
-  value: string | null;
-  onSelect: (name: string) => void;
-  placeholder: string;
-  blocked?: Set<string>;
-  blockedReason?: string;
-  ariaLabel: string;
-  /** Trailing tag on remote-tracking rows (t("git.remoteBranch")). */
-  remoteLabel: string;
+  tab: SourceTab;
+  prNumber: number | null;
+  prInput: string;
+  location: string;
+  locationTouched: boolean;
+  parentPath: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return branches.filter((b) => !q || b.name.toLowerCase().includes(q));
-  }, [branches, query]);
-  return (
-    <Dropdown isOpen={open} onOpenChange={setOpen}>
-      <DropdownTrigger
-        className={cx(
-          "flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg border border-border-button-default",
-          "px-2 text-body-medium text-text-primary shadow-xs",
-          "hover:bg-background-secondary-hover",
-        )}
-      >
-        <GitBranch aria-hidden className="size-4 shrink-0 text-foreground-icon-secondary" />
-        <span className={cx("truncate", !value && "text-text-placeholder")}>
-          {value ?? placeholder}
-        </span>
-        <ChevronDown aria-hidden className="ml-auto size-4 shrink-0 text-foreground-icon-tertiary" />
-      </DropdownTrigger>
-      <DropdownPopover aria-label={ariaLabel} placement="bottom start" className="max-h-80!">
-        <div className="sticky -top-2.5 z-10 -mx-2.5 -mt-2.5 bg-background-primary-default px-2.5 pt-2.5 pb-1">
-          <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border-button-default px-2">
-            <Search aria-hidden className="size-4 shrink-0 text-foreground-icon-secondary" />
-            <input
-              autoFocus
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={placeholder}
-              className="min-w-0 flex-1 bg-transparent text-body-medium text-text-primary outline-none placeholder:text-text-placeholder"
-            />
-          </div>
-        </div>
-        {filtered.map((b) => {
-          const isBlocked = blocked?.has(b.name) ?? false;
-          if (isBlocked) {
-            return (
-              <div
-                key={`${b.isRemote ? "r" : "l"}:${b.name}`}
-                className="flex w-full cursor-not-allowed items-center gap-2 rounded-lg p-2 text-body-medium text-text-disabled"
-                title={blockedReason}
-              >
-                <span className="truncate">{b.name}</span>
-                <span className="ml-auto shrink-0 text-caption-1-regular text-text-tertiary">
-                  {blockedReason}
-                </span>
-              </div>
-            );
-          }
-          return (
-            <button
-              key={`${b.isRemote ? "r" : "l"}:${b.name}`}
-              type="button"
-              onClick={() => {
-                onSelect(b.name);
-                setOpen(false);
-                setQuery("");
-              }}
-              className="flex w-full items-center gap-2 rounded-lg p-2 text-left text-body-medium text-text-primary outline-none hover:bg-background-secondary-hover focus-visible:ring-2 focus-visible:ring-border-focus-ring"
-            >
-              <span className="truncate">{b.name}</span>
-              {b.isRemote && (
-                <span className="ml-auto shrink-0 text-caption-1-regular text-text-tertiary">
-                  {remoteLabel}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </DropdownPopover>
-    </Dropdown>
-  );
+  const [preview, setPreview] = useState<PrPreview | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState<"notGitHub" | "invalidPrInput" | null>(null);
+  const resolveSeq = useRef(0);
+  const lastResolveKey = useRef("");
+  useEffect(() => {
+    if (tab !== "pr") return;
+    if (!prNumber) {
+      setPreview(null);
+      setResolveError(null);
+      setResolving(false);
+      lastResolveKey.current = "";
+      return;
+    }
+    const seq = ++resolveSeq.current;
+    setResolving(true);
+    setResolveError(null);
+    const timer = setTimeout(() => {
+      // preview?.title 参与派生分支名，必须跟踪；title 晚到时再跑一轮。
+      const suggested = suggestPrBranch(prNumber, preview?.title);
+      const dir = locationTouched
+        ? location.trim()
+        : defaultWorktreePath(parentPath, suggested);
+      const key = `${prNumber}|${suggested}|${dir}`;
+      if (lastResolveKey.current === key) {
+        setResolving(false);
+        return;
+      }
+      lastResolveKey.current = key;
+      void ipc
+        .gitResolvePr(parentPath, prInput, suggested, dir)
+        .then((p) => {
+          if (resolveSeq.current !== seq) return;
+          setPreview(p);
+          setResolving(false);
+        })
+        .catch((err) => {
+          if (resolveSeq.current !== seq) return;
+          setPreview(null);
+          setResolving(false);
+          setResolveError(String(err).includes("not_github") ? "notGitHub" : "invalidPrInput");
+        });
+    }, 400);
+    return () => clearTimeout(timer);
+    // 依赖 preview?.title：标题晚到时重跑并复查冲突；key guard 防死循环。
+  }, [prInput, prNumber, preview?.title, location, locationTouched, parentPath, tab]);
+
+  const suggestedBranch = prNumber ? suggestPrBranch(prNumber, preview?.title) : "";
+  return { preview, resolving, resolveError, suggestedBranch };
 }
 
-/** Three-source worktree creation (new branch / existing branch / PR). The
- *  submit hands off to the background pipeline immediately — progress lives
- *  in the sidebar's pending row, so the dialog closes on submit. */
-export function WorktreeCreateDialog({
+interface CreateSubmitState {
+  submitting: boolean;
+  effectiveBranch: string;
+  location: string;
+  tab: SourceTab;
+  prNumber: number | null;
+  preview: PrPreview | null;
+  resolving: boolean;
+  newBranchInvalid: boolean;
+  newBranchClash: boolean;
+  base: string | null;
+  existing: string | null;
+  occupied: Set<string>;
+}
+
+/** Whether the current tab's pick is complete enough to submit. */
+function canSubmitCreate(state: CreateSubmitState): boolean {
+  if (state.submitting) return false;
+  if (state.effectiveBranch === "" || state.location.trim() === "") return false;
+  if (state.tab === "pr") {
+    return (
+      state.prNumber != null &&
+      state.preview != null &&
+      !state.resolving &&
+      !state.preview.branchConflict &&
+      !state.preview.dirConflict
+    );
+  }
+  if (state.tab === "new") {
+    return !state.newBranchInvalid && !state.newBranchClash && state.base != null;
+  }
+  return state.existing != null && !state.occupied.has(state.existing);
+}
+
+/** Background-pipeline arguments assembled from the current form state. */
+function buildCreateArgs({
   parent,
-  onClose,
+  tab,
+  effectiveBranch,
+  location,
+  base,
+  prNumber,
+  preview,
+  prInput,
 }: {
   parent: Workspace;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
+  tab: SourceTab;
+  effectiveBranch: string;
+  location: string;
+  base: string | null;
+  prNumber: number | null;
+  preview: PrPreview | null;
+  prInput: string;
+}): WorktreeCreateArgs {
+  return {
+    repoPath: parent.path,
+    parentWorkspaceId: parent.id,
+    branch: effectiveBranch,
+    worktreePath: location.trim(),
+    baseRef: tab === "new" ? base : null,
+    prNumber: tab === "pr" ? prNumber : null,
+    prTitle: tab === "pr" ? (preview?.title ?? null) : null,
+    prUrl:
+      tab === "pr" && prNumber
+        ? prInput.includes("github.com")
+          ? prInput.trim()
+          : `https://github.com/${preview?.repo}/pull/${prNumber}`
+        : null,
+    existingBranch: tab === "existing",
+  };
+}
+
+/** Worktree-create form state, derived values, and submit. Kept JSX-free so
+ *  the dialog below only composes its tabs and field groups. */
+function useWorktreeCreateForm(parent: Workspace, onClose: () => void) {
   const prefs = useWorktreeStore((s) => s.prefs);
   const branches = useGitStore((s) => s.branchesByWorkspace[parent.path]);
   /** 当前检出分支，跟实时 status（同 useBranchSwitcher）；detached HEAD 是 "HEAD"。 */
@@ -153,11 +182,6 @@ export function WorktreeCreateDialog({
 
   // PR tab
   const [prInput, setPrInput] = useState("");
-  const [preview, setPreview] = useState<PrPreview | null>(null);
-  const [resolving, setResolving] = useState(false);
-  const [resolveError, setResolveError] = useState<"notGitHub" | "invalidPrInput" | null>(null);
-  const resolveSeq = useRef(0);
-  const lastResolveKey = useRef("");
 
   // New-branch tab
   const [branchName, setBranchName] = useState("");
@@ -174,14 +198,14 @@ export function WorktreeCreateDialog({
   const [submitting, setSubmitting] = useState(false);
 
   const prNumber = tab === "pr" ? parsePrInput(prInput) : null;
-  const effectiveBranch =
-    tab === "pr"
-      ? prNumber
-        ? suggestPrBranch(prNumber, preview?.title)
-        : ""
-      : tab === "new"
-        ? branchName.trim()
-        : (existing ?? "");
+  const { preview, resolving, resolveError, suggestedBranch } = usePrPreview({
+    tab,
+    prNumber,
+    prInput,
+    location,
+    locationTouched,
+    parentPath: parent.path,
+  });
 
   // Branch list + occupancy (existing-branch flow blocks checked-out names).
   useEffect(() => {
@@ -206,56 +230,18 @@ export function WorktreeCreateDialog({
     [branches, currentBranch],
   );
   const base = pickedBase ?? defaultBase;
+  const effectiveBranch =
+    tab === "pr"
+      ? suggestedBranch
+      : tab === "new"
+        ? branchName.trim()
+        : (existing ?? "");
 
   // Location follows the branch name until the user edits it manually.
   useEffect(() => {
     if (locationTouched) return;
     setLocation(effectiveBranch ? defaultWorktreePath(parent.path, effectiveBranch) : "");
   }, [effectiveBranch, locationTouched, parent.path]);
-
-  // PR preview: debounced resolve. A second pass re-checks conflicts once
-  // the title arrives (branch name gains the slug); the key guard stops the
-  // loop when the suggestion stabilizes.
-  useEffect(() => {
-    if (tab !== "pr") return;
-    if (!prNumber) {
-      setPreview(null);
-      setResolveError(null);
-      setResolving(false);
-      lastResolveKey.current = "";
-      return;
-    }
-    const seq = ++resolveSeq.current;
-    setResolving(true);
-    setResolveError(null);
-    const timer = setTimeout(() => {
-      const suggested = suggestPrBranch(prNumber, preview?.title);
-      const dir = locationTouched
-        ? location.trim()
-        : defaultWorktreePath(parent.path, suggested);
-      const key = `${prNumber}|${suggested}|${dir}`;
-      if (lastResolveKey.current === key) {
-        setResolving(false);
-        return;
-      }
-      lastResolveKey.current = key;
-      void ipc
-        .gitResolvePr(parent.path, prInput, suggested, dir)
-        .then((p) => {
-          if (resolveSeq.current !== seq) return;
-          setPreview(p);
-          setResolving(false);
-        })
-        .catch((err) => {
-          if (resolveSeq.current !== seq) return;
-          setPreview(null);
-          setResolving(false);
-          setResolveError(String(err).includes("not_github") ? "notGitHub" : "invalidPrInput");
-        });
-    }, 400);
-    return () => clearTimeout(timer);
-    // preview?.title 参与派生分支名，必须跟踪；location 变化影响 dir 冲突检查。
-  }, [prInput, prNumber, preview?.title, location, locationTouched, parent.path, tab]);
 
   const localBranchNames = useMemo(
     () => new Set((branches ?? []).filter((b) => !b.isRemote).map((b) => b.name)),
@@ -266,47 +252,91 @@ export function WorktreeCreateDialog({
     tab === "new" && branchName.trim() !== "" && !isPlausibleBranchName(branchName.trim());
   const newBranchClash = tab === "new" && localBranchNames.has(branchName.trim());
 
-  const canSubmit =
-    !submitting &&
-    effectiveBranch !== "" &&
-    location.trim() !== "" &&
-    (tab === "pr"
-      ? prNumber != null &&
-        preview != null &&
-        !resolving &&
-        !preview.branchConflict &&
-        !preview.dirConflict
-      : tab === "new"
-        ? !newBranchInvalid && !newBranchClash && base != null
-        : existing != null && !occupied.has(existing));
+  const canSubmit = canSubmitCreate({
+    submitting,
+    effectiveBranch,
+    location,
+    tab,
+    prNumber,
+    preview,
+    resolving,
+    newBranchInvalid,
+    newBranchClash,
+    base,
+    existing,
+    occupied,
+  });
 
   const submit = () => {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
-    const args: WorktreeCreateArgs = {
-      repoPath: parent.path,
-      parentWorkspaceId: parent.id,
-      branch: effectiveBranch,
-      worktreePath: location.trim(),
-      baseRef: tab === "new" ? base : null,
-      prNumber: tab === "pr" ? prNumber : null,
-      prTitle: tab === "pr" ? (preview?.title ?? null) : null,
-      prUrl:
-        tab === "pr" && prNumber
-          ? prInput.includes("github.com")
-            ? prInput.trim()
-            : `https://github.com/${preview?.repo}/pull/${prNumber}`
-          : null,
-      existingBranch: tab === "existing",
-    };
     const store = useWorktreeStore.getState();
     store.setPrefs({
       location: locationTouched ? location.trim() : null,
       openSessionAfter,
     });
-    store.start(args, { parentPath: parent.path, openSessionAfter });
+    store.start(
+      buildCreateArgs({
+        parent,
+        tab,
+        effectiveBranch,
+        location,
+        base,
+        prNumber,
+        preview,
+        prInput,
+      }),
+      { parentPath: parent.path, openSessionAfter },
+    );
     onClose();
   };
+
+  const onLocationChange = (value: string) => {
+    setLocation(value);
+    setLocationTouched(true);
+  };
+
+  return {
+    tab,
+    setTab,
+    prInput,
+    setPrInput,
+    prNumber,
+    preview,
+    resolving,
+    resolveError,
+    branchName,
+    setBranchName,
+    newBranchInvalid,
+    newBranchClash,
+    base,
+    setPickedBase,
+    branches: branches ?? [],
+    occupied,
+    existing,
+    setExisting,
+    location,
+    onLocationChange,
+    openSessionAfter,
+    setOpenSessionAfter,
+    canSubmit,
+    submit,
+    effectiveBranch,
+  };
+}
+
+/** Three-source worktree creation (new branch / existing branch / PR). The
+ *  submit hands off to the background pipeline immediately — progress lives
+ *  in the sidebar's pending row, so the dialog closes on submit. */
+export function WorktreeCreateDialog({
+  parent,
+  onClose,
+}: {
+  parent: Workspace;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const form = useWorktreeCreateForm(parent, onClose);
 
   return (
     <ModalShell label={t("worktree.createTitle")} onClose={onClose} className="w-[28rem]">
@@ -315,7 +345,7 @@ export function WorktreeCreateDialog({
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
             e.preventDefault();
-            submit();
+            form.submit();
           }
         }}
       >
@@ -327,166 +357,63 @@ export function WorktreeCreateDialog({
         </div>
 
         <div className="flex gap-1.5">
-          <Chip selected={tab === "new"} onClick={() => setTab("new")}>
+          <Chip selected={form.tab === "new"} onClick={() => form.setTab("new")}>
             {t("worktree.tabNewBranch")}
           </Chip>
-          <Chip selected={tab === "existing"} onClick={() => setTab("existing")}>
+          <Chip selected={form.tab === "existing"} onClick={() => form.setTab("existing")}>
             {t("worktree.tabExistingBranch")}
           </Chip>
-          <Chip selected={tab === "pr"} onClick={() => setTab("pr")}>
+          <Chip selected={form.tab === "pr"} onClick={() => form.setTab("pr")}>
             {t("worktree.tabFromPr")}
           </Chip>
         </div>
 
-        {tab === "pr" && (
-          <>
-            <Input
-              autoFocus
-              size="small"
-              label={t("worktree.prInputLabel")}
-              placeholder={t("worktree.prInputPlaceholder")}
-              hint={t("worktree.prInputHint")}
-              value={prInput}
-              onChange={(v) => setPrInput(v)}
-              isInvalid={prInput.trim() !== "" && prNumber == null}
-            />
-            {prInput.trim() !== "" && prNumber == null && (
-              <div role="alert" className="text-caption-1-regular text-text-error-primary">
-                {t("worktree.invalidPrInput")}
-              </div>
-            )}
-            {resolving && (
-              <div className="flex items-center gap-1.5 text-caption-1-regular text-text-tertiary">
-                <Loader2 aria-hidden className="size-3.5 animate-spin" />
-                {t("worktree.resolving")}
-              </div>
-            )}
-            {resolveError && (
-              <div role="alert" className="text-caption-1-regular text-text-error-primary">
-                {t(`worktree.${resolveError}`)}
-              </div>
-            )}
-            {preview && (
-              <div className="flex flex-col gap-1 rounded-lg border border-border-button-default bg-background-secondary-default p-2.5">
-                {preview.degraded ? (
-                  <div className="text-body-medium text-text-secondary">
-                    {t("worktree.prPreviewDegraded", {
-                      number: preview.number,
-                      repo: preview.repo,
-                    })}
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 text-body-medium text-text-primary">
-                      <span className="min-w-0 flex-1 truncate">{preview.title}</span>
-                      {preview.state === "MERGED" && (
-                        <span className="shrink-0 rounded-full bg-status-purple-background px-1.5 py-0.5 text-caption-1-regular text-status-purple-text">
-                          {t("worktree.prStateMerged")}
-                        </span>
-                      )}
-                      {preview.state === "CLOSED" && (
-                        <span className="shrink-0 rounded-full bg-status-rose-background px-1.5 py-0.5 text-caption-1-regular text-status-rose-text">
-                          {t("worktree.prStateClosed")}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-caption-1-regular text-text-tertiary">
-                      {[
-                        preview.author &&
-                          t("worktree.prPreviewAuthor", { author: preview.author, base: base ?? "main" }),
-                        typeof preview.additions === "number" && `+${preview.additions} −${preview.deletions ?? 0}`,
-                        t("worktree.prPreviewBranch", { branch: effectiveBranch }),
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </div>
-                  </>
-                )}
-                {preview.branchConflict && (
-                  <div role="alert" className="text-caption-1-regular text-text-error-primary">
-                    {t("worktree.branchConflict", { branch: effectiveBranch })}
-                  </div>
-                )}
-                {preview.dirConflict && (
-                  <div role="alert" className="text-caption-1-regular text-text-error-primary">
-                    {t("worktree.dirConflict")}
-                  </div>
-                )}
-              </div>
-            )}
-          </>
+        {form.tab === "pr" && (
+          <PrSourceFields
+            prInput={form.prInput}
+            prNumber={form.prNumber}
+            preview={form.preview}
+            resolving={form.resolving}
+            resolveError={form.resolveError}
+            effectiveBranch={form.effectiveBranch}
+            base={form.base}
+            onPrInputChange={form.setPrInput}
+          />
         )}
 
-        {tab === "new" && (
-          <>
-            <Input
-              autoFocus
-              size="small"
-              label={t("worktree.branchLabel")}
-              placeholder={t("worktree.branchPlaceholder")}
-              value={branchName}
-              onChange={(v) => setBranchName(v)}
-              isInvalid={newBranchInvalid || newBranchClash}
-              hint={
-                newBranchInvalid
-                  ? t("worktree.invalidBranchName")
-                  : newBranchClash
-                    ? t("worktree.branchConflict", { branch: branchName.trim() })
-                    : undefined
-              }
-            />
-            <div className="flex flex-col gap-1">
-              <span className="text-caption-1-medium text-text-secondary">
-                {t("worktree.baseLabel")}
-              </span>
-              <BranchCombobox
-                branches={branches ?? []}
-                value={base}
-                onSelect={setPickedBase}
-                placeholder={t("git.searchBranches")}
-                ariaLabel={t("worktree.baseLabel")}
-                remoteLabel={t("git.remoteBranch")}
-              />
-              <span className="text-caption-1-regular text-text-tertiary">
-                {t("worktree.baseHint")}
-              </span>
-            </div>
-          </>
+        {form.tab === "new" && (
+          <NewBranchFields
+            branchName={form.branchName}
+            invalid={form.newBranchInvalid}
+            clash={form.newBranchClash}
+            base={form.base}
+            branches={form.branches}
+            onBranchNameChange={form.setBranchName}
+            onBaseSelect={form.setPickedBase}
+          />
         )}
 
-        {tab === "existing" && (
-          <div className="flex flex-col gap-1">
-            <span className="text-caption-1-medium text-text-secondary">
-              {t("worktree.existingBranchLabel")}
-            </span>
-            <BranchCombobox
-              branches={branches ?? []}
-              value={existing}
-              onSelect={setExisting}
-              placeholder={t("worktree.existingBranchPlaceholder")}
-              blocked={occupied}
-              blockedReason={t("worktree.existingBranchOccupied")}
-              ariaLabel={t("worktree.existingBranchLabel")}
-              remoteLabel={t("git.remoteBranch")}
-            />
-          </div>
+        {form.tab === "existing" && (
+          <ExistingBranchFields
+            existing={form.existing}
+            branches={form.branches}
+            occupied={form.occupied}
+            onExistingSelect={form.setExisting}
+          />
         )}
 
         <Input
           size="small"
           label={t("worktree.locationLabel")}
           hint={t("worktree.locationHint")}
-          value={location}
-          onChange={(v) => {
-            setLocation(v);
-            setLocationTouched(true);
-          }}
+          value={form.location}
+          onChange={form.onLocationChange}
         />
 
         <Switch
           size="sm"
-          isSelected={openSessionAfter}
-          onChange={(v) => setOpenSessionAfter(v)}
+          isSelected={form.openSessionAfter}
+          onChange={form.setOpenSessionAfter}
         >
           {t("worktree.openSessionAfter")}
         </Switch>
@@ -495,7 +422,7 @@ export function WorktreeCreateDialog({
           <Button variant="secondary" size="small" onClick={onClose}>
             {t("common.cancel")}
           </Button>
-          <Button size="small" disabled={!canSubmit} onClick={submit}>
+          <Button size="small" disabled={!form.canSubmit} onClick={form.submit}>
             {t("worktree.createSubmit")}
           </Button>
         </div>

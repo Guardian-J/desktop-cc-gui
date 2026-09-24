@@ -10,7 +10,7 @@ import {
 import { EngineIcon } from "@/components/foundations/icons/engine-icon";
 import { CLI_DISPLAY_NAMES } from "@/components/foundations/icons/engine-brands";
 import { errorText } from "@/lib/errors";
-import { fileUrl, IS_MAC } from "@/lib/platform";
+import { IS_MAC } from "@/lib/platform";
 import { ipc, type ComputerUsePermissionStatus } from "@/lib/ipc";
 import { useChatStore } from "@/features/chat/store";
 import { engineSupportsComputerUse } from "@/features/chat/computer-use";
@@ -35,9 +35,6 @@ export function ComputerUseSection() {
   const engines = useChatStore((s) => s.engines);
   const [status, setStatus] = useState<ComputerUsePermissionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dragSource, setDragSource] = useState<{ path: string; icon: string } | null>(
-    null,
-  );
 
   const refreshStatus = useCallback(() => {
     void ipc
@@ -51,24 +48,7 @@ export function ComputerUseSection() {
 
   useEffect(() => {
     refreshStatus();
-    // Drag-to-grant material; a failure only loses the affordance.
-    void ipc
-      .computerUseDragSource()
-      .then(setDragSource)
-      .catch(() => {});
   }, [refreshStatus]);
-
-  // Settings panes only accept a real app drag, so the grant affordance is a
-  // draggable icon rather than a button. The import is dynamic: the plugin
-  // has no meaning in web mode, where this page still renders.
-  const startAppDrag = useCallback(() => {
-    if (!dragSource) return;
-    void import("@crabnebula/tauri-plugin-drag")
-      .then(({ startDrag }) =>
-        startDrag({ item: [dragSource.path], icon: dragSource.icon }),
-      )
-      .catch((e) => setError(errorText(e)));
-  }, [dragSource]);
 
   const openPane = useCallback(
     (kind: "accessibility" | "screenRecording") => {
@@ -141,25 +121,6 @@ export function ComputerUseSection() {
             </>
           )}
         </SettingsCard>
-        {IS_MAC && status?.osPermissionsRequired && (
-          <p className="px-3 text-body-2-regular text-text-secondary">
-            {t("settings.computerUseDragHint")}
-          </p>
-        )}
-        {IS_MAC && dragSource && status?.osPermissionsRequired && (
-          <button
-            type="button"
-            // Drag must begin on the press, not the click: the OS takes over
-            // the pointer immediately and the button never sees a mouseup.
-            onMouseDown={startAppDrag}
-            className="mx-3 flex w-fit cursor-grab items-center gap-2 rounded-lg border border-border-secondary bg-background-primary-default px-3 py-2 text-left"
-          >
-            <img src={fileUrl(dragSource.icon)} alt="" className="size-6 shrink-0" />
-            <span className="text-body-regular text-text-primary">
-              {t("settings.computerUseDragApp")}
-            </span>
-          </button>
-        )}
       </div>
 
       <div className="flex w-full flex-col gap-2">

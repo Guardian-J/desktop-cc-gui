@@ -52,9 +52,6 @@ xcap = "0.9"
 enigo = "0.6"
 image = "0.25"
 rmcp = { version = "3.4", features = ["server", "macros", "transport-io"] }
-# Drag the app bundle out of the window into System Settings' permission
-# lists (macOS Accessibility / Screen Recording accept drop-to-authorize).
-tauri-plugin-drag = "2.1"
 # Global Esc-to-stop while a computer-use run is active; registered only for
 # the run's lifetime so Esc is never stolen outside a session.
 tauri-plugin-global-shortcut = "2"

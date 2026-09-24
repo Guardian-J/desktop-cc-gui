@@ -10,12 +10,10 @@ import type { ComputerUsePermissionStatus } from "@/lib/ipc";
  */
 
 const computerUsePermissionStatus = vi.fn();
-const computerUseDragSource = vi.fn();
 const computerUseOpenPermissionSettings = vi.fn();
 vi.mock("@/lib/ipc", () => ({
   ipc: {
     computerUsePermissionStatus: () => computerUsePermissionStatus(),
-    computerUseDragSource: () => computerUseDragSource(),
     computerUseOpenPermissionSettings: (kind: string) =>
       computerUseOpenPermissionSettings(kind),
   },
@@ -50,7 +48,6 @@ async function render(status: ComputerUsePermissionStatus) {
 
 beforeEach(() => {
   computerUsePermissionStatus.mockReset();
-  computerUseDragSource.mockReset().mockRejectedValue(new Error("no bundle"));
   computerUseOpenPermissionSettings.mockReset().mockResolvedValue(undefined);
   useChatStore.setState({
     engines: [

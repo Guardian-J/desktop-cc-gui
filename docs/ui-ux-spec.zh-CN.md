@@ -69,7 +69,7 @@
 
 - **电脑操控逐次开启，不做全局开关**：`/ccgui-cua <任务>`（`app-commands.ts` 的 `parseAppCommand`）只为那一次发送挂载驱动（`send` 的 `SendOptions.computerUse`），排队消息带着同一标志（`QueuedMessage.computerUse`）——机器输入被预授权，不能从一条普通消息间接触达。设置页 `ComputerUseSection.tsx` 只给权限状态与授权引导，不放 on/off 开关。
 - **引擎不支持电脑操控时必须明说**：`engineSupportsComputerUse` 读引擎能力位（`EngineInfo.supportsComputerUse`），为假时发送前拒绝并在会话错误条给出原因，不静默降级成普通对话；设置页按引擎列出支持情况（判定用精确文案，不能按“支持”子串误判“不支持”）。
-- **权限行读真实系统状态**：`computer_use_permission_status` 决定已授权/未授权，`osPermissionsRequired` 为假（Windows/Linux）时显示“无需额外授权”而非未授权行，不追一条系统从不要的授权；macOS 的授权入口是拖拽 App 图标（`computer_use_drag_source`），不是点一下就自动授予。
+- **权限行读真实系统状态**：`computer_use_permission_status` 决定已授权/未授权，`osPermissionsRequired` 为假（Windows/Linux）时显示“无需额外授权”而非未授权行，不追一条系统从不要的授权；macOS 的授权入口是「打开系统设置」按钮深链到对应面板（`computer_use_open_permission_settings`），页面不提供拖拽 App 图标的引导，也不暗示点一下就能自动授予。
 - **虚拟光标由 App 强制显示，不是设置项**：运行期间 `cu_overlay.rs` 跟随每个动作目标显示指针，模型侧没有可关闭它的工具；提示词只能说明它存在（computer_use.rs 的 MCP `instructions`），不能决定其可见性。
 - **急停只在电脑操控回合期间武装**：`computerUseSetActive` 在发送时武装、回合终止（`engine-events.ts` 的 `done`/`error`）时解除，全局 Esc 不超出它的运行期。
 - 可交互元素至少实现：默认 / hover / `focus-visible`（`ring-border-focus-ring`）/ active / disabled。按钮类控件的焦点环只走 `focus-visible`（不打扰鼠标用户）；输入类控件可以用 `focus:border-border-focus-ring` 表示聚焦，因为文本输入聚焦本身就是用户意图。
@@ -177,7 +177,7 @@ const feedback = useRunningFeedback(store.loading);
 
 ### 4.3 桌面宠物（pet overlay）
 
-- 窗口形态：独立透明置顶窗口（`src-tauri/src/pet_overlay.rs`），无边框、不进任务栏；仅宠物图像矩形接收点击（左键拖动＝`data-tauri-drag-region`，右键循环 50%/75%/100%/125%/150% 五档缩放并立即持久化），状态气泡与其余透明区域保持鼠标穿透，不遮挡桌面操作。
+- 窗口形态：独立透明置顶窗口（`src-tauri/src/pet_overlay.rs`），无边框、不进任务栏；仅宠物图像矩形接收点击（左键拖动＝`data-tauri-drag-region`，右键循环 50%/75%/100%/125%/150% 五档缩放并立即持久化；精灵为真实按钮，键盘 Enter/Space 与右键同效，焦点环走 `focus-visible`），状态气泡与其余透明区域保持鼠标穿透，不遮挡桌面操作。
 - 状态气泡（`src/index.css` `.pet-bubble`）：有活动状态时显现，显隐动效 opacity 160ms / transform 180ms（`cubic-bezier(0.23, 1, 0.32, 1)`）+ blur 消退；`prefers-reduced-motion` 下仅保留 opacity 180ms，无位移与模糊。气泡为玻璃拟态（backdrop blur + 内高光），文本两行截断（会话名 + 状态）；状态文案走 `settings.petActivity*`，`aria-live="polite"`，无活动时 `aria-hidden`。
 - 位置与尺寸记忆：拖动结束保存位置、缩放即时生效并持久化；恢复位置前校验仍在已连接显示器内，落出所有屏幕则用默认位置。宠物设置（开关/角色/导入/移除/尺寸）在设置「常规」分组；移除走 `ConfirmDialog`（danger），导入失败等后端稳定错误码经 `petErrorMessage` 映射为本地化文案。
 - 多会话状态：气泡在并发会话间每 1.8s 轮播，刚完成的会话短暂展示「已完成」；失败/等待优先于运行中展示。
@@ -242,6 +242,7 @@ const feedback = useRunningFeedback(store.loading);
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
+| v0.52 | 2026-09-24 | 设置「电脑操控」移除拖拽授权引导：删掉“重启生效 / 把图标拖进授权列表”提示与可拖拽 App 图标，macOS 授权只保留「打开系统设置」深链（`computer_use_open_permission_settings`）；同步删除 `computer_use_drag_source` 命令、`tauri-plugin-drag` 依赖与 `drag:default` 权限；§3 更新权限行规则 |
 | v0.51 | 2026-09-24 | AskUserQuestion 多题卡片：单选自动前进、多选逐题确认与单选/多选样式区分 |
 | v0.50 | 2026-09-23 | 桌面宠物（§4.3）：透明置顶宠物窗口的点击穿透/拖动/右键缩放交互、状态气泡动效时长、位置与尺寸记忆、多会话轮播；移除宠物改用 `ConfirmDialog`（danger），后端宠物错误码本地化 |
 | v0.49 | 2026-09-23 | Worktree 展开/收起补齐动效：「WORKTREES · n」分组原来是条件渲染、点击即闪现，现抽出 `SidebarDisclosure`（grid-rows 1fr⇄0fr、300ms、收起动画结束才卸载、`inert` + `aria-hidden`）供分组与线程列表共用，子行维持同一实现；新增浏览器 fixture 逐帧采样（`sidebar-collapse.html`）与 jsdom 卸载时序用例；新增 §2.4 展开/收起动效规则 |
