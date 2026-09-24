@@ -14,9 +14,12 @@
 //!   before PATHEXT and cannot run batch files, so `Command::new("claude")`
 //!   or a path to the shim fails with os error 193. We prefer the `.cmd`
 //!   variant and wrap batch files in `cmd /c` (`.ps1` in `powershell -File`).
-//! - macOS has neither problem (the shim is a real shebang script, and
-//!   `adopt_login_shell_path` fixes PATH), so the Unix side stays a thin
-//!   pass-through.
+//! - macOS shims are real shebang scripts (`#!/usr/bin/env node`).
+//!   `adopt_login_shell_path` usually fixes the process PATH, but discovery
+//!   can still succeed via well-known dirs when adopt fails/times out. Any
+//!   spawn of a shebang shim must therefore inject [`cli_search_path`] into
+//!   the child env — otherwise `/usr/bin/env` cannot see `node` even though
+//!   `find_cli_binary("npx")` returned an absolute path.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
@@ -525,6 +528,30 @@ fn build_search_paths(custom_bin: Option<&str>) -> std::ffi::OsString {
     std::env::join_paths(all_paths).unwrap_or_default()
 }
 
+/// PATH for child processes that may run shebang shims (`#!/usr/bin/env …`).
+/// Same dirs [`find_cli_binary`] searches: process PATH + well-known install
+/// locations. Plugin exec must set this on the child — resolving an absolute
+/// shim path is not enough for `/usr/bin/env` to find the interpreter.
+pub(crate) fn cli_search_path() -> std::ffi::OsString {
+    build_search_paths(None)
+}
+/// [`cli_search_path`] merged after a caller-supplied PATH: caller entries
+/// keep priority (its intent wins on conflicts), the CLI search dirs are
+/// appended so shebang shims still find their interpreter. Order-preserving,
+/// deduped.
+pub(crate) fn merge_cli_search_path(base: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    let mut all_paths: Vec<PathBuf> = Vec::new();
+    if let Some(base) = base {
+        for p in std::env::split_paths(base) {
+            push_unique_path(&mut all_paths, p);
+        }
+    }
+    for p in std::env::split_paths(&cli_search_path()) {
+        push_unique_path(&mut all_paths, p);
+    }
+    std::env::join_paths(&all_paths).unwrap_or_default()
+}
+
 // ── shim upgrade + batch wrapper ────────────────────────────────────────────
 
 /// Prefer an executable variant (`.cmd`/`.exe`/…) over a same-named
@@ -759,6 +786,92 @@ mod tests {
         let result = discover_npm_global_bin_dir(&[root.clone(), PathBuf::from("/bin")]);
         std::fs::remove_dir_all(root).unwrap();
         assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_search_path_covers_well_known_unix_bins() {
+        let path = cli_search_path();
+        let joined = path.to_string_lossy();
+        assert!(
+            joined.contains("/usr/local/bin")
+                || joined.contains("/opt/homebrew/bin")
+                || joined.contains(".local/bin"),
+            "cli_search_path missing well-known dirs: {joined}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_cli_search_path_keeps_caller_dirs_first_and_dedupes() {
+        let merged = merge_cli_search_path(Some(std::ffi::OsStr::new(
+            "/opt/plugin/bin:/opt/plugin/bin",
+        )));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        assert_eq!(
+            dirs.first(),
+            Some(&PathBuf::from("/opt/plugin/bin")),
+            "caller PATH must keep priority: {dirs:?}"
+        );
+        assert_eq!(
+            dirs.iter().filter(|d| d.as_path() == Path::new("/opt/plugin/bin")).count(),
+            1,
+            "caller dir must be deduped: {dirs:?}"
+        );
+        // The CLI search dirs still follow, so shebang shims find node.
+        let joined = merged.to_string_lossy();
+        assert!(
+            joined.contains("/usr/local/bin")
+                || joined.contains("/opt/homebrew/bin")
+                || joined.contains(".local/bin"),
+            "merge dropped well-known dirs: {joined}"
+        );
+    }
+
+    /// Regression: absolute shebang shim + launchd-like PATH → `env: node: No
+    /// such file`. Injecting the search PATH (as plugin_exec does) fixes it.
+    #[cfg(unix)]
+    #[test]
+    fn cli_search_path_lets_env_shebang_find_interpreter() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let root = std::env::temp_dir().join(format!("ccgui-shebang-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let node = root.join("node");
+        std::fs::write(&node, "#!/bin/sh\nprintf ok\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shim = root.join("tool");
+        std::fs::write(&shim, "#!/usr/bin/env node\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bare = Command::new(&shim)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("spawn bare");
+        assert!(
+            !bare.status.success(),
+            "launchd-like PATH must fail shebang; stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&bare.stdout),
+            String::from_utf8_lossy(&bare.stderr)
+        );
+
+        let mut dirs = vec![root.clone()];
+        for part in std::env::split_paths(&cli_search_path()) {
+            push_unique_path(&mut dirs, part);
+        }
+        let enriched = std::env::join_paths(&dirs).unwrap();
+        let fixed = Command::new(&shim)
+            .env("PATH", &enriched)
+            .output()
+            .expect("spawn enriched");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            fixed.status.success(),
+            "enriched PATH should run shebang; stderr={}",
+            String::from_utf8_lossy(&fixed.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&fixed.stdout), "ok");
     }
 
     #[cfg(unix)]

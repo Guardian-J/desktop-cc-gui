@@ -266,8 +266,12 @@ export interface PluginContext {
    *    （形状与放行规则见 spec/permissions.json）。
    *  - `plugin_exec_run` `{ bin, args, env?, timeoutMs? }` →
    *    `{ code, stdout, stderr }`：bin 须命中 `exec:<bin>` 授权（裸名，无路径）。
+   *    子进程 PATH 由宿主注入为"插件 env 的 PATH（如有，保持优先）+ 宿主 CLI
+   *    搜索目录（进程 PATH + 常见安装位置）"，保证 `#!/usr/bin/env node`
+   *    类 shim 能找到解释器；插件无法借 env 完全锁死 PATH。
    *  - `plugin_exec_spawn` `{ bin, args, env?, lifecycle? }` → void：
    *    同授权；成功时 resolve 为 void（Rust 返回 ()），失败 reject。
+   *    PATH 注入语义同 `plugin_exec_run`。
    *    lifecycle 缺省 "detached"（用户级服务，活过插件）；"plugin" =
    *    附属进程，宿主跟踪，插件禁用/卸载时自动 kill。
    *  - `plugin_exec_kill` `{}` → `{ killed: number }`：kill 本插件全部
