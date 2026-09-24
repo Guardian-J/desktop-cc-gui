@@ -535,6 +535,22 @@ fn build_search_paths(custom_bin: Option<&str>) -> std::ffi::OsString {
 pub(crate) fn cli_search_path() -> std::ffi::OsString {
     build_search_paths(None)
 }
+/// [`cli_search_path`] merged after a caller-supplied PATH: caller entries
+/// keep priority (its intent wins on conflicts), the CLI search dirs are
+/// appended so shebang shims still find their interpreter. Order-preserving,
+/// deduped.
+pub(crate) fn merge_cli_search_path(base: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    let mut all_paths: Vec<PathBuf> = Vec::new();
+    if let Some(base) = base {
+        for p in std::env::split_paths(base) {
+            push_unique_path(&mut all_paths, p);
+        }
+    }
+    for p in std::env::split_paths(&cli_search_path()) {
+        push_unique_path(&mut all_paths, p);
+    }
+    std::env::join_paths(&all_paths).unwrap_or_default()
+}
 
 // ── shim upgrade + batch wrapper ────────────────────────────────────────────
 
@@ -782,6 +798,33 @@ mod tests {
                 || joined.contains("/opt/homebrew/bin")
                 || joined.contains(".local/bin"),
             "cli_search_path missing well-known dirs: {joined}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_cli_search_path_keeps_caller_dirs_first_and_dedupes() {
+        let merged = merge_cli_search_path(Some(std::ffi::OsStr::new(
+            "/opt/plugin/bin:/opt/plugin/bin",
+        )));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        assert_eq!(
+            dirs.first(),
+            Some(&PathBuf::from("/opt/plugin/bin")),
+            "caller PATH must keep priority: {dirs:?}"
+        );
+        assert_eq!(
+            dirs.iter().filter(|d| d.as_path() == Path::new("/opt/plugin/bin")).count(),
+            1,
+            "caller dir must be deduped: {dirs:?}"
+        );
+        // The CLI search dirs still follow, so shebang shims find node.
+        let joined = merged.to_string_lossy();
+        assert!(
+            joined.contains("/usr/local/bin")
+                || joined.contains("/opt/homebrew/bin")
+                || joined.contains(".local/bin"),
+            "merge dropped well-known dirs: {joined}"
         );
     }
 

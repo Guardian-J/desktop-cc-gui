@@ -917,6 +917,13 @@ async fn send_reserved(
     command.process_group(0);
     #[cfg(windows)]
     hide_console(&mut command);
+    // Shebang shims (`#!/usr/bin/env node`) need the CLI search dirs in
+    // PATH: when adopt_login_shell_path failed/timed out, the process PATH
+    // is a stale launchd snapshot and an absolute shim path alone cannot
+    // find the interpreter. Same dirs find_cli_binary searched; appended
+    // after the process PATH, so normal resolution order is unchanged.
+    // Harmless for the WSL/ssh-wrapped command (local env doesn't cross).
+    command.env("PATH", resolve::cli_search_path());
 
     let mut child = match command.spawn() {
         Ok(child) => child,

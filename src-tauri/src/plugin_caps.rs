@@ -46,7 +46,7 @@ use tauri::Manager;
 
 use parking_lot::Mutex;
 
-use crate::engine::resolve::{cli_search_path, command_for_binary, find_cli_binary};
+use crate::engine::resolve::{command_for_binary, find_cli_binary, merge_cli_search_path};
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -298,6 +298,20 @@ fn resolve_granted_bin(plugin_id: &str, grants: &[String], bin: &str) -> Result<
     let path = find_cli_binary(bin, None)
         .ok_or_else(|| format!("{plugin_id}: binary not found on PATH: {bin}"))?;
     Ok(path.to_string_lossy().to_string())
+}
+/// Plugin-supplied PATH from an exec env map, extracted before `envs`
+/// consumes it so the CLI search dirs are appended after it instead of
+/// replacing it. Windows env keys are case-insensitive (std Command treats
+/// them so); Unix `PATH` is exact-case, a lowercase `path` is another var.
+fn plugin_env_path(env: &HashMap<String, String>) -> Option<std::ffi::OsString> {
+    #[cfg(windows)]
+    let value = env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value);
+    #[cfg(not(windows))]
+    let value = env.get("PATH");
+    value.map(std::ffi::OsString::from)
 }
 
 // ── lifecycle-tracked children ──────────────────────────────────────────────
@@ -614,12 +628,14 @@ pub(crate) async fn plugin_exec_run(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    let plugin_path = env.as_ref().and_then(plugin_env_path);
     if let Some(env) = env {
         command.envs(env);
     }
     // After plugin env: shebang shims (`#!/usr/bin/env node`) need the same
-    // search PATH find_cli_binary used, not a stale launchd PATH.
-    command.env("PATH", cli_search_path());
+    // search PATH find_cli_binary used, not a stale launchd PATH. A
+    // plugin-supplied PATH keeps priority; the search dirs follow it.
+    command.env("PATH", merge_cli_search_path(plugin_path.as_deref()));
     // Own process group (unix) so the timeout sweep below can take the
     // whole tree, not just the direct child.
     #[cfg(unix)]
@@ -709,10 +725,11 @@ pub(crate) async fn plugin_exec_spawn(
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
+            let plugin_path = env.as_ref().and_then(plugin_env_path);
             if let Some(env) = env {
                 command.envs(env);
             }
-            command.env("PATH", cli_search_path());
+            command.env("PATH", merge_cli_search_path(plugin_path.as_deref()));
             #[cfg(windows)]
             crate::engine::hide_console(&mut command);
             command
@@ -728,10 +745,11 @@ pub(crate) async fn plugin_exec_spawn(
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
+            let plugin_path = env.as_ref().and_then(plugin_env_path);
             if let Some(env) = env {
                 command.envs(env);
             }
-            command.env("PATH", cli_search_path());
+            command.env("PATH", merge_cli_search_path(plugin_path.as_deref()));
             #[cfg(windows)]
             crate::engine::hide_console(&mut command);
             let child = command
@@ -788,6 +806,24 @@ mod tests {
         assert!(require_workspace_grants(&base, "p", Some(&wsl_meta)).is_err());
         let remote = grants(&["host:workspace", "host:workspace:remote"]);
         assert!(require_workspace_grants(&remote, "p", Some(&wsl_meta)).is_ok());
+    }
+    #[test]
+    fn plugin_env_path_extracts_exact_key() {
+        let mut env = HashMap::new();
+        assert!(plugin_env_path(&env).is_none());
+        env.insert("PATH".to_string(), "/opt/plugin/bin".to_string());
+        assert_eq!(
+            plugin_env_path(&env).as_deref(),
+            Some(std::ffi::OsStr::new("/opt/plugin/bin"))
+        );
+        // Unix: a lowercase `path` is a different variable and must not be
+        // merged into PATH. (Windows matches case-insensitively, like std.)
+        #[cfg(not(windows))]
+        {
+            let mut lower = HashMap::new();
+            lower.insert("path".to_string(), "/lower".to_string());
+            assert!(plugin_env_path(&lower).is_none());
+        }
     }
 
     #[test]
