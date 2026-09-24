@@ -5,18 +5,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EngineInfo, PluginInfo } from "@/lib/ipc";
 
 // The settings page never probes IPC for the rail itself (engine states come
-// from the chat store); a rejecting-any-method proxy keeps section module
-// imports and the stub page inert. `pluginReadArtwork` is called out so the
-// plugin rail-icon fallback can be asserted.
-const { pluginReadArtwork } = vi.hoisted(() => ({
+// from the chat store); the proxy resolves any other method to null so section
+// module imports and the stub page stay inert. Methods a rendered section
+// actually consumes are called out: `pluginReadArtwork` so the plugin
+// rail-icon fallback can be asserted, `listPets` because GeneralSection (the
+// unknown-key fallback) loads the pet list on mount and maps over an array.
+const { pluginReadArtwork, listPets } = vi.hoisted(() => ({
   pluginReadArtwork: vi.fn(
     async (_id: string, _path: string): Promise<string> =>
       "data:image/png;base64,AAAA",
   ),
+  listPets: vi.fn(async () => []),
 }));
 vi.mock("@/lib/ipc", () => ({
   ipc: new Proxy(
-    { pluginReadArtwork },
+    { pluginReadArtwork, listPets },
     {
       get: (target, prop) =>
         prop in target ? Reflect.get(target, prop) : async () => null,

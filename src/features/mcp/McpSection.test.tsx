@@ -25,7 +25,12 @@ vi.mock("./api", () => ({
   mcpApi: api,
 }));
 
-vi.mock("@/lib/transport", () => ({ isWeb: false }));
+// ipc.ts subscribes to settings://changed at module scope; the stub keeps
+// that subscription inert (the real transport needs Tauri internals).
+vi.mock("@/lib/transport", () => ({
+  isWeb: false,
+  listen: async () => () => {},
+}));
 
 import "@/lib/i18n";
 import { useChatStore } from "@/features/chat/store";

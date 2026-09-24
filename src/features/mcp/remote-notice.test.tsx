@@ -2,7 +2,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/transport", () => ({ isWeb: true }));
+// ipc.ts subscribes to settings://changed at module scope; the stub keeps
+// that subscription inert (the real transport needs Tauri internals).
+vi.mock("@/lib/transport", () => ({
+  isWeb: true,
+  listen: async () => () => {},
+}));
 
 import "@/lib/i18n";
 import { SkillsSection } from "@/features/skills/SkillsSection";
