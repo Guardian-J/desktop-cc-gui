@@ -46,9 +46,10 @@ async function bootstrapWithRetry(): Promise<void> {
         `[plugins] bootstrap attempt ${attempt + 1} failed; retrying in ${delay}ms`,
         error,
       );
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, delay);
-      await promise;
+      // Not Promise.withResolvers: that is Chromium 119+, and a WebView2 that
+      // still lacks it throws inside this catch, which skips every later retry
+      // and leaves plugins unloaded until the hub is opened.
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
