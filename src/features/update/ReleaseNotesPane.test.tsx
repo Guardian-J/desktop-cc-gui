@@ -164,13 +164,16 @@ describe("ReleaseNotesPane", () => {
   });
 
   it("says so instead of borrowing another version's notes", async () => {
-    // 检测到 v1.0.9，但清单没带 notes、本地也没有这个版本的条目。
-    useUpdateStore.setState({ notesRelease: { version: "1.0.9" } });
+    // 检测到的版本清单没带 notes、本地也没有这个版本的条目。版本号不写死
+    // 「下一个发布号」——那个号一旦真的进了 CHANGELOG_DATA，这条用例的前提
+    // 就失效了，用一个本地记录保证不会有的号。
+    const unknown = "9.9.9";
+    useUpdateStore.setState({ notesRelease: { version: unknown } });
     await render();
 
-    expect(container.textContent).toContain("v1.0.9");
+    expect(container.textContent).toContain(`v${unknown}`);
     expect(container.textContent).toContain("这个版本没有附带更新说明。");
-    expect(container.textContent).not.toContain("插件中心升级为原生页签");
+    expect(container.textContent).not.toContain(newestMarker);
   });
 
   it("offers the in-place update while a release is available", async () => {
