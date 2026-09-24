@@ -39,15 +39,22 @@ declare global {
 
 let installed = false;
 
+/** Test-only: the guard is process-global, so a case that needs a fresh
+ *  install has to clear the flag explicitly. */
+export function resetHardeningForTests(): void {
+  installed = false;
+}
+
 /** Wrap the Tauri IPC entry point with the plugin-execution guard. Idempotent;
- *  no-op outside the desktop webview (web bridge has no __TAURI_INTERNALS__). */
+ *  no-op outside the desktop webview (web bridge has no __TAURI_INTERNALS__).
+ *  Failure to wrap is not fatal: bootstrap must still load plugins. */
 export function installHardening(): void {
   if (installed) return;
   installed = true;
   const internals = window.__TAURI_INTERNALS__;
   const original = internals?.invoke;
   if (!internals || !original) return;
-  internals.invoke = (cmd, args) => {
+  const wrapped: typeof original = (cmd, args) => {
     if (pluginDepth > 0) {
       return Promise.reject(
         new Error(
@@ -57,4 +64,29 @@ export function installHardening(): void {
     }
     return original(cmd, args);
   };
+  // Tauri 2.11 defines `invoke` with Object.defineProperty and leaves it
+  // non-writable and non-configurable. A bare assignment throws in strict
+  // mode ("Cannot assign to read only property 'invoke'") and used to abort
+  // plugin bootstrap before plugin_list ran. When the property can't be
+  // replaced the guard stays off — plugins still load.
+  const descriptor = Object.getOwnPropertyDescriptor(internals, "invoke");
+  const warnInactive = (error?: unknown) => {
+    console.warn(
+      "[plugins] could not wrap __TAURI_INTERNALS__.invoke; plugin IPC guard is inactive",
+      error,
+    );
+  };
+  try {
+    if (descriptor?.configurable) {
+      Object.defineProperty(internals, "invoke", { ...descriptor, value: wrapped });
+    } else if (descriptor?.writable !== false) {
+      internals.invoke = wrapped;
+    } else {
+      // Non-writable and non-configurable: the Tauri 2.11 descriptor.
+      // Replacing it is impossible; do not throw out of bootstrap.
+      warnInactive(new TypeError("invoke is read-only"));
+    }
+  } catch (error) {
+    warnInactive(error);
+  }
 }
