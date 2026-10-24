@@ -24,9 +24,10 @@ const activeNotifications = new Map<number, { key: string; onClick?: () => void 
 /**
  * 格式化通知正文：清理 Markdown 标记（代码块、粗斜体、反引号），
  * 压缩多余空白，并截断至指定长度，以便在桌面 Toast 弹窗中清晰展示。
+ * 清理后为空（如正文只是一段代码块）时返回 fallback，避免空 Toast。
  */
-export function formatNotificationBody(text: string, maxLength = 160): string {
-  if (!text) return "";
+export function formatNotificationBody(text: string, maxLength = 160, fallback = ""): string {
+  if (!text) return fallback;
   let clean = text
     .replace(/```[\s\S]*?```/g, "")
     .replace(/`([^`]+)`/g, "$1")
@@ -37,7 +38,7 @@ export function formatNotificationBody(text: string, maxLength = 160): string {
   if (clean.length > maxLength) {
     clean = `${clean.slice(0, maxLength)}...`;
   }
-  return clean;
+  return clean || fallback;
 }
 
 /**
@@ -73,11 +74,20 @@ export async function getNotificationPreferences(): Promise<{
   onError: boolean;
   unfocusedOnly: boolean;
 }> {
-  if (!cachedSettings) {
+  if (cachedSettings === null) {
     try {
       cachedSettings = await ipc.getAppSettings();
     } catch {
-      cachedSettings = {};
+      // Leave the cache unset: a failed read must not pin the defaults as
+      // authoritative — the next event retries the IPC instead.
+      return {
+        enabled: true,
+        onCompletion: true,
+        onQuestion: true,
+        onInterrupted: true,
+        onError: true,
+        unfocusedOnly: true,
+      };
     }
   }
   return {
@@ -306,14 +316,17 @@ export async function sendOSNotification(options: SendSystemNotificationOptions)
 
   // 2. 桌面模式（Tauri）：调用 Tauri Notification 插件
   try {
-    sendNotification({
+    // `sendNotification` resolves once the backend has posted the toast;
+    // awaiting it lets a rejected post fall through to the web fallback
+    // instead of surfacing as an unhandled rejection that claims success.
+    await sendNotification({
       id: notifId,
       title: options.title,
       body: options.body,
       extra: options.sessionKey ? { sessionKey: options.sessionKey } : undefined,
     });
     return true;
-  } catch (err) {
+  } catch {
     return spawnWebNotification();
   }
 }
@@ -334,8 +347,10 @@ export async function notifyTurnComplete(key: string, summary?: string): Promise
   const eventType = i18n.t("chat.notifyTurnCompleteTitle", "对话已完成");
   const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
   const fallbackBody = i18n.t("chat.notifyTurnCompleteBodyFallback", "AI 已完成回复，请查看");
+  // A summary that is only a code block cleans to "" — fall back to the
+  // generic body instead of posting an empty toast.
   const rawContent = summary && summary.trim() ? summary.trim() : fallbackBody;
-  const body = formatNotificationBody(rawContent, 160);
+  const body = formatNotificationBody(rawContent, 160, fallbackBody);
   return sendOSNotification({
     title,
     body,
@@ -367,7 +382,7 @@ export async function notifyInterrupted(key: string, reason?: string): Promise<v
   const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
   const fallbackBody = i18n.t("chat.notifyInterruptedBody", "API 连接或响应异常中断");
   const rawContent = reason && reason.trim() ? reason.trim() : fallbackBody;
-  const body = formatNotificationBody(rawContent, 160);
+  const body = formatNotificationBody(rawContent, 160, fallbackBody);
   return sendOSNotification({
     title,
     body,
@@ -393,7 +408,7 @@ export async function notifyTurnError(key: string, errorText?: string): Promise<
   const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
   const fallbackBody = i18n.t("chat.notifyErrorBodyFallback", "对话执行遇到错误，请查看详情");
   const rawContent = errorText && errorText.trim() ? errorText.trim() : fallbackBody;
-  const body = formatNotificationBody(rawContent, 160);
+  const body = formatNotificationBody(rawContent, 160, fallbackBody);
   return sendOSNotification({
     title,
     body,
@@ -441,8 +456,9 @@ export async function notifyPlanReview(key: string, planTitle?: string): Promise
   const sessionTitle = getSessionDisplayTitle(key);
   const eventType = i18n.t("chat.notifyPlanReviewTitle", "计划待审批");
   const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const detail = planTitle ? `${planTitle}` : i18n.t("chat.notifyPlanReviewBodyFallback", "模型提交了新计划等待审批");
-  const body = formatNotificationBody(detail, 160);
+  const planFallback = i18n.t("chat.notifyPlanReviewBodyFallback", "模型提交了新计划等待审批");
+  const detail = planTitle ? `${planTitle}` : planFallback;
+  const body = formatNotificationBody(detail, 160, planFallback);
   return sendOSNotification({
     title,
     body,

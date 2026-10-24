@@ -101,6 +101,16 @@ describe("notifications", () => {
       const result = formatNotificationBody(input, 100);
       expect(result).toBe("This is bold and code formatting");
     });
+
+    it("falls back when stripping leaves nothing (code-block-only body)", () => {
+      const result = formatNotificationBody("```js\nconsole.log(1);\n```", 100, "默认正文");
+      expect(result).toBe("默认正文");
+    });
+
+    it("keeps the cleaned body when it is non-empty", () => {
+      const result = formatNotificationBody("**完成**", 100, "默认正文");
+      expect(result).toBe("完成");
+    });
   });
 
   describe("preferences", () => {
@@ -112,6 +122,26 @@ describe("notifications", () => {
       const prefs = await getNotificationPreferences();
       expect(prefs.enabled).toBe(false);
       expect(prefs.onCompletion).toBe(false);
+    });
+
+    it("retries the IPC after a failed settings read instead of pinning defaults", async () => {
+      // Static import cannot work here: the preference cache is module-level
+      // state that starts unset only in a fresh registry, so this case must
+      // load the module boundary anew. Both modules must also share the same
+      // (re-created) ipc mock instance.
+      vi.resetModules();
+      const { ipc } = await import("./ipc");
+      const fresh = await import("./notifications");
+
+      vi.mocked(ipc.getAppSettings).mockRejectedValueOnce(new Error("ipc down"));
+      const fallback = await fresh.getNotificationPreferences();
+      expect(fallback.enabled).toBe(true);
+      expect(fallback.unfocusedOnly).toBe(true);
+
+      // The failure must not pin the defaults: the next call reaches the IPC
+      // again (a cached `{}` would short-circuit and never call it twice).
+      await fresh.getNotificationPreferences();
+      expect(ipc.getAppSettings).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -159,6 +189,13 @@ describe("notifications", () => {
       });
       await notifyTurnComplete("codex:ses-1:/workspace", "任务顺利完成！");
       expect(sendNotification).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the generic body when the summary is only a code block", async () => {
+      await notifyTurnComplete("codex:ses-1:/workspace", "```js\nconsole.log(1);\n```");
+      const call = vi.mocked(sendNotification).mock.calls[0][0];
+      const body = typeof call === "string" ? "" : call.body;
+      expect(body).toBe("AI 已完成回复，请查看");
     });
   });
 

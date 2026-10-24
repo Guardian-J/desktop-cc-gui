@@ -18,6 +18,7 @@ vi.mock("@/lib/ipc", () => ({
   ipc: {
     rescanSessions: vi.fn(async () => []),
     usageRecord: vi.fn(async () => {}),
+    grantScope: vi.fn(async (path: string) => path),
   },
 }));
 
@@ -116,5 +117,150 @@ describe("engine-events notifications", () => {
     );
     expect(notifications.notifyTurnError).toHaveBeenCalledWith(KEY, "401 Unauthorized");
     expect(notifications.notifyInterrupted).not.toHaveBeenCalled();
+  });
+
+  it("triggers notifyQuestion on a pending question card", () => {
+    const { deps } = createDeps(false);
+    handleEngineEvents(
+      [
+        {
+          runId: "r-1",
+          sessionId: "s-1",
+          engine: "claude",
+          seq: 3,
+          kind: "question",
+          data: {
+            requestId: "q-1",
+            input: {
+              questions: [
+                { question: "是否删除该文件？", header: "确认", options: [{ label: "Yes" }, { label: "No" }] },
+              ],
+            },
+          },
+        },
+      ],
+      deps,
+    );
+    expect(notifications.notifyQuestion).toHaveBeenCalledWith(KEY, "是否删除该文件？");
+  });
+
+  it("does NOT trigger notifyQuestion for a replayed (duplicate) question frame", () => {
+    const { deps } = createDeps(false);
+    const event = {
+      runId: "r-1",
+      sessionId: "s-1",
+      engine: "claude",
+      seq: 3,
+      kind: "question" as const,
+      data: {
+        requestId: "q-1",
+        input: {
+          questions: [
+            { question: "是否删除该文件？", header: "确认", options: [{ label: "Yes" }, { label: "No" }] },
+          ],
+        },
+      },
+    };
+    handleEngineEvents([event], deps);
+    handleEngineEvents([event], deps);
+    expect(notifications.notifyQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  it("triggers notifyPermissionRequest on a pending grant card", () => {
+    const { deps } = createDeps(false);
+    handleEngineEvents(
+      [
+        {
+          runId: "r-1",
+          sessionId: "s-1",
+          engine: "claude",
+          seq: 3,
+          kind: "permission_denied",
+          data: { tool: "Bash", path: "/src/sensitive" },
+        },
+      ],
+      deps,
+    );
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledWith(KEY, "/src/sensitive");
+  });
+
+  it("does NOT trigger notifyPermissionRequest for a duplicate grant card", () => {
+    const { deps } = createDeps(false);
+    const event = {
+      runId: "r-1",
+      sessionId: "s-1",
+      engine: "claude",
+      seq: 3,
+      kind: "permission_denied" as const,
+      data: { tool: "Bash", path: "/src/sensitive" },
+    };
+    handleEngineEvents([event], deps);
+    // The same denial rides the run twice (mid-turn tool_result, then the
+    // final result's permission_denials): the still-pending card makes the
+    // second frame a duplicate, so no second notification may fire.
+    handleEngineEvents([{ ...event, seq: 4 }], deps);
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("triggers notifyPlanReview when a plan revision enters awaiting_review", () => {
+    const { deps } = createDeps(false);
+    const record = {
+      planId: "p-1",
+      engine: "claude",
+      sessionId: "s-1",
+      workspacePath: "/ws",
+      runId: "r-1",
+      revision: 1,
+      title: "实施方案A",
+      content: "# 方案",
+      contentHash: "h1",
+      complete: true,
+      reviewKind: "plan" as const,
+      nativePlanId: null,
+      execPermission: "default",
+      status: "awaiting_review" as const,
+      execution: "pending" as const,
+      decisionIntentAt: null,
+      appliedAt: null,
+      createdAt: 1,
+      updatedAt: 2,
+      supersededBy: null,
+    };
+    handleEngineEvents(
+      [{ runId: "r-1", sessionId: "s-1", engine: "claude", seq: 3, kind: "plan_review", data: record }],
+      deps,
+    );
+    expect(notifications.notifyPlanReview).toHaveBeenCalledWith(KEY, "实施方案A");
+  });
+
+  it("does NOT trigger notifyPlanReview for non-awaiting statuses", () => {
+    const { deps } = createDeps(false);
+    const record = {
+      planId: "p-1",
+      engine: "claude",
+      sessionId: "s-1",
+      workspacePath: "/ws",
+      runId: "r-1",
+      revision: 1,
+      title: "实施方案A",
+      content: "# 方案",
+      contentHash: "h1",
+      complete: true,
+      reviewKind: "plan" as const,
+      nativePlanId: null,
+      execPermission: "default",
+      status: "approved" as const,
+      execution: "pending" as const,
+      decisionIntentAt: null,
+      appliedAt: null,
+      createdAt: 1,
+      updatedAt: 2,
+      supersededBy: null,
+    };
+    handleEngineEvents(
+      [{ runId: "r-1", sessionId: "s-1", engine: "claude", seq: 3, kind: "plan_review", data: record }],
+      deps,
+    );
+    expect(notifications.notifyPlanReview).not.toHaveBeenCalled();
   });
 });

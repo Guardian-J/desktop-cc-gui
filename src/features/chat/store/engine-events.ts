@@ -1292,8 +1292,7 @@ function onError(
   finishRunLifecycle(event.runId, "failed", typeof event.data === "string" ? event.data : undefined, event.sessionId);
   if (!prev.interrupted) {
     const errText = typeof event.data === "string" ? event.data : "";
-    const isInterruptedMsg = /中断|disconnect|abort|timeout/i.test(errText);
-    if (isInterruptedMsg) {
+    if (looksLikeDisconnection(errText)) {
       notifyInterrupted(key, errText);
     } else {
       notifyTurnError(key, errText);
@@ -1307,7 +1306,18 @@ function onError(
   if (!prev.interrupted) deps.drainQueue(key);
 }
 
-/** Patch the grant state of one card row, located by its message seq. */
+/**
+ * Guess whether a turn error is a connection/stream interruption rather than
+ * a request failure, so it can raise the dedicated "interrupted" notice.
+ * Heuristic over the error text: the engine event carries no error class.
+ * Known false positives: request-level timeouts ("request timeout after 30s")
+ * are classified as interruptions; a "session interrupted by user" echo from
+ * the CLI never reaches here (gated by `prev.interrupted` upstream).
+ */
+function looksLikeDisconnection(errText: string): boolean {
+  return /中断|disconnect|abort|timeout/i.test(errText);
+}
+
 export function patchGrantBySeq(
   set: (fn: (s: ChatStore) => Partial<ChatStore>) => void,
   key: string,

@@ -3,7 +3,7 @@ name = "ccgui-next"
 version = "1.1.8"
 description = "CC GUI - multi-CLI AI chat desktop"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 
 [lib]
 name = "ccgui_next_lib"
@@ -20,7 +20,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-tauri-plugin-notification = "2"
+tauri-plugin-notification = "2.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 regex = "1"
