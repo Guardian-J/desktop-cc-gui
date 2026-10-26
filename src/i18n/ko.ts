@@ -378,7 +378,13 @@ export const ko: Messages = {
     "checkUnreported": "보고되지 않음",
     "checkMismatch": "불일치",
     "checkOkAria": "응답 확인: 응답과 일치",
-    "checkMismatchAria": "응답 확인: 응답과 불일치"
+    "checkMismatchAria": "응답 확인: 응답과 불일치",
+    "editSession": "세션 편집",
+    "refreshSessionRendering": "렌더링 새로 고침",
+    "sessionRefreshing": "대화 렌더링을 새로 고치는 중…",
+    "sessionEditRunning": "세션이 실행 중입니다. 파일을 편집하려면 먼저 중지하세요.",
+    "sessionRefreshRunning": "세션이 실행 중입니다. 렌더링을 새로 고치려면 먼저 중지하세요.",
+    "sessionRefreshFailed": "대화 렌더링을 새로 고치지 못했습니다: {{error}}"
   },
   "settings": {
     "title": "설정",
@@ -1187,6 +1193,16 @@ export const ko: Messages = {
     "saveFile": "저장",
     "preview": "미리보기",
     "editMode": "편집",
+    "wordWrap": "자동 줄 바꿈",
+    "sessionFileTooLargeTitle": "세션 파일이 너무 큽니다",
+    "sessionFileTooLarge": "세션이 내장 편집기의 64 MiB 한도를 넘었습니다. 외부 소프트웨어로 편집하세요. 절대 경로를 복사해 다른 프로그램에서 열 수도 있습니다.",
+    "openInDefaultEditor": "기본 텍스트 편집기로 열기",
+    "externalEditorOpening": "여는 중…",
+    "externalEditorOpened": "외부 편집기에서 파일을 열도록 요청했습니다. 저장한 뒤 세션 메뉴에서 「렌더링 새로 고침」을 선택하세요.",
+    "externalEditorFailed": "기본 텍스트 편집기를 열지 못했습니다: {{error}}",
+    "externalEditorDesktopOnly": "CC GUI를 실행 중인 컴퓨터에서 로컬 세션 파일을 열어야 합니다. 브라우저는 로컬 편집기를 실행할 수 없습니다.",
+    "externalEditorRemote": "이 세션 파일은 원격에 있습니다. 원격 환경의 편집기로 열어 주세요.",
+    "externalEditorStructured": "이 세션은 압축 또는 데이터베이스 저장소를 사용합니다. 이를 지원하는 외부 소프트웨어를 사용하세요.",
     "markdown": {
       "close": "닫기",
       "copied": "복사됨",
