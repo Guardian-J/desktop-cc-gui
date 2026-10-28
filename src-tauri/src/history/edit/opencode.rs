@@ -382,8 +382,8 @@ fn write_tree(path: &Path, session_id: &str, edited: &Value, expected_version: &
         for change in &changes {
             super::preserve_backup(&change.path, &change.original)?;
         }
-        super::preserve_backup_with_permissions(
-            &snapshot.metadata.with_extension("ccgui-session.json"), previous.as_bytes(), &snapshot.metadata,
+        super::preserve_private_backup(
+            &snapshot.metadata.with_extension("ccgui-session.json"), previous.as_bytes(),
         )?;
     }
     let mut applied = 0;
@@ -570,7 +570,7 @@ fn write_db(path: &Path, session_id: &str, edited: &Value, expected_version: &st
         _ => return Err("OpenCode session title must be text or null".into()),
     };
     if original != *edited {
-        super::preserve_backup_with_permissions(&db_backup_source(path, session_id), previous.as_bytes(), path)?;
+        super::preserve_private_backup(&db_backup_source(path, session_id), previous.as_bytes())?;
     }
     if original["session"].get("title") != edited["session"].get("title") {
         tx.execute("UPDATE session SET title=?1 WHERE id=?2", rusqlite::params![title, session_id]).map_err(db_error)?;
@@ -976,6 +976,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn aggregate_backups_do_not_inherit_broad_metadata_or_parent_access() {
+        use std::fs::File;
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let scratch = Scratch::new();
         let tree = tree_fixture(&scratch);
