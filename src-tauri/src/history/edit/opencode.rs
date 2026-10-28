@@ -973,6 +973,73 @@ mod tests {
         assert!(!canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_other")).exists());
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn aggregate_backups_do_not_inherit_broad_metadata_or_parent_access() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        let native_database = scratch.0.join("opencode.db");
+        let private_directory = scratch.0.join("storage/message/ses_one");
+        let private_message = private_directory.join("msg_one.json");
+        std::fs::set_permissions(&private_directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&private_message, std::fs::Permissions::from_mode(0o600)).unwrap();
+        for source in [&tree, &native_database] {
+            std::fs::set_permissions(source, std::fs::Permissions::from_mode(0o644)).unwrap();
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::fd::AsRawFd;
+                // The named user grant is inherited even when mode masks hide
+                // it; removing the ACL, not chmod alone, makes it private.
+                let mut acl = 2u32.to_le_bytes().to_vec();
+                for (tag, permissions, id) in [
+                    (1u16, 7u16, u32::MAX), (2, 7, unsafe { libc::geteuid() } + 1),
+                    (4, 7, u32::MAX), (16, 7, u32::MAX), (32, 7, u32::MAX),
+                ] {
+                    acl.extend(tag.to_le_bytes());
+                    acl.extend(permissions.to_le_bytes());
+                    acl.extend(id.to_le_bytes());
+                }
+                let parent = File::open(source.parent().unwrap()).unwrap();
+                let name = b"system.posix_acl_default\0";
+                assert_eq!(unsafe { libc::fsetxattr(parent.as_raw_fd(), name.as_ptr().cast(), acl.as_ptr().cast(), acl.len(), 0) }, 0);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let status = std::process::Command::new("/bin/chmod")
+                    .args(["+a", "everyone allow read,write,file_inherit,directory_inherit"])
+                    .arg(source.parent().unwrap()).status().unwrap();
+                assert!(status.success());
+            }
+        }
+        let other = scratch.0.join("storage/part/msg_other/prt_other.json");
+        let other_bytes = std::fs::read(&other).unwrap();
+        for path in [&tree, &database] {
+            let (original, version) = read(path, "ses_one").unwrap();
+            let backup = if path == &tree { canonical_backup_path(&tree.with_extension("ccgui-session.json")) }
+                else { canonical_backup_path(&db_backup_source(&native_database, "ses_one")) };
+            let mut view: Value = serde_json::from_str(&original).unwrap();
+            view["session"]["title"] = json!("private aggregate");
+            let (saved, fresh_version) = write(path, "ses_one", &view.to_string(), &version).unwrap();
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+            let security = std::fs::metadata(&backup).unwrap();
+            assert_eq!(security.uid(), unsafe { libc::geteuid() });
+            assert_eq!(security.permissions().mode() & 0o777, 0o600);
+            #[cfg(target_os = "linux")]
+            assert_eq!(super::super::linux_access_acl(&File::open(&backup).unwrap()).unwrap(), None);
+            #[cfg(target_os = "macos")]
+            super::super::check_private_macos_acl(&File::open(&backup).unwrap()).unwrap();
+            assert_eq!(write(path, "ses_one", &original, &fresh_version).unwrap().0, original);
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), saved);
+            #[cfg(target_os = "linux")]
+            assert_eq!(super::super::linux_access_acl(&File::open(&backup).unwrap()).unwrap(), None);
+        }
+        assert_eq!(std::fs::read(&other).unwrap(), other_bytes);
+        assert!(!canonical_backup_path(&tree.with_file_name("ses_other.ccgui-session.json")).exists());
+        assert!(!canonical_backup_path(&db_backup_source(&native_database, "ses_other")).exists());
+    }
+
     #[test]
     fn opencode_tree_backs_up_exact_changed_and_deleted_native_bytes_only() {
         let scratch = Scratch::new();
@@ -995,18 +1062,21 @@ mod tests {
 
     #[test]
     fn opencode_backup_failure_blocks_native_mutation() {
-        let scratch = Scratch::new();
-        let tree = tree_fixture(&scratch);
-        let database = db_fixture(&scratch);
-        for path in [&tree, &database] {
-            let (text, version) = read(path, "ses_one").unwrap();
-            let backup = if path == &tree { canonical_backup_path(path) }
-                else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
-            std::fs::create_dir(&backup).unwrap();
-            let mut view: Value = serde_json::from_str(&text).unwrap();
-            view["session"]["title"] = json!("must not persist");
-            assert!(write(path, "ses_one", &view.to_string(), &version).is_err());
-            assert_eq!(read(path, "ses_one").unwrap(), (text, version));
+        for aggregate in [false, true] {
+            let scratch = Scratch::new();
+            let tree = tree_fixture(&scratch);
+            let database = db_fixture(&scratch);
+            for path in [&tree, &database] {
+                let (text, version) = read(path, "ses_one").unwrap();
+                let backup = if path == &tree {
+                    canonical_backup_path(&if aggregate { path.with_extension("ccgui-session.json") } else { path.to_path_buf() })
+                } else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+                std::fs::create_dir(&backup).unwrap();
+                let mut view: Value = serde_json::from_str(&text).unwrap();
+                view["session"]["title"] = json!("must not persist");
+                assert!(write(path, "ses_one", &view.to_string(), &version).is_err());
+                assert_eq!(read(path, "ses_one").unwrap(), (text, version));
+            }
         }
     }
 

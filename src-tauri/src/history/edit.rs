@@ -6,6 +6,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -151,16 +152,16 @@ fn read_native_bytes(path: &Path) -> Result<(Vec<u8>, Metadata), String> {
     Ok((bytes, metadata))
 }
 
-fn decode_native_text(engine: &str, bytes: &[u8]) -> Result<String, String> {
+fn decode_native_text<'a>(engine: &str, bytes: &'a [u8]) -> Result<Cow<'a, str>, String> {
     if engine == "dsh" {
         let decoder = zstd::stream::read::Decoder::new(bytes)
             .map_err(|e| format!("decode native DSH source: {e}"))?;
         let mut decoded = Vec::new();
         decoder.take(MAX_SESSION_DOCUMENT_BYTES + 1).read_to_end(&mut decoded)
             .map_err(|e| format!("decode native DSH source: {e}"))?;
-        bounded_utf8(decoded)
+        bounded_utf8(decoded).map(Cow::Owned)
     } else {
-        std::str::from_utf8(bytes).map(str::to_owned)
+        std::str::from_utf8(bytes).map(Cow::Borrowed)
             .map_err(|e| format!("native session is not valid UTF-8: {e}"))
     }
 }
@@ -168,7 +169,11 @@ fn decode_native_text(engine: &str, bytes: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 fn read_native_text(engine: &str, path: &Path) -> Result<String, String> {
     let (bytes, _) = read_native_bytes(path)?;
-    decode_native_text(engine, &bytes)
+    if engine == "dsh" {
+        decode_native_text(engine, &bytes).map(Cow::into_owned)
+    } else {
+        bounded_utf8(bytes)
+    }
 }
 
 // Metadata identities are native facts, not editable conversation text. Other
@@ -241,9 +246,14 @@ fn read_local(db: &crate::db::Db, engine: &str, session_id: &str) -> Result<Sess
         "opencode" => opencode::read(&source, session_id)?,
         _ => {
             let (bytes, _) = read_native_bytes(&source)?;
-            let text = decode_native_text(engine, &bytes)?;
+            let version = document_version(&bytes);
+            let text = if engine == "dsh" {
+                decode_native_text(engine, &bytes)?.into_owned()
+            } else {
+                bounded_utf8(bytes)?
+            };
             validate_native_content(engine, session_id, &text)?;
-            (text, document_version(&bytes))
+            (text, version)
         }
     };
     check_document_size(text.len() as u64)?;
@@ -376,18 +386,28 @@ fn atomic_write_existing_checked(path: &Path, bytes: &[u8], original: &Metadata,
 /// Retain one exact previous native version. Never follow an existing backup
 /// symlink, and never mutate the source when backup staging/publication fails.
 pub(super) fn preserve_backup(source: &Path, bytes: &[u8]) -> Result<(), String> {
-    preserve_backup_with_permissions(source, bytes, source)
-}
-
-/// `source` may be a logical per-session JSON name for shared database storage;
-/// its access controls are copied from the real `security_source` before data.
-pub(super) fn preserve_backup_with_permissions(source: &Path, bytes: &[u8], security_source: &Path) -> Result<(), String> {
     check_document_size(bytes.len() as u64)?;
-    let original = regular_source(security_source)?;
-    let security = File::open(security_source).map_err(|e| format!("open backup security source: {e}"))?;
+    let original = regular_source(source)?;
+    let security = File::open(source).map_err(|e| format!("open backup security source: {e}"))?;
     if !same_source(&original, &security.metadata().map_err(|e| format!("inspect backup security source: {e}"))?) {
         return Err(format!("{SESSION_EDIT_CONFLICT}: native backup security source changed"));
     }
+    stage_backup(source, bytes, |staged| {
+        preserve_source_permissions(&security, staged)?;
+        #[cfg(windows)]
+        preserve_backup_windows_dacl(&security, staged)?;
+        Ok(())
+    })
+}
+
+/// An aggregate includes private constituent files, so neither session metadata
+/// nor shared database access controls are authority to disclose its transcript.
+pub(super) fn preserve_private_backup(source: &Path, bytes: &[u8]) -> Result<(), String> {
+    check_document_size(bytes.len() as u64)?;
+    stage_backup(source, bytes, secure_private_backup)
+}
+
+fn stage_backup(source: &Path, bytes: &[u8], secure: impl FnOnce(&File) -> Result<(), String>) -> Result<(), String> {
     let mut name = source.file_name().ok_or_else(|| "backup source has no filename".to_string())?.to_os_string();
     name.push(".ccgui-backup");
     let backup = source.with_file_name(name);
@@ -415,6 +435,9 @@ pub(super) fn preserve_backup_with_permissions(source: &Path, bytes: &[u8], secu
         {
             use std::os::windows::fs::OpenOptionsExt;
             options.access_mode(0x4000_0000 | 0x0002_0000 | 0x0004_0000);
+            // No other process may retain a handle opened before the private
+            // DACL is applied to the still-empty staging file.
+            options.share_mode(0);
         }
         #[cfg(unix)]
         {
@@ -422,9 +445,7 @@ pub(super) fn preserve_backup_with_permissions(source: &Path, bytes: &[u8], secu
             options.mode(0o600);
         }
         let mut staged = options.open(&temp).map_err(|e| format!("stage native backup: {e}"))?;
-        preserve_source_permissions(&security, &staged)?;
-        #[cfg(windows)]
-        preserve_backup_windows_dacl(&security, &staged)?;
+        secure(&staged)?;
         staged.write_all(bytes).map_err(|e| format!("write native backup: {e}"))?;
         staged.sync_all().map_err(|e| format!("flush native backup: {e}"))?;
         drop(staged);
@@ -480,6 +501,109 @@ fn preserve_backup_windows_dacl(source: &File, staged: &File) -> Result<(), Stri
         return Err(format!("preserve native backup DACL: {}", std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn secure_private_backup(staged: &File) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = staged.metadata().map_err(|e| format!("inspect private backup owner: {e}"))?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err("private backup must belong to the editing user".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let name = b"system.posix_acl_access\0";
+        if unsafe { libc::fremovexattr(staged.as_raw_fd(), name.as_ptr().cast()) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ENODATA) {
+                return Err(format!("remove inherited backup ACL: {error}"));
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let acl = unsafe { acl_init(0) };
+        if acl.is_null() { return Err(format!("create private backup ACL: {}", std::io::Error::last_os_error())); }
+        let result = unsafe { acl_set_fd(staged.as_raw_fd(), acl) };
+        let error = std::io::Error::last_os_error();
+        unsafe { acl_free(acl); }
+        if result != 0 { return Err(format!("remove inherited backup ACL: {error}")); }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err("private native backups are unsupported on this platform".into());
+    staged.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("restrict private backup mode: {e}"))?;
+    #[cfg(target_os = "linux")]
+    if linux_access_acl(staged)?.is_some() { return Err("private backup still has an inherited ACL".into()); }
+    #[cfg(target_os = "macos")]
+    check_private_macos_acl(staged)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn acl_init(count: libc::c_int) -> *mut libc::c_void;
+    fn acl_set_fd(fd: libc::c_int, acl: *mut libc::c_void) -> libc::c_int;
+    fn acl_get_fd(fd: libc::c_int) -> *mut libc::c_void;
+    fn acl_get_entry(acl: *mut libc::c_void, entry_id: libc::c_int, entry: *mut *mut libc::c_void) -> libc::c_int;
+    fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn check_private_macos_acl(staged: &File) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let acl = unsafe { acl_get_fd(staged.as_raw_fd()) };
+    if acl.is_null() { return Err(format!("read private backup ACL: {}", std::io::Error::last_os_error())); }
+    let mut entry = std::ptr::null_mut();
+    let result = unsafe { acl_get_entry(acl, 0, &mut entry) };
+    let error = std::io::Error::last_os_error();
+    unsafe { acl_free(acl); }
+    // Darwin returns -1/EINVAL at the end of an ACL, not POSIX's zero.
+    if result == -1 && error.raw_os_error() == Some(libc::EINVAL) { Ok(()) }
+    else { Err("private backup ACL is not empty".into()) }
+}
+
+#[cfg(windows)]
+fn secure_private_backup(staged: &File) -> Result<(), String> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{
+        AddAccessAllowedAce, GetTokenInformation, InitializeAcl, ACL, ACL_REVISION,
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY,
+        TOKEN_USER, TokenUser,
+    };
+    use windows::Win32::Security::Authorization::{SetSecurityInfo, SE_FILE_OBJECT};
+    use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }
+        .map_err(|e| format!("open editing user token: {e}"))?;
+    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+    // Aligned stack buffers hold TOKEN_USER and one maximum-size Windows SID,
+    // and an ACL containing just that SID. No transcript-sized allocation.
+    let mut user = [0usize; 128 / std::mem::size_of::<usize>()];
+    let mut needed = 0;
+    unsafe { GetTokenInformation(HANDLE(token.as_raw_handle()), TokenUser, Some(user.as_mut_ptr().cast()),
+        std::mem::size_of_val(&user) as u32, &mut needed) }
+        .map_err(|e| format!("read editing user SID: {e}"))?;
+    let sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut storage = [0u32; 32];
+    let acl = storage.as_mut_ptr().cast::<ACL>();
+    unsafe {
+        InitializeAcl(acl, std::mem::size_of_val(&storage) as u32, ACL_REVISION)
+            .and_then(|()| AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS.0, sid))
+    }.map_err(|e| format!("create private backup DACL: {e}"))?;
+    unsafe { SetSecurityInfo(HANDLE(staged.as_raw_handle()), SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        None, None, Some(acl), None) }.ok()
+        .map_err(|e| format!("restrict private backup DACL: {e}"))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn secure_private_backup(_staged: &File) -> Result<(), String> {
+    Err("private native backups are unsupported on this platform".into())
 }
 
 /// Preserve access-control semantics, not only mode bits (which can be an ACL
@@ -640,17 +764,20 @@ fn remote_source_guard(quoted: &str) -> String {
         [ \"$sz\" -le {MAX_SESSION_DOCUMENT_BYTES} ] || {{ echo 'native source exceeds 64 MiB' >&2; exit 4; }}\n")
 }
 
-async fn read_remote_source(transport: &crate::engine::wsl_transport::WslTransport, engine: &str,
-    session_id: &str, path: &str) -> Result<(String, String), String> {
-    let quoted = crate::engine::wsl_transport::sh_quote(path);
-    let script = format!("set -e\nset -o pipefail\n{}\nsignature=$(stat -c '%d:%i:%s:%y:%z' -- \"$src\") || exit 3\n\
+// Reads and successful saves use the same bounded, metadata-checked native
+// snapshot. A CLI append before this snapshot is included; one during it fails.
+fn remote_snapshot_script(quoted: &str) -> String {
+    format!("{}\nsignature=$(stat -c '%d:%i:%s:%y:%z' -- \"$src\") || exit 3\n\
         printf '%s\\n' \"$signature\"\ndd if=\"$src\" bs=65536 count=1025 status=none | base64 -w0\n\
-        [ \"$(stat -c '%d:%i:%s:%y:%z' -- \"$src\")\" = \"$signature\" ] || {{ echo 'native source changed during read' >&2; exit 5; }}",
-        remote_source_guard(&quoted));
-    let raw = crate::engine::wsl_transport::run_script_output(transport, &script).await?;
+        [ \"$(stat -c '%d:%i:%s:%y:%z' -- \"$src\")\" = \"$signature\" ] || {{ echo '{SESSION_EDIT_CONFLICT}: native source changed during read; reload before saving again' >&2; exit 5; }}",
+        remote_source_guard(quoted))
+}
+
+fn decode_remote_snapshot(engine: &str, session_id: &str, raw: &str) -> Result<(String, String), String> {
     let (signature, encoded) = raw.split_once('\n')
         .ok_or_else(|| "remote native source response is incomplete".to_string())?;
     let signature = signature.trim_end_matches('\r').to_string();
+    check_version(&signature, &signature)?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.trim())
         .map_err(|e| format!("decode remote native source: {e}"))?;
     check_document_size(bytes.len() as u64)?;
@@ -664,6 +791,25 @@ async fn read_remote_source(transport: &crate::engine::wsl_transport::WslTranspo
     } else { bounded_utf8(bytes)? };
     validate_native_content(engine, session_id, &text)?;
     Ok((text, signature))
+}
+
+fn parse_remote_source(engine: &str, session_id: &str, path: &str, raw: &str)
+    -> Result<SessionFileDocument, String> {
+    let (text, signature) = decode_remote_snapshot(engine, session_id, raw)?;
+    Ok(SessionFileDocument {
+        name: source_name(engine, Path::new(path), session_id)?,
+        path: path.to_owned(),
+        text,
+        version: signature,
+    })
+}
+
+async fn read_remote_source(transport: &crate::engine::wsl_transport::WslTransport, engine: &str,
+    session_id: &str, path: &str) -> Result<(String, String), String> {
+    let quoted = crate::engine::wsl_transport::sh_quote(path);
+    let script = format!("set -e\nset -o pipefail\n{}", remote_snapshot_script(&quoted));
+    let raw = crate::engine::wsl_transport::run_script_output(transport, &script).await?;
+    decode_remote_snapshot(engine, session_id, &raw)
 }
 
 fn remote_write_script(engine: &str, session_id: &str, path: &str, content: &str,
@@ -681,7 +827,7 @@ fn remote_write_script(engine: &str, session_id: &str, path: &str, content: &str
     let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
     let quoted = crate::engine::wsl_transport::sh_quote(path);
     let signature = crate::engine::wsl_transport::sh_quote(signature);
-    Ok(format!("set -e\numask 077\n{}\n\
+    Ok(format!("set -e\nset -o pipefail\numask 077\n{}\n\
         expected={signature}\n[ \"$(stat -c '%d:%i:%s:%y:%z' -- \"$src\")\" = \"$expected\" ] || {{ echo '{SESSION_EDIT_CONFLICT}: native source changed before save' >&2; exit 5; }}\n\
         [ -w \"$src\" ] || {{ echo 'native source is read-only' >&2; exit 3; }}\n\
         dir=$(dirname -- \"$src\")\nbackup=\"$src.ccgui-backup\"\n\
@@ -693,12 +839,12 @@ fn remote_write_script(engine: &str, session_id: &str, path: &str, content: &str
         bak=$(mktemp -- \"$dir/.ccgui-backup.XXXXXXXX\")\n\
         cp --preserve=mode,ownership -- \"$src\" \"$bak\"\nsync -f -- \"$bak\"\n\
         [ -f \"$src\" ] && [ ! -L \"$src\" ] && [ \"$(stat -c '%d:%i:%s:%y:%z' -- \"$src\")\" = \"$expected\" ] || {{ echo '{SESSION_EDIT_CONFLICT}: native source changed during save' >&2; exit 5; }}\n\
-        [ \"$(realpath -e -- \"$src\")\" = \"$lexical\" ] || exit 5\n\
+        [ \"$(realpath -e -- \"$src\")\" = \"$lexical\" ] || {{ echo '{SESSION_EDIT_CONFLICT}: native source boundary changed during save' >&2; exit 5; }}\n\
         [ ! -L \"$backup\" ] && {{ [ ! -e \"$backup\" ] || {{ [ -f \"$backup\" ] && [ -w \"$backup\" ]; }}; }} || exit 3\n\
         mv -fT -- \"$bak\" \"$backup\"\nsync -f -- \"$dir\"\n\
         [ \"$(stat -c '%d:%i:%s:%y:%z' -- \"$src\")\" = \"$expected\" ] || {{ echo '{SESSION_EDIT_CONFLICT}: native source changed while backing up' >&2; exit 5; }}\n\
-        mv -fT -- \"$tmp\" \"$src\"\ntrap - EXIT\nstat -c '%d:%i:%s:%y:%z' -- \"$src\"",
-        remote_source_guard(&quoted)))
+        mv -fT -- \"$tmp\" \"$src\"\ntrap - EXIT\n{}",
+        remote_source_guard(&quoted), remote_snapshot_script(&quoted)))
 }
 
 
@@ -767,10 +913,13 @@ pub async fn write_session_file(state: tauri::State<'_, crate::AppState>, engine
             || current.workspace != transport.workspace || current.engine_paths != transport.engine_paths {
             return Err("workspace remote transport changed during native session save".into());
         }
-        let name = source_name(&engine, Path::new(&remote_path), &session_id)?;
-        let version = crate::engine::wsl_transport::run_script_output(&current, &script).await?.trim().to_owned();
+        // The final expected-version check and rename still cannot exclude an
+        // external CLI write between them. This snapshot fixes the separate
+        // post-commit text/token race; it is not an external-writer lock.
+        let raw = crate::engine::wsl_transport::run_script_output(&current, &script).await?;
+        let document = parse_remote_source(&engine, &session_id, &remote_path, &raw)?;
         drop(_edit);
-        return Ok(SessionFileDocument { name, path: remote_path, text: content, version });
+        return Ok(document);
     }
     let db = Arc::clone(&state.db);
     let processes = Arc::clone(&state.processes);
@@ -894,16 +1043,21 @@ mod tests {
         assert!(validate_engine("agy").is_err());
     }
 
+
     #[test]
-    fn logical_session_backup_never_changes_shared_security_source() {
+    fn backup_security_failure_precedes_transcript_write_and_publication() {
         let scratch = Scratch::new();
-        let database = scratch.path("opencode.db");
-        std::fs::write(&database, b"shared database bytes").unwrap();
-        let logical = scratch.path("opencode.db.ses_one.json");
-        preserve_backup_with_permissions(&logical, b"{\"session\":\"previous\"}", &database).unwrap();
-        assert!(!logical.exists());
-        assert_eq!(std::fs::read(scratch.path("opencode.db.ses_one.json.ccgui-backup")).unwrap(), b"{\"session\":\"previous\"}");
-        assert_eq!(std::fs::read(&database).unwrap(), b"shared database bytes");
+        let source = scratch.path("aggregate.json");
+        let backup = scratch.path("aggregate.json.ccgui-backup");
+        std::fs::write(&backup, b"previous secured backup").unwrap();
+        let error = stage_backup(&source, b"private transcript", |staged| {
+            assert_eq!(staged.metadata().unwrap().len(), 0);
+            Err("cannot secure native ACL".into())
+        }).unwrap_err();
+        assert_eq!(error, "cannot secure native ACL");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"previous secured backup");
+        assert!(!source.exists());
+        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 1);
     }
 
     #[cfg(unix)]
@@ -1078,10 +1232,16 @@ mod tests {
             assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
             let backup = path.with_file_name(format!("{}.ccgui-backup", path.file_name().unwrap().to_str().unwrap()));
             assert_eq!(std::fs::read(&backup).unwrap(), bytes);
-            let new_version = String::from_utf8(result.stdout).unwrap();
-            assert_ne!(new_version.trim(), signature.trim());
-            let next = remote_write_script(engine, "sid-one", path.to_str().unwrap(), &after, new_version.trim()).unwrap();
-            assert!(std::process::Command::new("bash").args(["-c", &next]).output().unwrap().status.success());
+            let raw = String::from_utf8(result.stdout).unwrap();
+            let document = parse_remote_source(engine, "sid-one", path.to_str().unwrap(), &raw).unwrap();
+            assert_eq!(document.text, after);
+            assert_ne!(document.version, signature.trim());
+            let next = remote_write_script(engine, "sid-one", path.to_str().unwrap(), &document.text, &document.version).unwrap();
+            let result = std::process::Command::new("bash").args(["-c", &next]).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let raw = String::from_utf8(result.stdout).unwrap();
+            let document = parse_remote_source(engine, "sid-one", path.to_str().unwrap(), &raw).unwrap();
+            assert_eq!(document.text, after);
             assert_eq!(read_native_text(engine, &path).unwrap(), after);
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
             let stale = std::process::Command::new("bash").args(["-c", &script]).output().unwrap();
@@ -1091,6 +1251,99 @@ mod tests {
             let missing = std::process::Command::new("bash").args(["-c", &script]).output().unwrap();
             assert!(!missing.status.success());
             assert!(!path.exists());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn remote_post_commit_append_is_returned_and_preserved_by_the_next_save() {
+        let scratch = Scratch::new();
+        let dir = scratch.path(".omp/agent/sessions/fixture");
+        std::fs::create_dir_all(&dir).unwrap();
+        let append = format!("{}\n", serde_json::json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"late CLI turn 汉🦀"}]}}));
+        for engine in ["omp", "dsh"] {
+            let path = dir.join(if engine == "dsh" { "session.v3.jsonl.zstd" } else { "sid-one.jsonl" });
+            let before = omp_text("sid-one", "before");
+            let submitted = omp_text("sid-one", "first GUI edit");
+            let original_bytes = if engine == "dsh" { zstd::stream::encode_all(before.as_bytes(), 3).unwrap() } else { before.into_bytes() };
+            let append_bytes = if engine == "dsh" { zstd::stream::encode_all(append.as_bytes(), 3).unwrap() } else { append.as_bytes().to_vec() };
+            std::fs::write(&path, &original_bytes).unwrap();
+            let stat = std::process::Command::new("stat").args(["-c", "%d:%i:%s:%y:%z", "--"]).arg(&path).output().unwrap();
+            assert!(stat.status.success());
+            let signature = String::from_utf8(stat.stdout).unwrap();
+            let script = remote_write_script(engine, "sid-one", path.to_str().unwrap(), &submitted, signature.trim()).unwrap();
+            // The external CLI appends immediately after the native rename,
+            // before any post-commit stat/read. No sleeps or script rewrites.
+            let external_append = r#"mv() {
+                command mv "$@" || return
+                if [ "${!#}" = "$CCGUI_APPEND_PATH" ]; then
+                    printf '%s' "$CCGUI_APPEND_BYTES" | base64 -d >> "$CCGUI_APPEND_PATH"
+                fi
+            }
+            "#;
+            let result = std::process::Command::new("bash")
+                .args(["-c", &format!("{external_append}{script}")])
+                .env("CCGUI_APPEND_PATH", &path)
+                .env("CCGUI_APPEND_BYTES", base64::engine::general_purpose::STANDARD.encode(&append_bytes))
+                .output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let raw = String::from_utf8(result.stdout).unwrap();
+            let document = parse_remote_source(engine, "sid-one", path.to_str().unwrap(), &raw).unwrap();
+            assert_eq!(document.text, format!("{submitted}{append}"));
+            assert_eq!(read_native_text(engine, &path).unwrap(), document.text);
+            let stat = std::process::Command::new("stat").args(["-c", "%d:%i:%s:%y:%z", "--"]).arg(&path).output().unwrap();
+            assert!(stat.status.success());
+            assert_eq!(document.version, String::from_utf8(stat.stdout).unwrap().trim());
+            let committed_bytes = std::fs::read(&path).unwrap();
+            let next_text = document.text.replace("first GUI edit", "second GUI edit");
+            let next = remote_write_script(engine, "sid-one", path.to_str().unwrap(), &next_text, &document.version).unwrap();
+            let result = std::process::Command::new("bash").args(["-c", &next]).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let raw = String::from_utf8(result.stdout).unwrap();
+            let document = parse_remote_source(engine, "sid-one", path.to_str().unwrap(), &raw).unwrap();
+            assert_eq!(document.text, next_text);
+            assert!(document.text.contains("late CLI turn 汉🦀"));
+            assert_eq!(read_native_text(engine, &path).unwrap(), next_text);
+            let backup = path.with_file_name(format!("{}.ccgui-backup", path.file_name().unwrap().to_str().unwrap()));
+            assert_eq!(std::fs::read(&backup).unwrap(), committed_bytes);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn remote_append_during_post_commit_snapshot_rejects_for_reload() {
+        let scratch = Scratch::new();
+        let dir = scratch.path(".omp/agent/sessions/fixture");
+        std::fs::create_dir_all(&dir).unwrap();
+        let append = format!("{}\n", serde_json::json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"late CLI turn"}]}}));
+        for engine in ["omp", "dsh"] {
+            let path = dir.join(if engine == "dsh" { "session.v3.jsonl.zstd" } else { "sid-one.jsonl" });
+            let before = omp_text("sid-one", "before");
+            let submitted = omp_text("sid-one", "GUI edit");
+            let bytes = if engine == "dsh" { zstd::stream::encode_all(before.as_bytes(), 3).unwrap() } else { before.into_bytes() };
+            let append_bytes = if engine == "dsh" { zstd::stream::encode_all(append.as_bytes(), 3).unwrap() } else { append.as_bytes().to_vec() };
+            std::fs::write(&path, &bytes).unwrap();
+            let stat = std::process::Command::new("stat").args(["-c", "%d:%i:%s:%y:%z", "--"]).arg(&path).output().unwrap();
+            assert!(stat.status.success());
+            let signature = String::from_utf8(stat.stdout).unwrap();
+            let script = remote_write_script(engine, "sid-one", path.to_str().unwrap(), &submitted, signature.trim()).unwrap();
+            // Append after dd emitted its snapshot bytes, before the final
+            // metadata check. A successful status must never authorize them.
+            let external_append = r#"dd() {
+                command dd "$@" || return
+                printf '%s' "$CCGUI_APPEND_BYTES" | base64 -d >> "$CCGUI_APPEND_PATH"
+            }
+            "#;
+            let result = std::process::Command::new("bash")
+                .args(["-c", &format!("{external_append}{script}")])
+                .env("CCGUI_APPEND_PATH", &path)
+                .env("CCGUI_APPEND_BYTES", base64::engine::general_purpose::STANDARD.encode(&append_bytes))
+                .output().unwrap();
+            assert_eq!(result.status.code(), Some(5), "{}", String::from_utf8_lossy(&result.stderr));
+            assert!(String::from_utf8_lossy(&result.stderr).contains(SESSION_EDIT_CONFLICT));
+            assert_eq!(read_native_text(engine, &path).unwrap(), format!("{submitted}{append}"));
+            let backup = path.with_file_name(format!("{}.ccgui-backup", path.file_name().unwrap().to_str().unwrap()));
+            assert_eq!(std::fs::read(&backup).unwrap(), bytes);
         }
     }
 
@@ -1116,16 +1369,19 @@ mod tests {
             questions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             plans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
-        processes.0.lock().unwrap().insert("sid-one".into(), entry.clone());
+        processes.insert("sid-one".into(), entry.clone());
         assert!(processes.begin_session_edit("sid-one").is_err());
         assert!(processes.begin_session_edit("sid-two").is_ok());
-        processes.0.lock().unwrap().clear();
+        processes.remove_run_if_pid(&entry.run_id, entry.pid);
         let mut reservation = entry;
         reservation.pid = 0;
-        processes.0.lock().unwrap().insert("launch-run".into(), reservation);
+        processes.insert("launch-run".into(), reservation.clone());
+        assert!(processes.begin_session_edit("sid-two").is_ok());
+        processes.insert_alias("sid-two".into(), reservation);
         assert!(processes.begin_session_edit("sid-two").is_err());
+        assert!(processes.begin_session_edit("sid-three").is_ok());
         // Release isolated virtual entries before registry teardown.
-        processes.0.lock().unwrap().clear();
+        processes.remove_run_if_pid("run-one", 0);
     }
 
     #[test]
