@@ -390,7 +390,6 @@ export const ko: Messages = {
     "notifyPlanReviewBodyFallback": "제안된 계획이 검토를 기다리고 있습니다",
     "notifyPermissionTitle": "권한이 필요합니다",
     "notifyPermissionBody": "{{path}} 디렉터리에 대한 접근을 요청했습니다",
-    "defaultTitle": "새 세션",
   },
   "settings": {
     "title": "설정",
@@ -785,7 +784,6 @@ export const ko: Messages = {
     "sendShortcutCmdEnterCtrl": "Ctrl+Enter",
     "thinkingAutoCollapse": "생각이 끝나면 접기",
     "thinkingAutoCollapseDesc": "끄면 생각이 끝난 뒤에도 사고 과정을 펼쳐 둡니다(레이아웃 변동 없음). 제목을 눌러 직접 접을 수 있습니다",
-    "notifications": "시스템 알림",
     "notificationsEnabled": "시스템 알림 보내기",
     "notificationsEnabledDesc": "턴이 끝나거나 사용자 상호작용이 필요할 때 OS 알림을 보냅니다",
     "notifyOnCompletion": "대화 완료 시 알림",

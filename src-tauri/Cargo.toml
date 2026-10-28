@@ -20,7 +20,11 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-tauri-plugin-notification = "2.6"
+# Desktop click reporting (onAction) needs 2.6+, which requires tauri 2.12.
+# `tauri build` refuses a crate and npm package on different major.minor, so
+# keep this on the same minor as @tauri-apps/plugin-notification (package.json),
+# and tauri on the same minor as @tauri-apps/api.
+tauri-plugin-notification = "~2.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 regex = "1"

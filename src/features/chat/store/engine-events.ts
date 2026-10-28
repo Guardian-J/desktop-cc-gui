@@ -16,6 +16,7 @@ import {
   notifyPlanReview,
   notifyPermissionRequest,
 } from "@/lib/notifications";
+import { planRevisionStatus, turnAwaitsUser, turnReplyText } from "./turn-notice";
 import { migrateSessionContributions } from "./session-contributions";
 import { migrateAutoCompactSettings } from "../auto-compact-context";
 import {
@@ -1293,9 +1294,9 @@ function onError(
   if (!prev.interrupted) {
     const errText = typeof event.data === "string" ? event.data : "";
     if (looksLikeDisconnection(errText)) {
-      notifyInterrupted(key, errText);
+      void notifyInterrupted(key, errText);
     } else {
-      notifyTurnError(key, errText);
+      void notifyTurnError(key, errText);
     }
   }
   void deps.refreshSessionUsage?.(key).catch(() => {});
@@ -1310,14 +1311,16 @@ function onError(
  * Guess whether a turn error is a connection/stream interruption rather than
  * a request failure, so it can raise the dedicated "interrupted" notice.
  * Heuristic over the error text: the engine event carries no error class.
- * Known false positives: request-level timeouts ("request timeout after 30s")
- * are classified as interruptions; a "session interrupted by user" echo from
- * the CLI never reaches here (gated by `prev.interrupted` upstream).
+ * Known false positives: request-level timeouts ("request timeout after 30s",
+ * "turn/start timed out") are classified as interruptions; a "session
+ * interrupted by user" echo from the CLI never reaches here (gated by
+ * `prev.interrupted` upstream).
  */
 function looksLikeDisconnection(errText: string): boolean {
-  return /中断|disconnect|abort|timeout/i.test(errText);
+  return /中断|disconnect|abort|timeout|timed out/i.test(errText);
 }
 
+/** Patch the grant state of one card row, located by its message seq. */
 export function patchGrantBySeq(
   set: (fn: (s: ChatStore) => Partial<ChatStore>) => void,
   key: string,
@@ -1450,7 +1453,7 @@ function onPermissionDenied(
       .catch(() => {});
   }
   if (rowSeq > 0) {
-    notifyPermissionRequest(key, path || "");
+    void notifyPermissionRequest(key, path || "");
   }
 }
 
@@ -1571,7 +1574,7 @@ function onQuestion(
   }
   if (rowSeq > 0) {
     const qText = spec?.question || questions[0]?.question || "";
-    notifyQuestion(key, qText);
+    void notifyQuestion(key, qText);
   }
 }
 
@@ -1647,11 +1650,18 @@ function onPlanReview(event: ChatEngineEvent, key: string, deps: EngineEventDeps
   ) {
     return;
   }
+  const statusOf = () =>
+    planRevisionStatus(deps.get().bySession[key]?.messages ?? [], record.planId, record.revision);
+  const before = statusOf();
   updatePlanMessages(deps, key, event, (messages) =>
     applyPlanReview(messages, record),
   );
-  if (record.status === "awaiting_review") {
-    notifyPlanReview(key, record.title);
+  // Notify a revision once, when it first enters review (new, or upgraded
+  // from its draft). A re-broadcast, a replay that moves a deferred or
+  // submitting card back, or a stale frame the card rejected stays silent.
+  const firstSight = before === undefined || before === "draft";
+  if (firstSight && statusOf() === "awaiting_review") {
+    void notifyPlanReview(key, record.title);
   }
 }
 
@@ -1863,11 +1873,10 @@ function onDone(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
   // An interrupted turn settles here too: keep the queue parked — the user
   // stopped the session, the next message is theirs to send.
   if (!prev.interrupted) {
-    const finalMessages = deps.get().bySession[key]?.messages;
-    const lastAssistant = finalMessages
-      ? [...finalMessages].reverse().find((m) => m.role === "assistant")
-      : undefined;
-    notifyTurnComplete(key, lastAssistant?.text ?? "");
+    const finalMessages = deps.get().bySession[key]?.messages ?? [];
+    // A card this turn left pending (question, grant, plan review) may have
+    // raised its own notice already; notifyTurnComplete skips the second one.
+    void notifyTurnComplete(key, turnReplyText(finalMessages), turnAwaitsUser(finalMessages));
     deps.drainQueue(key);
     // Claude's result line reports the turn's summed usage (every request of
     // the turn added up), not the occupancy the meter shows — so re-read the

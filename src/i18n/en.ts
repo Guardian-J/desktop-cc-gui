@@ -74,7 +74,6 @@ export const en: Messages = {
     notifyPlanReviewBodyFallback: "A proposed plan is awaiting your review",
     notifyPermissionTitle: "Permission required",
     notifyPermissionBody: "Requested access to directory {{path}}",
-    defaultTitle: "New session",
 
     ompSpeedInherit: "Use CLI setting",
     ompSpeedUnsupported: "Select a Codex model to configure Fast.",
@@ -831,7 +830,6 @@ export const en: Messages = {
     thinkingAutoCollapse: "Fold thinking when it finishes",
     thinkingAutoCollapseDesc:
       "Turn off to keep the thinking process expanded during the turn; click the header to fold it manually",
-    notifications: "System Notifications",
     notificationsEnabled: "Send system notifications",
     notificationsEnabledDesc: "Send OS notifications when a turn finishes or requires user interaction",
     notifyOnCompletion: "Notify on conversation completed",

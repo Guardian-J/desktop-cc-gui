@@ -71,7 +71,6 @@ export const zh = {
     notifyPlanReviewBodyFallback: "模型提交了新计划等待审批",
     notifyPermissionTitle: "请求访问权限",
     notifyPermissionBody: "请求访问目录 {{path}}",
-    defaultTitle: "新会话",
 
     ompSpeedInherit: "跟随 CLI 设置",
     ompSpeedUnsupported: "选择 Codex 模型后可设置 Fast。",
@@ -798,7 +797,6 @@ export const zh = {
     thinkingAutoCollapse: "思考结束后自动收起",
     thinkingAutoCollapseDesc:
       "关闭后，思考过程在本轮回复中保持展开，可点击标题手动收起",
-    notifications: "系统通知",
     notificationsEnabled: "发送系统通知",
     notificationsEnabledDesc: "对话完成或需要用户交互时，发送操作系统级别的消息通知",
     notifyOnCompletion: "对话完成提醒",

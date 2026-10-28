@@ -1,8 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
-  sendNotification,
   onAction,
 } from "@tauri-apps/plugin-notification";
 import { isWeb } from "./platform";
@@ -20,6 +20,8 @@ let cachedSettings: Partial<AppSettings> | null = null;
 let actionListenerInstalled = false;
 let nextNotificationId = 1;
 const MAX_ACTIVE_NOTIFICATIONS = 50;
+/** The window that owns chat sessions (src-tauri/src/lib.rs). */
+const MAIN_WINDOW_LABEL = "main";
 const activeNotifications = new Map<number, { key: string; onClick?: () => void }>();
 /**
  * 格式化通知正文：清理 Markdown 标记（代码块、粗斜体、反引号），
@@ -43,21 +45,39 @@ export function formatNotificationBody(text: string, maxLength = 160, fallback =
 
 /**
  * 确保全局桌面通知点击监听器已安装（桌面端 onAction）。
+ *
+ * Only the main window listens. Every webview runs bootstrap (the pet
+ * overlay loads the same page), and the plugin hands each click to every
+ * listener: a listener in the overlay would pull it to the front and race
+ * the main window for focus on every click.
  */
 export function initNotificationActions(): void {
   if (actionListenerInstalled || isWeb) return;
+  if (currentWindowLabel() !== MAIN_WINDOW_LABEL) return;
   actionListenerInstalled = true;
   void onAction((event) => {
-    void focusAppWindow();
     const id = event.notification?.id;
-    if (typeof id === "number" && activeNotifications.has(id)) {
-      const item = activeNotifications.get(id);
-      activeNotifications.delete(id);
-      item?.onClick?.();
+    const item = typeof id === "number" ? activeNotifications.get(id) : undefined;
+    if (item?.onClick) {
+      activeNotifications.delete(id as number);
+      item.onClick();
+    } else {
+      // Posted before this launch, or evicted from the map: still bring the
+      // app forward, there is just no session to route to.
+      void focusAppWindow();
     }
   }).catch(() => {
-    // 忽略通知事件注册失败（部分无桌面环境时）
+    // No notification plugin here; the next send tries to register again.
+    actionListenerInstalled = false;
   });
+}
+
+function currentWindowLabel(): string | null {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return null;
+  }
 }
 
 /** 别名导出，供应用启动阶段 bootstrap.tsx 初始化调用 */
@@ -205,35 +225,26 @@ export async function isSessionUnfocused(key: string): Promise<boolean> {
 }
 
 /**
- * 解析会话 key 对应的显示标题。
+ * 解析会话 key 对应的显示标题，与页签条（use-chat-tabs.ts）同一规则：
+ * 按引擎 + 会话 id 找索引元数据，取 `customTitle || title || 新对话`。
+ * A first turn settles before rescanSessions has indexed the chat, so the
+ * fallback is the tab's own "new chat" label, not a fragment of the id.
  */
 export function getSessionDisplayTitle(key: string): string {
-  const state = useChatStore.getState();
-  // 从全局 sessions 列表查找
-  for (const s of state.sessions) {
-    const k = sessionKey(s.engine, s.sessionId, s.workspacePath);
-    if (k === key) {
-      return s.customTitle || s.title || s.sessionId.slice(0, 8);
-    }
-  }
-  // 从打开的 tabs 查找
-  for (const t of state.openTabs) {
-    const k = sessionKey(t.engine, t.sessionId, t.workspacePath);
-    if (k === key) {
-      if (t.sessionId) {
-        return t.sessionId.slice(0, 8);
-      }
-      return t.engine;
-    }
-  }
-  return i18n.t("chat.defaultTitle", "CC GUI");
+  const { sessions, openTabs } = useChatStore.getState();
+  const tab = openTabs.find((t) => sessionKey(t.engine, t.sessionId, t.workspacePath) === key);
+  const meta = tab
+    ? tab.sessionId
+      ? sessions.find((s) => s.engine === tab.engine && s.sessionId === tab.sessionId)
+      : undefined
+    : sessions.find((s) => sessionKey(s.engine, s.sessionId, s.workspacePath) === key);
+  return meta?.customTitle || meta?.title || i18n.t("chat.newChat");
 }
 
 /**
- * 点击通知后的跳转激活处理。
+ * 点击通知后的跳转激活处理（窗口聚焦由调用方负责）。
  */
 function navigateToSession(key: string): void {
-  void focusAppWindow();
   const state = useChatStore.getState();
 
   // 1. 查找是否在 openTabs 中
@@ -286,13 +297,8 @@ export async function sendOSNotification(options: SendSystemNotificationOptions)
     }
   };
 
-  if (activeNotifications.size >= MAX_ACTIVE_NOTIFICATIONS) {
-    const oldestKey = activeNotifications.keys().next().value;
-    if (oldestKey !== undefined) activeNotifications.delete(oldestKey);
-  }
-  activeNotifications.set(notifId, { key: options.sessionKey ?? "", onClick: handleClick });
-
-  const spawnWebNotification = () => {
+  // 1. Web 浏览器模式使用标准 Notification 对象，点击由它自己的 onclick 处理
+  if (isWeb) {
     if (typeof window !== "undefined" && "Notification" in window) {
       try {
         const n = new window.Notification(options.title, {
@@ -307,186 +313,176 @@ export async function sendOSNotification(options: SendSystemNotificationOptions)
       } catch {}
     }
     return false;
-  };
-
-  // 1. Web 浏览器模式优先使用标准 Notification 对象
-  if (isWeb) {
-    return spawnWebNotification();
   }
 
-  // 2. 桌面模式（Tauri）：调用 Tauri Notification 插件
+  // 2. 桌面模式（Tauri）：点击经 onAction 按 id 回到这里
+  if (activeNotifications.size >= MAX_ACTIVE_NOTIFICATIONS) {
+    const oldestKey = activeNotifications.keys().next().value;
+    if (oldestKey !== undefined) activeNotifications.delete(oldestKey);
+  }
+  activeNotifications.set(notifId, { key: options.sessionKey ?? "", onClick: handleClick });
   try {
-    // `sendNotification` resolves once the backend has posted the toast;
-    // awaiting it lets a rejected post fall through to the web fallback
-    // instead of surfacing as an unhandled rejection that claims success.
-    await sendNotification({
-      id: notifId,
-      title: options.title,
-      body: options.body,
-      extra: options.sessionKey ? { sessionKey: options.sessionKey } : undefined,
+    // Post through the plugin's command, not its `sendNotification`: that
+    // helper returns void and leaves its own invoke uncaught, so a failed
+    // post could neither be reported nor kept off the global crash screen.
+    // There is no second channel to fall back to — inside Tauri the web
+    // `Notification` is the plugin's shim around this same command. `true`
+    // means the plugin accepted the post (permission, arguments, IPC); it
+    // shows the toast on a background task whose failure is not reported.
+    await invoke("plugin:notification|notify", {
+      options: {
+        id: notifId,
+        title: options.title,
+        body: options.body,
+        extra: options.sessionKey ? { sessionKey: options.sessionKey } : undefined,
+      },
     });
     return true;
-  } catch {
-    return spawnWebNotification();
+  } catch (error) {
+    activeNotifications.delete(notifId);
+    console.warn("[notifications] failed to post a desktop notification:", error);
+    return false;
   }
 }
 
+type NoticeSwitch = "onCompletion" | "onQuestion" | "onInterrupted" | "onError";
+
+interface SessionNotice {
+  /** Event name, shown after the session title. */
+  event: string;
+  body: string;
+  tag: string;
+}
+
 /**
- * 对话完成时触发通知。
+ * Shared path of every session notice: honour the master switch, the
+ * notice's own switch and「仅在后台或未激活时提醒」, title it after the session,
+ * post it. Resolves to whether it was posted and never rejects — engine
+ * events fire these without awaiting, and an escaped rejection would open the
+ * global crash screen.
  */
-export async function notifyTurnComplete(key: string, summary?: string): Promise<void> {
-  const prefs = await getNotificationPreferences();
-  if (!prefs.enabled || !prefs.onCompletion) return;
-
-  if (prefs.unfocusedOnly) {
-    const unfocused = await isSessionUnfocused(key);
-    if (!unfocused) return;
+async function postSessionNotice(
+  key: string,
+  gate: NoticeSwitch,
+  compose: () => SessionNotice,
+): Promise<boolean> {
+  try {
+    const prefs = await getNotificationPreferences();
+    if (!prefs.enabled || !prefs[gate]) return false;
+    if (prefs.unfocusedOnly && !(await isSessionUnfocused(key))) return false;
+    const { event, body, tag } = compose();
+    return await sendOSNotification({
+      title: `${getSessionDisplayTitle(key)} · ${event}`,
+      body,
+      sessionKey: key,
+      tag,
+    });
+  } catch (error) {
+    console.warn("[notifications] failed to raise a session notice:", error);
+    return false;
   }
+}
 
-  const sessionTitle = getSessionDisplayTitle(key);
-  const eventType = i18n.t("chat.notifyTurnCompleteTitle", "对话已完成");
-  const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const fallbackBody = i18n.t("chat.notifyTurnCompleteBodyFallback", "AI 已完成回复，请查看");
-  // A summary that is only a code block cleans to "" — fall back to the
-  // generic body instead of posting an empty toast.
-  const rawContent = summary && summary.trim() ? summary.trim() : fallbackBody;
-  const body = formatNotificationBody(rawContent, 160, fallbackBody);
-  return sendOSNotification({
-    title,
-    body,
-    sessionKey: key,
-    tag: `turn-complete-${key}`,
-  }).then(() => {});
+/** The latest question / grant / plan notice per session, resolving to
+ *  whether it was posted. The completed notice of the same turn reads and
+ *  clears it; every new card overwrites it, so it never outlives its turn. */
+const cardNotices = new Map<string, Promise<boolean>>();
+
+function trackCardNotice(key: string, posted: Promise<boolean>): Promise<void> {
+  cardNotices.set(key, posted);
+  return posted.then(() => {});
 }
 
 /**
- * 对话因 API 异常中断或连接断开时触发通知。
+ * 对话完成时触发通知。`awaitsUser`: the turn left a question, grant card or
+ * plan awaiting review. When that card's own notice reached the user, it is
+ * the thing to act on and a "completed" notice on top would be noise; when
+ * it did not (its switch is off, or the user was watching then), this notice
+ * is the only one the turn gets.
+ */
+export async function notifyTurnComplete(
+  key: string,
+  summary?: string,
+  awaitsUser = false,
+): Promise<void> {
+  // Read and clear synchronously: the card notice may still be in flight
+  // (same event batch), and a slow completion must not clear the next turn's.
+  const cardNotice = cardNotices.get(key);
+  cardNotices.delete(key);
+  if (awaitsUser && cardNotice && (await cardNotice)) return;
+  await postSessionNotice(key, "onCompletion", () => {
+    const fallback = i18n.t("chat.notifyTurnCompleteBodyFallback", "AI 已完成回复，请查看");
+    return {
+      event: i18n.t("chat.notifyTurnCompleteTitle", "对话已完成"),
+      // A summary that is only a code block cleans to "" — fall back to the
+      // generic body instead of posting an empty toast.
+      body: formatNotificationBody(summary?.trim() || fallback, 160, fallback),
+      tag: `turn-complete-${key}`,
+    };
+  });
+}
+
+/**
+ * 对话因 API 异常中断或连接断开时触发通知。只看「会话中断提醒」开关：
+ * 用户关掉它时不改走「对话异常」通知。
  */
 export async function notifyInterrupted(key: string, reason?: string): Promise<void> {
-  const prefs = await getNotificationPreferences();
-  if (!prefs.enabled) return;
-  if (!prefs.onInterrupted) {
-    if (prefs.onError) {
-      return notifyTurnError(key, reason);
-    }
-    return;
-  }
-
-  if (prefs.unfocusedOnly) {
-    const unfocused = await isSessionUnfocused(key);
-    if (!unfocused) return;
-  }
-
-  const sessionTitle = getSessionDisplayTitle(key);
-  const eventType = i18n.t("chat.notifyInterruptedTitle", "会话已中断");
-  const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const fallbackBody = i18n.t("chat.notifyInterruptedBody", "API 连接或响应异常中断");
-  const rawContent = reason && reason.trim() ? reason.trim() : fallbackBody;
-  const body = formatNotificationBody(rawContent, 160, fallbackBody);
-  return sendOSNotification({
-    title,
-    body,
-    sessionKey: key,
-    tag: `interrupted-${key}`,
-  }).then(() => {});
+  await postSessionNotice(key, "onInterrupted", () => {
+    const fallback = i18n.t("chat.notifyInterruptedBody", "API 连接或响应异常中断");
+    return {
+      event: i18n.t("chat.notifyInterruptedTitle", "会话已中断"),
+      body: formatNotificationBody(reason?.trim() || fallback, 160, fallback),
+      tag: `interrupted-${key}`,
+    };
+  });
 }
 
 /**
  * 对话运行异常时触发通知。
  */
 export async function notifyTurnError(key: string, errorText?: string): Promise<void> {
-  const prefs = await getNotificationPreferences();
-  if (!prefs.enabled || !prefs.onError) return;
-
-  if (prefs.unfocusedOnly) {
-    const unfocused = await isSessionUnfocused(key);
-    if (!unfocused) return;
-  }
-
-  const sessionTitle = getSessionDisplayTitle(key);
-  const eventType = i18n.t("chat.notifyErrorTitle", "对话异常");
-  const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const fallbackBody = i18n.t("chat.notifyErrorBodyFallback", "对话执行遇到错误，请查看详情");
-  const rawContent = errorText && errorText.trim() ? errorText.trim() : fallbackBody;
-  const body = formatNotificationBody(rawContent, 160, fallbackBody);
-  return sendOSNotification({
-    title,
-    body,
-    sessionKey: key,
-    tag: `error-${key}`,
-  }).then(() => {});
+  await postSessionNotice(key, "onError", () => {
+    const fallback = i18n.t("chat.notifyErrorBodyFallback", "对话执行遇到错误，请查看详情");
+    return {
+      event: i18n.t("chat.notifyErrorTitle", "对话异常"),
+      body: formatNotificationBody(errorText?.trim() || fallback, 160, fallback),
+      tag: `error-${key}`,
+    };
+  });
 }
 
 /**
  * 模型提问（Ask question / 等待用户输入）时触发通知。
  */
-export async function notifyQuestion(key: string, questionText: string): Promise<void> {
-  const prefs = await getNotificationPreferences();
-  if (!prefs.enabled || !prefs.onQuestion) return;
-
-  if (prefs.unfocusedOnly) {
-    const unfocused = await isSessionUnfocused(key);
-    if (!unfocused) return;
-  }
-
-  const sessionTitle = getSessionDisplayTitle(key);
-  const eventType = i18n.t("chat.notifyQuestionTitle", "需要你的回复");
-  const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const body = formatNotificationBody(questionText, 160);
-  return sendOSNotification({
-    title,
-    body,
-    sessionKey: key,
+export function notifyQuestion(key: string, questionText: string): Promise<void> {
+  return trackCardNotice(key, postSessionNotice(key, "onQuestion", () => ({
+    event: i18n.t("chat.notifyQuestionTitle", "需要你的回复"),
+    body: formatNotificationBody(questionText, 160),
     tag: `question-${key}`,
-  }).then(() => {});
+  })));
 }
 
 /**
  * 计划待审批时触发通知。
  */
-export async function notifyPlanReview(key: string, planTitle?: string): Promise<void> {
-  const prefs = await getNotificationPreferences();
-  if (!prefs.enabled || !prefs.onQuestion) return;
-
-  if (prefs.unfocusedOnly) {
-    const unfocused = await isSessionUnfocused(key);
-    if (!unfocused) return;
-  }
-
-  const sessionTitle = getSessionDisplayTitle(key);
-  const eventType = i18n.t("chat.notifyPlanReviewTitle", "计划待审批");
-  const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const planFallback = i18n.t("chat.notifyPlanReviewBodyFallback", "模型提交了新计划等待审批");
-  const detail = planTitle ? `${planTitle}` : planFallback;
-  const body = formatNotificationBody(detail, 160, planFallback);
-  return sendOSNotification({
-    title,
-    body,
-    sessionKey: key,
-    tag: `plan-review-${key}`,
-  }).then(() => {});
+export function notifyPlanReview(key: string, planTitle?: string): Promise<void> {
+  return trackCardNotice(key, postSessionNotice(key, "onQuestion", () => {
+    const fallback = i18n.t("chat.notifyPlanReviewBodyFallback", "模型提交了新计划等待审批");
+    return {
+      event: i18n.t("chat.notifyPlanReviewTitle", "计划待审批"),
+      body: formatNotificationBody(planTitle || fallback, 160, fallback),
+      tag: `plan-review-${key}`,
+    };
+  }));
 }
 
 /**
  * 权限请求待确认时触发通知。
  */
-export async function notifyPermissionRequest(key: string, path: string): Promise<void> {
-  const prefs = await getNotificationPreferences();
-  if (!prefs.enabled || !prefs.onQuestion) return;
-
-  if (prefs.unfocusedOnly) {
-    const unfocused = await isSessionUnfocused(key);
-    if (!unfocused) return;
-  }
-
-  const sessionTitle = getSessionDisplayTitle(key);
-  const eventType = i18n.t("chat.notifyPermissionTitle", "请求访问权限");
-  const title = sessionTitle ? `${sessionTitle} · ${eventType}` : eventType;
-  const body = formatNotificationBody(i18n.t("chat.notifyPermissionBody", "请求访问目录 {{path}}", { path }), 160);
-  return sendOSNotification({
-    title,
-    body,
-    sessionKey: key,
+export function notifyPermissionRequest(key: string, path: string): Promise<void> {
+  return trackCardNotice(key, postSessionNotice(key, "onQuestion", () => ({
+    event: i18n.t("chat.notifyPermissionTitle", "请求访问权限"),
+    body: formatNotificationBody(i18n.t("chat.notifyPermissionBody", "请求访问目录 {{path}}", { path }), 160),
     tag: `permission-${key}`,
-  }).then(() => {});
+  })));
 }
