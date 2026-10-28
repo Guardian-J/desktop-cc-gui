@@ -8,7 +8,7 @@ const MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// A session-scoped native view. Removing existing message/part entries deletes
 /// those native records; identities and ownership are not editable or insertable.
-pub(super) fn read(path: &Path, session_id: &str) -> Result<String, String> {
+pub(super) fn read(path: &Path, session_id: &str) -> Result<(String, String), String> {
     check_session_id(session_id)?;
     let value = match crate::history::split_opencode_db_path(path) {
         Some((db, address_id)) => {
@@ -21,22 +21,23 @@ pub(super) fn read(path: &Path, session_id: &str) -> Result<String, String> {
         }
         None => tree_snapshot(path, session_id)?.view,
     };
-    document_text(&value)
+    versioned_document(&value)
 }
 
-pub(super) fn write(path: &Path, session_id: &str, content: &str) -> Result<String, String> {
+pub(super) fn write(path: &Path, session_id: &str, content: &str, expected_version: &str) -> Result<(String, String), String> {
     check_session_id(session_id)?;
     if content.len() > MAX_BYTES {
         return Err("OpenCode editable document exceeds 64 MiB".into());
     }
-    let view: Value = serde_json::from_str(content)
+    let mut view: Value = serde_json::from_str(content)
         .map_err(|e| format!("Invalid OpenCode editable JSON: {e}"))?;
+    canonicalize_view(&mut view);
     match crate::history::split_opencode_db_path(path) {
         Some((db, address_id)) => {
             check_address(&db, &address_id, session_id)?;
-            write_db(&db, session_id, &view)
+            write_db(&db, session_id, &view, expected_version)
         }
-        None => write_tree(path, session_id, &view),
+        None => write_tree(path, session_id, &view, expected_version),
     }
 }
 
@@ -92,6 +93,42 @@ fn encode(value: &Value, pretty: bool) -> Result<Vec<u8>, String> {
 
 fn document_text(value: &Value) -> Result<String, String> {
     String::from_utf8(encode(value, true)?).map_err(|e| format!("OpenCode view is not UTF-8: {e}"))
+}
+
+fn versioned_document(value: &Value) -> Result<(String, String), String> {
+    let text = document_text(value)?;
+    let version = super::document_version(text.as_bytes());
+    Ok((text, version))
+}
+
+fn canonicalize_view(view: &mut Value) {
+    let sqlite = view["format"] == "opencode-sqlite";
+    let compare = |a: &Value, b: &Value| {
+        let created = |v: &Value| if sqlite { v["time_created"].as_i64() }
+            else { Some(v["time"]["created"].as_i64().unwrap_or(i64::MAX)) };
+        created(a).cmp(&created(b)).then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    };
+    if let Some(messages) = view.get_mut("messages").and_then(Value::as_array_mut) {
+        messages.sort_by(|a, b| compare(&a["message"], &b["message"]));
+        for message in messages {
+            if let Some(parts) = message.get_mut("parts").and_then(Value::as_array_mut) {
+                if sqlite { parts.sort_by(&compare); }
+                else { parts.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str())); }
+            }
+        }
+    }
+    view.sort_all_objects();
+}
+
+fn db_backup_source(path: &Path, session_id: &str) -> PathBuf {
+    path.with_file_name(format!("opencode.db.{session_id}.json"))
+}
+
+#[cfg(test)]
+fn canonical_backup_path(source: &Path) -> PathBuf {
+    let mut name = source.file_name().unwrap().to_os_string();
+    name.push(".ccgui-backup");
+    source.with_file_name(name)
 }
 
 fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>, String> {
@@ -272,11 +309,9 @@ fn tree_snapshot(path: &Path, session_id: &str) -> Result<TreeSnapshot, String> 
         }
         messages.push(json!({"message":message,"parts":parts}));
     }
-    messages.sort_by(|a, b| {
-        let created = |value: &Value| value["message"]["time"]["created"].as_i64().unwrap_or(i64::MAX);
-        created(a).cmp(&created(b)).then_with(|| a["message"]["id"].as_str().cmp(&b["message"]["id"].as_str()))
-    });
-    Ok(TreeSnapshot { view: json!({"format":"opencode-tree","sessionId":session_id,"session":session,"messages":messages}), storage, metadata, files })
+    let mut view = json!({"format":"opencode-tree","sessionId":session_id,"session":session,"messages":messages});
+    canonicalize_view(&mut view);
+    Ok(TreeSnapshot { view, storage, metadata, files })
 }
 
 struct FileChange {
@@ -286,9 +321,11 @@ struct FileChange {
     backup: Option<PathBuf>,
 }
 
-fn write_tree(path: &Path, session_id: &str, edited: &Value) -> Result<String, String> {
-    check_view(edited, "opencode-tree", session_id)?;
+fn write_tree(path: &Path, session_id: &str, edited: &Value, expected_version: &str) -> Result<(String, String), String> {
     let snapshot = tree_snapshot(path, session_id)?;
+    let (previous, version) = versioned_document(&snapshot.view)?;
+    super::check_version(expected_version, &version)?;
+    check_view(edited, "opencode-tree", session_id)?;
     same_fields(&snapshot.view["session"], &edited["session"], &["id", "projectID", "directory", "parentID"])?;
     let original_messages = index_records(array(&snapshot.view["messages"], "messages")?, true)?;
     let edited_messages = index_records(array(&edited["messages"], "messages")?, true)?;
@@ -328,21 +365,33 @@ fn write_tree(path: &Path, session_id: &str, edited: &Value) -> Result<String, S
         changes.push(FileChange { path, original: native.bytes, replacement, backup: None });
     }
     // Validate the complete return document before any native file changes.
-    let canonical = document_text(edited)?;
+    let canonical = versioned_document(edited)?;
     // Validate every native source before the first mutation. Do not delete a
     // directory: unrelated/unknown files alongside native JSON remain intact.
     for change in &changes {
         if !checked_path(&snapshot.storage, &change.path, true)?
             || !source_matches(&change.path, &change.original)? {
-            return Err("OpenCode native source changed while saving; reload before editing".into());
+            return Err(super::SESSION_EDIT_CONFLICT.into());
         }
+    }
+    // Recheck membership as well as bytes: a newly added message/part must not
+    // disappear from the returned view just because it was absent above.
+    let (_, current_version) = versioned_document(&tree_snapshot(path, session_id)?.view)?;
+    super::check_version(expected_version, &current_version)?;
+    if !changes.is_empty() {
+        for change in &changes {
+            super::preserve_backup(&change.path, &change.original)?;
+        }
+        super::preserve_backup_with_permissions(
+            &snapshot.metadata.with_extension("ccgui-session.json"), previous.as_bytes(), &snapshot.metadata,
+        )?;
     }
     let mut applied = 0;
     let result = (|| {
         for change in &mut changes {
             if !checked_path(&snapshot.storage, &change.path, true)?
                 || !source_matches(&change.path, &change.original)? {
-                return Err("OpenCode native source changed while saving; reload before editing".into());
+                return Err(super::SESSION_EDIT_CONFLICT.into());
             }
             if let Some(bytes) = &change.replacement {
                 super::atomic_write_existing(&change.path, bytes)?;
@@ -463,7 +512,9 @@ fn db_view(conn: &Connection, session_id: &str) -> Result<Value, String> {
         }
         messages.push(json!({"message":message,"parts":parts}));
     }
-    Ok(json!({"format":"opencode-sqlite","sessionId":session_id,"session":session,"messages":messages}))
+    let mut view = json!({"format":"opencode-sqlite","sessionId":session_id,"session":session,"messages":messages});
+    canonicalize_view(&mut view);
+    Ok(view)
 }
 
 fn check_db_edit(original: &Value, edited: &Value, editable: &[&str]) -> Result<(), String> {
@@ -492,11 +543,13 @@ fn update_data(conn: &Connection, table: &str, original: &Value, edited: &Value)
     Ok(())
 }
 
-fn write_db(path: &Path, session_id: &str, edited: &Value) -> Result<String, String> {
-    check_view(edited, "opencode-sqlite", session_id)?;
+fn write_db(path: &Path, session_id: &str, edited: &Value, expected_version: &str) -> Result<(String, String), String> {
     let mut conn = open_db(path, true)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
     let original = db_view(&tx, session_id)?;
+    let (previous, version) = versioned_document(&original)?;
+    super::check_version(expected_version, &version)?;
+    check_view(edited, "opencode-sqlite", session_id)?;
     check_db_edit(&original["session"], &edited["session"], &["title"])?;
     let original_messages = index_records(array(&original["messages"], "messages")?, true)?;
     let edited_messages = index_records(array(&edited["messages"], "messages")?, true)?;
@@ -511,12 +564,15 @@ fn write_db(path: &Path, session_id: &str, edited: &Value) -> Result<String, Str
             check_db_data(part, session_id, Some(id))?;
         }
     }
+    let title = match edited["session"].get("title") {
+        Some(Value::String(title)) => Some(title.as_str()),
+        Some(Value::Null) | None => None,
+        _ => return Err("OpenCode session title must be text or null".into()),
+    };
+    if original != *edited {
+        super::preserve_backup_with_permissions(&db_backup_source(path, session_id), previous.as_bytes(), path)?;
+    }
     if original["session"].get("title") != edited["session"].get("title") {
-        let title = match edited["session"].get("title") {
-            Some(Value::String(title)) => Some(title.as_str()),
-            Some(Value::Null) => None,
-            _ => return Err("OpenCode session title must be text or null".into()),
-        };
         tx.execute("UPDATE session SET title=?1 WHERE id=?2", rusqlite::params![title, session_id]).map_err(db_error)?;
     }
     for (id, native) in original_messages {
@@ -541,7 +597,7 @@ fn write_db(path: &Path, session_id: &str, edited: &Value) -> Result<String, Str
     drop(original);
     // Include native triggers/columns in the snapshot while rollback remains
     // possible; serialization failures must never follow a successful commit.
-    let canonical = document_text(&db_view(&tx, session_id)?)?;
+    let canonical = versioned_document(&db_view(&tx, session_id)?)?;
     tx.commit().map_err(db_error)?;
     Ok(canonical)
 }
@@ -556,7 +612,7 @@ mod tests {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!("ccgui-opencode-edit-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).unwrap();
-            Self(path)
+            Self(std::fs::canonicalize(path).unwrap())
         }
     }
     impl Drop for Scratch {
@@ -600,14 +656,15 @@ mod tests {
         let path = tree_fixture(&scratch);
         let other = scratch.0.join("storage/part/msg_other/prt_other.json");
         let other_bytes = std::fs::read(&other).unwrap();
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["messages"][0]["parts"][0]["text"] = json!("after 中文 🌟");
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
         let native: Value = serde_json::from_slice(&std::fs::read(scratch.0.join("storage/part/msg_one/prt_one.json")).unwrap()).unwrap();
         assert_eq!(native["text"], "after 中文 🌟");
         assert_eq!(native["unknown"]["nested"], "keep");
         assert_eq!(std::fs::read(other).unwrap(), other_bytes);
-        let reread: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let reread: Value = serde_json::from_str(&read(&path, "ses_one").unwrap().0).unwrap();
         assert_eq!(reread["messages"][0]["parts"][0]["text"], native["text"]);
     }
 
@@ -615,12 +672,13 @@ mod tests {
     fn opencode_tree_deletes_native_parts_and_messages() {
         let scratch = Scratch::new();
         let path = tree_fixture(&scratch);
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["messages"][0]["parts"].as_array_mut().unwrap().pop();
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        let (_, version) = write(&path, "ses_one", &view.to_string(), &version).unwrap();
         assert!(!scratch.0.join("storage/part/msg_one/prt_two.json").exists());
         view["messages"] = json!([]);
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
         assert!(!scratch.0.join("storage/message/ses_one/msg_one.json").exists());
         assert!(!scratch.0.join("storage/part/msg_one/prt_one.json").exists());
         assert!(scratch.0.join("storage/part/msg_other/prt_other.json").exists());
@@ -631,11 +689,12 @@ mod tests {
         let scratch = Scratch::new();
         let path = tree_fixture(&scratch);
         let original = std::fs::read(&path).unwrap();
-        let view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let view: Value = serde_json::from_str(&text).unwrap();
         for pointer in ["/sessionId", "/session/id", "/messages/0/message/sessionID", "/messages/0/parts/0/messageID", "/messages/0/parts/0/id"] {
             let mut changed = view.clone();
             *changed.pointer_mut(pointer).unwrap() = json!("../ses_other");
-            assert!(write(&path, "ses_one", &changed.to_string()).is_err(), "{pointer}");
+            assert!(write(&path, "ses_one", &changed.to_string(), &version).is_err(), "{pointer}");
         }
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(read(&path, "ses_other").is_err());
@@ -645,10 +704,11 @@ mod tests {
     fn opencode_sqlite_text_roundtrip_preserves_native_columns_and_other_session() {
         let scratch = Scratch::new();
         let path = db_fixture(&scratch);
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["messages"][0]["parts"][0]["data"]["text"] = json!("after 中文 🌟");
         view["session"]["title"] = json!("edited title");
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
         let conn = rusqlite::Connection::open(scratch.0.join("opencode.db")).unwrap();
         let (data, blob): (String, Vec<u8>) = conn.query_row("SELECT data,unknown FROM part WHERE id='prt_one'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         let native: Value = serde_json::from_str(&data).unwrap();
@@ -664,14 +724,15 @@ mod tests {
     fn opencode_sqlite_deletes_actual_rows_and_rejects_reparenting() {
         let scratch = Scratch::new();
         let path = db_fixture(&scratch);
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["messages"][0]["parts"][0]["message_id"] = json!("msg_other");
-        assert!(write(&path, "ses_one", &view.to_string()).is_err());
+        assert!(write(&path, "ses_one", &view.to_string(), &version).is_err());
         view["messages"][0]["parts"][0]["message_id"] = json!("msg_one");
         view["messages"][0]["parts"].as_array_mut().unwrap().pop();
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        let (_, version) = write(&path, "ses_one", &view.to_string(), &version).unwrap();
         view["messages"] = json!([]);
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
         let conn = rusqlite::Connection::open(scratch.0.join("opencode.db")).unwrap();
         assert_eq!(conn.query_row("SELECT count(*) FROM part WHERE session_id='ses_one'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(conn.query_row("SELECT count(*) FROM message WHERE session_id='ses_one'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
@@ -682,10 +743,11 @@ mod tests {
     fn opencode_sqlite_invalid_later_part_rolls_back_all_edits() {
         let scratch = Scratch::new();
         let path = db_fixture(&scratch);
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["messages"][0]["parts"][0]["data"]["text"] = json!("must not persist");
         view["messages"][0]["parts"][1]["session_id"] = json!("ses_other");
-        assert!(write(&path, "ses_one", &view.to_string()).is_err());
+        assert!(write(&path, "ses_one", &view.to_string(), &version).is_err());
         let conn = rusqlite::Connection::open(scratch.0.join("opencode.db")).unwrap();
         let raw: String = conn.query_row("SELECT data FROM part WHERE id='prt_one'", [], |r| r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["text"], "before");
@@ -697,11 +759,12 @@ mod tests {
         let path = db_fixture(&scratch);
         let conn = rusqlite::Connection::open(scratch.0.join("opencode.db")).unwrap();
         conn.execute_batch("CREATE TRIGGER reject_second_part BEFORE UPDATE ON part WHEN NEW.id='prt_two' BEGIN SELECT RAISE(ABORT,'isolated native write failure'); END;").unwrap();
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["session"]["title"] = json!("must roll back");
         view["messages"][0]["parts"][0]["data"]["text"] = json!("must roll back");
         view["messages"][0]["parts"][1]["data"]["text"] = json!("trigger failure");
-        assert!(write(&path, "ses_one", &view.to_string()).is_err());
+        assert!(write(&path, "ses_one", &view.to_string(), &version).is_err());
         let raw: String = conn.query_row("SELECT data FROM part WHERE id='prt_one'", [], |r| r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["text"], "before");
         assert_eq!(conn.query_row("SELECT title FROM session WHERE id='ses_one'", [], |r| r.get::<_, String>(0)).unwrap(), "original");
@@ -715,10 +778,11 @@ mod tests {
         let text = "完整 transcript 🌟\n".repeat(80_000);
         assert!(text.len() > 1024 * 1024);
         for (path, pointer) in [(&tree, "/messages/0/parts/0/text"), (&database, "/messages/0/parts/0/data/text")] {
-            let mut view: Value = serde_json::from_str(&read(path, "ses_one").unwrap()).unwrap();
+            let (document, version) = read(path, "ses_one").unwrap();
+            let mut view: Value = serde_json::from_str(&document).unwrap();
             *view.pointer_mut(pointer).unwrap() = json!(text);
-            write(path, "ses_one", &view.to_string()).unwrap();
-            let document = read(path, "ses_one").unwrap();
+            write(path, "ses_one", &view.to_string(), &version).unwrap();
+            let (document, _) = read(path, "ses_one").unwrap();
             assert!(document.len() > 1024 * 1024);
             let actual: Value = serde_json::from_str(&document).unwrap();
             assert_eq!(actual.pointer(pointer).and_then(Value::as_str), Some(text.as_str()));
@@ -731,11 +795,12 @@ mod tests {
         let path = db_fixture(&scratch);
         let conn = rusqlite::Connection::open(scratch.0.join("opencode.db")).unwrap();
         conn.execute_batch("ALTER TABLE part DROP COLUMN session_id;").unwrap();
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         assert!(view["messages"][0]["parts"][0].get("session_id").is_none());
         view["messages"][0]["parts"][0]["data"]["text"] = json!("native compatibility");
         view["messages"][0]["parts"].as_array_mut().unwrap().pop();
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
         assert_eq!(conn.query_row("SELECT count(*) FROM part WHERE message_id='msg_one'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         let data: String = conn.query_row("SELECT data FROM part WHERE id='prt_one'", [], |r| r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&data).unwrap()["text"], "native compatibility");
@@ -748,9 +813,10 @@ mod tests {
         let path = tree_fixture(&scratch);
         let extra = scratch.0.join("storage/part/msg_one/native-extra.bin");
         std::fs::write(&extra, [1u8, 2, 3]).unwrap();
-        let mut view: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
         view["messages"] = json!([]);
-        write(&path, "ses_one", &view.to_string()).unwrap();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
         assert_eq!(std::fs::read(extra).unwrap(), vec![1, 2, 3]);
     }
 
@@ -760,18 +826,19 @@ mod tests {
         let tree = tree_fixture(&scratch);
         let database = db_fixture(&scratch);
         for path in [&tree, &database] {
-            let view: Value = serde_json::from_str(&read(path, "ses_one").unwrap()).unwrap();
+            let (text, version) = read(path, "ses_one").unwrap();
+            let view: Value = serde_json::from_str(&text).unwrap();
             let mut duplicate = view.clone();
             let entry = duplicate["messages"][0].clone();
             duplicate["messages"].as_array_mut().unwrap().push(entry);
-            assert!(write(path, "ses_one", &duplicate.to_string()).is_err());
+            assert!(write(path, "ses_one", &duplicate.to_string(), &version).is_err());
             let mut inserted = view.clone();
             inserted["messages"][0]["message"]["id"] = json!("msg_new");
-            assert!(write(path, "ses_one", &inserted.to_string()).is_err());
+            assert!(write(path, "ses_one", &inserted.to_string(), &version).is_err());
             let mut duplicate = view.clone();
             let part = duplicate["messages"][0]["parts"][0].clone();
             duplicate["messages"][0]["parts"].as_array_mut().unwrap().push(part);
-            assert!(write(path, "ses_one", &duplicate.to_string()).is_err());
+            assert!(write(path, "ses_one", &duplicate.to_string(), &version).is_err());
         }
     }
 
@@ -780,7 +847,7 @@ mod tests {
         let scratch = Scratch::new();
         let path = tree_fixture(&scratch);
         assert!(read(&scratch.0.join("missing.json"), "ses_one").is_err());
-        assert!(write(&path, "ses_one", &" ".repeat(MAX_BYTES + 1)).is_err());
+        assert!(write(&path, "ses_one", &" ".repeat(MAX_BYTES + 1), "unused").is_err());
         std::fs::write(scratch.0.join("storage/part/msg_one/prt_one.json"), "not json").unwrap();
         assert!(read(&path, "ses_one").is_err());
         let missing = crate::history::opencode_db_session_path(&scratch.0.join("missing/opencode.db"), "ses_one");
@@ -794,18 +861,219 @@ mod tests {
         let path = db_fixture(&scratch);
         let conn = rusqlite::Connection::open(scratch.0.join("opencode.db")).unwrap();
         conn.execute_batch("CREATE TRIGGER native_part_timestamp AFTER UPDATE OF data ON part BEGIN UPDATE part SET time_created=time_created+1 WHERE id=NEW.id; END;").unwrap();
-        let mut first: Value = serde_json::from_str(&read(&path, "ses_one").unwrap()).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut first: Value = serde_json::from_str(&text).unwrap();
         first["messages"][0]["parts"][0]["data"]["text"] = json!("first native edit");
-        let canonical = write(&path, "ses_one", &first.to_string()).unwrap();
+        let (canonical, version) = write(&path, "ses_one", &first.to_string(), &version).unwrap();
         let mut second: Value = serde_json::from_str(&canonical).unwrap();
         assert_eq!(second["messages"][0]["parts"].as_array().unwrap().iter().find(|part| part["id"] == "prt_one").unwrap()["time_created"], 2);
         second["messages"][0]["parts"].as_array_mut().unwrap().iter_mut().find(|part| part["id"] == "prt_one").unwrap()["data"]["text"] = json!("second native edit");
-        let canonical = write(&path, "ses_one", &second.to_string()).unwrap();
+        let (canonical, _) = write(&path, "ses_one", &second.to_string(), &version).unwrap();
         let saved: Value = serde_json::from_str(&canonical).unwrap();
         assert_eq!(saved["messages"][0]["parts"].as_array().unwrap().iter().find(|part| part["id"] == "prt_one").unwrap()["time_created"], 3);
         let data: String = conn.query_row("SELECT data FROM part WHERE id='prt_one'", [], |row| row.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&data).unwrap()["text"], "second native edit");
         assert_eq!(conn.query_row("SELECT data FROM part WHERE id='prt_other'", [], |row| row.get::<_, String>(0)).unwrap(), "{\"type\":\"text\",\"text\":\"unrelated\"}");
+    }
+
+    #[test]
+    fn opencode_tree_stale_views_reject_native_additions_edits_and_deletions() {
+        for mutation in 0..6 {
+            let scratch = Scratch::new();
+            let path = tree_fixture(&scratch);
+            let (text, version) = read(&path, "ses_one").unwrap();
+            let storage = scratch.0.join("storage");
+            match mutation {
+                0 => std::fs::write(storage.join("message/ses_one/msg_new.json"), r#"{"id":"msg_new","sessionID":"ses_one","role":"assistant"}"#).unwrap(),
+                1 => std::fs::write(storage.join("part/msg_one/prt_new.json"), r#"{"id":"prt_new","messageID":"msg_one","sessionID":"ses_one","text":"new"}"#).unwrap(),
+                2 => std::fs::write(storage.join("message/ses_one/msg_one.json"), r#"{"id":"msg_one","sessionID":"ses_one","role":"assistant"}"#).unwrap(),
+                3 => std::fs::write(storage.join("part/msg_one/prt_one.json"), r#"{"id":"prt_one","messageID":"msg_one","sessionID":"ses_one","text":"native update"}"#).unwrap(),
+                4 => std::fs::remove_file(storage.join("part/msg_one/prt_two.json")).unwrap(),
+                _ => std::fs::remove_file(storage.join("message/ses_one/msg_one.json")).unwrap(),
+            }
+            let current = read(&path, "ses_one").unwrap();
+            assert_eq!(write(&path, "ses_one", &text, &version).unwrap_err(), super::super::SESSION_EDIT_CONFLICT);
+            assert_eq!(read(&path, "ses_one").unwrap(), current);
+            assert!(!canonical_backup_path(&path.with_extension("ccgui-session.json")).exists());
+        }
+    }
+
+    #[test]
+    fn opencode_sqlite_stale_views_reject_changes_even_without_timestamp_updates() {
+        for mutation in [
+            "INSERT INTO message VALUES('msg_new','ses_one',3,'{}','new')",
+            "INSERT INTO part VALUES('prt_new','msg_one','ses_one',3,'{}',X'00')",
+            "UPDATE message SET data='{\"role\":\"assistant\"}' WHERE id='msg_one'",
+            "UPDATE part SET data='{\"text\":\"native update\"}' WHERE id='prt_one'",
+            "DELETE FROM part WHERE id='prt_two'",
+            "DELETE FROM part WHERE message_id='msg_one'; DELETE FROM message WHERE id='msg_one'",
+            "UPDATE session SET time_updated=2 WHERE id='ses_one'",
+        ] {
+            let scratch = Scratch::new();
+            let path = db_fixture(&scratch);
+            let db = scratch.0.join("opencode.db");
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch("ALTER TABLE session ADD COLUMN time_updated INTEGER DEFAULT 1").unwrap();
+            let (text, version) = read(&path, "ses_one").unwrap();
+            conn.execute_batch(mutation).unwrap();
+            let current = read(&path, "ses_one").unwrap();
+            assert_eq!(write(&path, "ses_one", &text, &version).unwrap_err(), super::super::SESSION_EDIT_CONFLICT, "{mutation}");
+            assert_eq!(read(&path, "ses_one").unwrap(), current);
+            assert!(!canonical_backup_path(&db_backup_source(&db, "ses_one")).exists());
+        }
+    }
+
+    #[test]
+    fn opencode_other_session_changes_do_not_conflict_and_saves_return_current_versions() {
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        for path in [&tree, &database] {
+            let (text, version) = read(path, "ses_one").unwrap();
+            let mut view: Value = serde_json::from_str(&text).unwrap();
+            let other = if path == &tree { scratch.0.join("storage/session/proj/ses_other.json") }
+                else { crate::history::opencode_db_session_path(&scratch.0.join("opencode.db"), "ses_other") };
+            let (other_text, other_version) = read(&other, "ses_other").unwrap();
+            let mut other_view: Value = serde_json::from_str(&other_text).unwrap();
+            other_view["session"]["title"] = json!("independent edit");
+            let other_saved = write(&other, "ses_other", &other_view.to_string(), &other_version).unwrap();
+            view["session"]["title"] = json!("first");
+            let (saved, new_version) = write(path, "ses_one", &view.to_string(), &version).unwrap();
+            assert_ne!(version, new_version);
+            assert_eq!(read(path, "ses_one").unwrap(), (saved.clone(), new_version.clone()));
+            let mut second: Value = serde_json::from_str(&saved).unwrap();
+            second["session"]["title"] = json!("second");
+            write(path, "ses_one", &second.to_string(), &new_version).unwrap();
+            assert_eq!(read(&other, "ses_other").unwrap(), other_saved);
+            assert_eq!(write(path, "ses_one", &text, "").unwrap_err(), super::super::SESSION_EDIT_CONFLICT);
+        }
+    }
+
+    #[test]
+    fn opencode_backups_restore_edits_through_a_fresh_editor_and_rotate_once() {
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        for path in [&tree, &database] {
+            let (original, version) = read(path, "ses_one").unwrap();
+            let backup = if path == &tree { canonical_backup_path(&path.with_extension("ccgui-session.json")) }
+                else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+            let mut view: Value = serde_json::from_str(&original).unwrap();
+            view["session"]["title"] = json!("saved edit");
+            let (saved, _) = write(path, "ses_one", &view.to_string(), &version).unwrap();
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+            assert_eq!(write(path, "ses_one", &original, &version).unwrap_err(), super::super::SESSION_EDIT_CONFLICT);
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+            let (_, fresh_version) = read(path, "ses_one").unwrap();
+            let (restored, _) = write(path, "ses_one", &std::fs::read_to_string(&backup).unwrap(), &fresh_version).unwrap();
+            assert_eq!(restored, original);
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), saved);
+        }
+        assert!(!scratch.0.join("opencode.db.ccgui-backup").exists());
+        assert!(!canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_other")).exists());
+    }
+
+    #[test]
+    fn opencode_tree_backs_up_exact_changed_and_deleted_native_bytes_only() {
+        let scratch = Scratch::new();
+        let path = tree_fixture(&scratch);
+        let changed = scratch.0.join("storage/part/msg_one/prt_one.json");
+        let deleted = scratch.0.join("storage/part/msg_one/prt_two.json");
+        let changed_bytes = std::fs::read(&changed).unwrap();
+        let deleted_bytes = std::fs::read(&deleted).unwrap();
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
+        view["messages"][0]["parts"][0]["text"] = json!("new text");
+        view["messages"][0]["parts"].as_array_mut().unwrap().pop();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
+        assert_eq!(std::fs::read(canonical_backup_path(&changed)).unwrap(), changed_bytes);
+        assert_eq!(std::fs::read(canonical_backup_path(&deleted)).unwrap(), deleted_bytes);
+        assert!(!deleted.exists());
+        assert!(!canonical_backup_path(&path).exists());
+        assert!(!canonical_backup_path(&scratch.0.join("storage/part/msg_other/prt_other.json")).exists());
+    }
+
+    #[test]
+    fn opencode_backup_failure_blocks_native_mutation() {
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        for path in [&tree, &database] {
+            let (text, version) = read(path, "ses_one").unwrap();
+            let backup = if path == &tree { canonical_backup_path(path) }
+                else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+            std::fs::create_dir(&backup).unwrap();
+            let mut view: Value = serde_json::from_str(&text).unwrap();
+            view["session"]["title"] = json!("must not persist");
+            assert!(write(path, "ses_one", &view.to_string(), &version).is_err());
+            assert_eq!(read(path, "ses_one").unwrap(), (text, version));
+        }
+    }
+
+    #[test]
+    fn opencode_reordered_documents_keep_native_canonical_versions() {
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        for path in [&tree, &database] {
+            let (text, version) = read(path, "ses_one").unwrap();
+            let mut view: Value = serde_json::from_str(&text).unwrap();
+            view["messages"][0]["parts"].as_array_mut().unwrap().reverse();
+            let saved = write(path, "ses_one", &view.to_string(), &version).unwrap();
+            assert_eq!(saved, (text, version));
+            assert_eq!(read(path, "ses_one").unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn opencode_same_size_native_edits_invalidate_versions() {
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        for path in [&tree, &database] {
+            let (text, version) = read(path, "ses_one").unwrap();
+            if path == &tree {
+                let native = scratch.0.join("storage/message/ses_one/msg_one.json");
+                let before = std::fs::read_to_string(&native).unwrap();
+                let after = before.replace("user", "tool");
+                assert_eq!(before.len(), after.len());
+                std::fs::write(native, after).unwrap();
+            } else {
+                let conn = Connection::open(scratch.0.join("opencode.db")).unwrap();
+                conn.execute_batch("UPDATE message SET data=replace(data,'user','tool') WHERE id='msg_one'").unwrap();
+            }
+            let current = read(path, "ses_one").unwrap();
+            assert_ne!(current.1, version);
+            assert_eq!(write(path, "ses_one", &text, &version).unwrap_err(), super::super::SESSION_EDIT_CONFLICT);
+            assert_eq!(read(path, "ses_one").unwrap(), current);
+        }
+    }
+
+    #[test]
+    fn opencode_deletion_backups_contain_the_complete_previous_session() {
+        let scratch = Scratch::new();
+        let tree = tree_fixture(&scratch);
+        let database = db_fixture(&scratch);
+        for path in [&tree, &database] {
+            let (text, version) = read(path, "ses_one").unwrap();
+            let mut view: Value = serde_json::from_str(&text).unwrap();
+            view["messages"] = json!([]);
+            let (_, fresh_version) = write(path, "ses_one", &view.to_string(), &version).unwrap();
+            let backup = if path == &tree { canonical_backup_path(&path.with_extension("ccgui-session.json")) }
+                else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), text);
+            // Recovery does not grant the editor arbitrary insertion authority.
+            assert!(write(path, "ses_one", &text, &fresh_version).is_err());
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), text);
+            if path == &tree {
+                for relative in ["message/ses_one/msg_one.json", "part/msg_one/prt_one.json", "part/msg_one/prt_two.json"] {
+                    let native = scratch.0.join("storage").join(relative);
+                    assert!(!native.exists());
+                    let restored: Value = serde_json::from_slice(&std::fs::read(canonical_backup_path(&native)).unwrap()).unwrap();
+                    assert_eq!(restored["sessionID"], "ses_one");
+                }
+            }
+        }
     }
 
     #[cfg(unix)]
