@@ -1282,7 +1282,7 @@ export const zh = {
     binaryFile: "二进制文件，无法编辑",
     imageTooLarge: "图片超过 5MB，无法预览",
     fileNotFound: "文件不存在或已被移动",
-    sessionEditConflict: "会话文件已变化，本次未保存，编辑草稿已保留。请先复制草稿，再关闭并重新打开编辑器标签页，与最新内容合并后保存。",
+    sessionEditConflict: "会话文件已变化，无法确认保存结果，编辑草稿已保留。请先复制草稿，再关闭并重新打开编辑器标签页，核对最新内容后合并保存。",
     sessionFileTooLargeTitle: "会话文件过大",
     sessionFileTooLarge: "会话内容超过内置编辑器的 64 MiB 上限，请使用外部软件编辑。为避免保存时丢失内容，不提供截断编辑。",
     openInDefaultEditor: "用默认文本编辑器打开",

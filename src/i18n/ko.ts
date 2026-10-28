@@ -1237,7 +1237,7 @@ export const ko: Messages = {
     binaryFile: "바이너리 파일은 편집할 수 없습니다",
     imageTooLarge: "이미지가 5MB를 초과하여 미리 볼 수 없습니다",
     fileNotFound: "파일을 찾을 수 없거나 이동되었습니다",
-    sessionEditConflict: "세션 파일이 변경되어 저장하지 않았습니다. 편집 내용은 유지됩니다. 초안을 복사한 뒤 편집기 탭을 닫고 다시 열어 최신 내용과 병합하세요.",
+    sessionEditConflict: "세션 파일이 변경되어 저장 결과를 확인할 수 없습니다. 편집 내용은 유지됩니다. 초안을 복사한 뒤 편집기 탭을 닫고 다시 열어 최신 내용을 확인한 후 병합하여 저장하세요.",
     sessionFileTooLargeTitle: "세션 파일이 너무 큽니다",
     sessionFileTooLarge: "세션 내용이 내장 편집기의 64MiB 제한을 초과했습니다. 외부 소프트웨어로 편집하세요. 저장 시 내용이 손실되므로 문서를 잘라서 제공하지 않습니다.",
     openInDefaultEditor: "기본 텍스트 편집기로 열기",

@@ -1340,7 +1340,7 @@ export const en: Messages = {
     binaryFile: "Binary file, cannot edit",
     imageTooLarge: "Image exceeds 5MB, cannot preview",
     fileNotFound: "File not found or moved",
-    sessionEditConflict: "The session file changed, so nothing was saved. Your draft is preserved. Copy your draft, close and reopen the editor tab, then merge it with the latest content.",
+    sessionEditConflict: "The session file changed and the save could not be confirmed. Your draft is preserved. Copy your draft, close and reopen the editor tab, then check the latest content before merging and saving.",
     sessionFileTooLargeTitle: "Session file is too large",
     sessionFileTooLarge: "The session exceeds the built-in editor's 64 MiB limit. Use external software to edit it. A truncated document is not offered because saving it would lose content.",
     openInDefaultEditor: "Open in default text editor",
