@@ -40,6 +40,7 @@ import {
 } from "./font";
 import { changeZoom, onZoomChange, readZoomPct, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "@/lib/zoom";
 import { PromptHistoryManager, PromptHistoryToggleRow } from "./PromptHistorySettings";
+import { FileTreeHideIgnoredRow } from "./FileTreeHideIgnoredRow";
 import { useChatStore } from "@/features/chat/store";
 import {
   ensureNotificationPermission,
@@ -770,7 +771,7 @@ function fileName(path: string): string {
 }
 
 /** Behavior card: composer send shortcut, thinking auto-collapse, prompt
- *  history. */
+ *  history, hiding Git-ignored files in the file tree. */
 function BehaviorCard({
   settings,
   onSendShortcutChange,
@@ -894,6 +895,7 @@ function BehaviorCard({
           </>
         )}
         <PromptHistoryToggleRow />
+        <FileTreeHideIgnoredRow />
       </SettingsCard>
     </div>
   );

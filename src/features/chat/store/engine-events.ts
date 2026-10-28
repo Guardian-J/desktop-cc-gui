@@ -54,7 +54,6 @@ import {
   type AskLoop,
 } from "./ask-loop";
 import { mergeUsage, parseUsage, reportedContextWindow, type ParsedUsage } from "../usage";
-import { usageTrackingEnabled } from "@/features/settings/usage-tracking";
 import type {
   RegisteredInternalMessageCapture,
 } from "@/features/plugins/runtime/hooks";
@@ -67,6 +66,8 @@ import {
 } from "@/features/plugins/runtime/hooks";
 import { normalizeEngineEvent, type EngineTerminalFact } from "../normalized-runtime-events";
 import { workspaceMetadata } from "./lifecycle";
+import { emitSessionActivated } from "@/features/plugins/runtime/events";
+import { sessionSelection } from "./selection";
 import type { AfterTurnEvent, InternalMessageCapture, WorkspaceMetadata } from "@ccgui/plugin-sdk";
 import { migrateSelectedBot } from "@/features/bots/selected-bot";
 interface RunLifecycle {
@@ -656,11 +657,17 @@ function selectionFields(event: ChatEngineEvent): {
 function onLaunch(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
   const { model, effort } = selectionFields(event);
   if (!model && !effort) return;
-  const data = event.data as { comparisonModel?: string | null };
+  const data = event.data as {
+    comparisonModel?: string | null;
+    reportsServed?: unknown;
+  };
   const comparison =
     data.comparisonModel === undefined
       ? {}
       : { comparisonModel: data.comparisonModel };
+  // Only an explicit true: older hosts never send the flag, and their
+  // request-only check stays hidden as it always was.
+  const reportsServed = data.reportsServed === true ? { reportsServed: true } : {};
   if (model) applyModelDisplay(model, key, deps);
   if (effort) applyEffortDisplay(effort, key, deps);
   deps.set((s) => {
@@ -674,6 +681,7 @@ function onLaunch(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
           responseCheck: {
             requested: { model, effort, ...comparison },
             served: { model: null, effort: null },
+            ...reportsServed,
           },
         },
       },
@@ -703,7 +711,7 @@ function onServed(
         [key]: {
           ...cur,
           responseCheck: {
-            requested: prev.requested,
+            ...prev,
             served: {
               model: model ?? prev.served.model,
               effort: effort ?? prev.served.effort,
@@ -894,6 +902,14 @@ function onSession(
     deps.get().active?.workspacePath ||
     "";
   const newKey = sessionKey(event.engine, nativeId, workspacePath);
+  // The active tab may be the pending tab about to adopt this native id: its
+  // retained activation (sessionId:null) can never be repaired afterwards —
+  // emitSessionSelectionChanged matches the retained payload on
+  // engine+sessionId — so it needs a fresh activation emit below.
+  const activeAdoptsPending =
+    state.active?.engine === event.engine &&
+    state.active.sessionId === null &&
+    state.active.workspacePath === workspacePath;
   // The event can resolve straight to the native key when it beat the send
   // response (the run had no routing entry yet). The turn rows and streaming
   // flag still sit under the pending key then; migrate from there instead of
@@ -1029,6 +1045,13 @@ function onSession(
     persistTabs(openTabs, s.active);
     return { openTabs };
   });
+  if (activeAdoptsPending && deps.get().active?.sessionId === nativeId) {
+    emitSessionActivated(
+      event.engine,
+      nativeId,
+      sessionSelection(deps.get(), event.engine, nativeId, workspacePath),
+    );
+  }
   const createdKey = sessionKey(event.engine, nativeId, workspacePath);
   if (!deps.get().createdSessionKeys[createdKey]) {
     deps.set((s) => ({
@@ -1072,12 +1095,6 @@ function onSession(
   );
 }
 
-/** Runs whose turn already wrote ledger rows report by report. Every report
- *  is one model response, so each lands in the ledger the moment it arrives —
- *  a codex turn that chats for an hour has to show up while it runs, not when
- *  it ends — and `done` must not write the same tokens again. */
-const liveLedgerRuns = new Set<string>();
-
 /** Running token totals for the reply in flight, keyed by run. `usage` keeps
  *  the newest report (the context meter needs occupancy, not a sum), while
  *  the tail indicator and the settled row show this total: what the reply has
@@ -1086,7 +1103,6 @@ const turnUsageTotals = new Map<string, ParsedUsage>();
 /** Drop a run's usage bookkeeping (settled, interrupted, or swept). */
 export function dropRunUsage(runId: string) {
   turnUsageTotals.delete(runId);
-  liveLedgerRuns.delete(runId);
 }
 
 /** Drop every trace of runs the orphan sweep reaped: their usage maps here
@@ -1141,7 +1157,6 @@ function onUsage(
     usage: mergeUsage(event.data, prev),
     ...(totals ? { turnUsage: usageSnapshot(totals) } : {}),
   });
-  if (parsed) recordUsageReport(deps, event, key, parsed);
 }
 
 /** Fold one report into its run's running total. */
@@ -1171,47 +1186,6 @@ function usageSnapshot(totals: ParsedUsage): Record<string, number> {
     cache_creation_input_tokens: totals.cacheWrite,
     ...(totals.contextWindow ? { model_context_window: totals.contextWindow } : {}),
   };
-}
-
-/** Ledger one engine report (one request) as it arrives. */
-function recordUsageReport(
-  deps: EngineEventDeps,
-  event: ChatEngineEvent,
-  key: string,
-  parsed: ParsedUsage,
-) {
-  if (!usageTrackingEnabled()) return;
-  liveLedgerRuns.add(event.runId);
-  writeUsageRow(deps, event, key, parsed, 1);
-}
-
-/** Shared writer: one ledger row for the run's model and session. */
-function writeUsageRow(
-  deps: EngineEventDeps,
-  event: ChatEngineEvent,
-  key: string,
-  parsed: ParsedUsage,
-  reports: number,
-) {
-  const state = deps.get();
-  const tab = state.openTabs.find(
-    (t) => sessionKey(t.engine, t.sessionId, t.workspacePath) === key,
-  );
-  void ipc
-    .usageRecord({
-      ts: Date.now(),
-      engine: event.engine,
-      model: stampedModel(deps, event.engine, key),
-      sessionId: event.sessionId ?? tab?.sessionId ?? null,
-      workspacePath: tab?.workspacePath ?? state.active?.workspacePath ?? null,
-      input: parsed.input,
-      output: parsed.output,
-      cacheRead: parsed.cacheRead,
-      cacheWrite: parsed.cacheWrite,
-      reports,
-      durationMs: null,
-    })
-    .catch(() => {});
 }
 
 function onError(
@@ -1860,10 +1834,6 @@ function onDone(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
   dispatchNormalized(event, { status: cancelled ? "cancelled" : "completed" });
   finishRunLifecycle(event.runId, cancelled ? "cancelled" : "completed", undefined, event.sessionId);
   untrackRun(event.runId);
-  // Ledger the turn's tokens now that it is settled: the same report that
-  // stamps the row above, so the usage page counts real engine numbers. The
-  // feature's own switch gates it (localStorage-backed, see usage-tracking.ts).
-  recordTurnUsage(deps, event, key, finalUsage);
   // Native file changed; refresh list cache in background.
   void ipc.rescanSessions().catch(() => {});
   deps.markUnseenIfBackground(key);
@@ -1890,22 +1860,6 @@ function onDone(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
       }, 400);
     }
   }
-}
-
-/** Ledger the turn's own report when it never reported live (claude sends one
- *  usage payload, the turn's totals, on its result line). Turns that streamed
- *  reports already have their rows. */
-function recordTurnUsage(
-  deps: EngineEventDeps,
-  event: ChatEngineEvent,
-  key: string,
-  usage: unknown,
-) {
-  if (!usageTrackingEnabled()) return;
-  if (liveLedgerRuns.delete(event.runId)) return;
-  const parsed = parseUsage(usage);
-  if (!parsed) return;
-  writeUsageRow(deps, event, key, parsed, 1);
 }
 
 /** A CLI that kept running after `done` (a background task was pending) opened
