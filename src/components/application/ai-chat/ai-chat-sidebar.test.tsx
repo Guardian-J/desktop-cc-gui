@@ -263,6 +263,21 @@ it("keeps hover actions to pin / rename / delete (archive is context-menu only)"
   expect(onThreadAction).toHaveBeenCalledWith("claude/hover-1", "archive");
 });
 
+it("hides agy editing but keeps Refresh rendering actionable", async () => {
+  const onThreadAction = vi.fn();
+  await act(async () => root.render(
+    <AiChatSidebar
+      repos={[{ id: "a", label: "a", defaultOpen: true, threads: [{ id: "agy/one", label: "agy session", time: "1m" }] }]}
+      onThreadAction={onThreadAction}
+    />,
+  ));
+  await rightClick(threadRow("agy session"));
+  const menu = openMenu();
+  expect(menu.textContent).not.toContain("chat.editSession");
+  await act(async () => menuItem(menu, "chat.refreshSessionRendering").click());
+  expect(onThreadAction).toHaveBeenCalledWith("agy/one", "refresh");
+});
+
 it("opens the thread context menu on right-click and dispatches its entries", async () => {
   const onThreadAction = vi.fn();
   const onCopyThreadId = vi.fn();
