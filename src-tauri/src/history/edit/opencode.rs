@@ -124,11 +124,27 @@ fn db_backup_source(path: &Path, session_id: &str) -> PathBuf {
     path.with_file_name(format!("opencode.db.{session_id}.json"))
 }
 
+/// Session-level backups of one OpenCode address: the SQLite aggregate beside
+/// opencode.db, or the tree's hidden metadata and aggregate backups (message
+/// and part backups live in the per-session directories).
+pub(super) fn backup_files(path: &Path) -> Vec<PathBuf> {
+    match crate::history::split_opencode_db_path(path) {
+        Some((db, session_id)) => super::backup_path(&db_backup_source(&db, &session_id), super::BackupName::Beside)
+            .into_iter().collect(),
+        None => [path.to_path_buf(), path.with_extension("ccgui-session.json")].iter()
+            .filter_map(|source| super::backup_path(source, super::BackupName::Hidden).ok())
+            .collect(),
+    }
+}
+
 #[cfg(test)]
-fn canonical_backup_path(source: &Path) -> PathBuf {
-    let mut name = source.file_name().unwrap().to_os_string();
-    name.push(".ccgui-backup");
-    source.with_file_name(name)
+fn tree_backup_path(source: &Path) -> PathBuf {
+    super::backup_path(source, super::BackupName::Hidden).unwrap()
+}
+
+#[cfg(test)]
+fn db_backup_path(source: &Path) -> PathBuf {
+    super::backup_path(source, super::BackupName::Beside).unwrap()
 }
 
 fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>, String> {
@@ -379,11 +395,13 @@ fn write_tree(path: &Path, session_id: &str, edited: &Value, expected_version: &
     let (_, current_version) = versioned_document(&tree_snapshot(path, session_id)?.view)?;
     super::check_version(expected_version, &current_version)?;
     if !changes.is_empty() {
+        // Every backup inside `storage/` is hidden: OpenCode ≤1.1 would read a
+        // visible one as a missing record and fail its whole listing.
         for change in &changes {
-            super::preserve_backup(&change.path, &change.original)?;
+            super::preserve_backup(&change.path, &change.original, super::BackupName::Hidden)?;
         }
         super::preserve_private_backup(
-            &snapshot.metadata.with_extension("ccgui-session.json"), previous.as_bytes(),
+            &snapshot.metadata.with_extension("ccgui-session.json"), previous.as_bytes(), super::BackupName::Hidden,
         )?;
     }
     let mut applied = 0;
@@ -570,7 +588,7 @@ fn write_db(path: &Path, session_id: &str, edited: &Value, expected_version: &st
         _ => return Err("OpenCode session title must be text or null".into()),
     };
     if original != *edited {
-        super::preserve_private_backup(&db_backup_source(path, session_id), previous.as_bytes())?;
+        super::preserve_private_backup(&db_backup_source(path, session_id), previous.as_bytes(), super::BackupName::Beside)?;
     }
     if original["session"].get("title") != edited["session"].get("title") {
         tx.execute("UPDATE session SET title=?1 WHERE id=?2", rusqlite::params![title, session_id]).map_err(db_error)?;
@@ -894,7 +912,7 @@ mod tests {
             let current = read(&path, "ses_one").unwrap();
             assert_eq!(write(&path, "ses_one", &text, &version).unwrap_err(), super::super::SESSION_EDIT_CONFLICT);
             assert_eq!(read(&path, "ses_one").unwrap(), current);
-            assert!(!canonical_backup_path(&path.with_extension("ccgui-session.json")).exists());
+            assert!(!tree_backup_path(&path.with_extension("ccgui-session.json")).exists());
         }
     }
 
@@ -919,7 +937,7 @@ mod tests {
             let current = read(&path, "ses_one").unwrap();
             assert_eq!(write(&path, "ses_one", &text, &version).unwrap_err(), super::super::SESSION_EDIT_CONFLICT, "{mutation}");
             assert_eq!(read(&path, "ses_one").unwrap(), current);
-            assert!(!canonical_backup_path(&db_backup_source(&db, "ses_one")).exists());
+            assert!(!db_backup_path(&db_backup_source(&db, "ses_one")).exists());
         }
     }
 
@@ -956,8 +974,8 @@ mod tests {
         let database = db_fixture(&scratch);
         for path in [&tree, &database] {
             let (original, version) = read(path, "ses_one").unwrap();
-            let backup = if path == &tree { canonical_backup_path(&path.with_extension("ccgui-session.json")) }
-                else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+            let backup = if path == &tree { tree_backup_path(&path.with_extension("ccgui-session.json")) }
+                else { db_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
             let mut view: Value = serde_json::from_str(&original).unwrap();
             view["session"]["title"] = json!("saved edit");
             let (saved, _) = write(path, "ses_one", &view.to_string(), &version).unwrap();
@@ -970,7 +988,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&backup).unwrap(), saved);
         }
         assert!(!scratch.0.join("opencode.db.ccgui-backup").exists());
-        assert!(!canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_other")).exists());
+        assert!(!db_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_other")).exists());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1018,8 +1036,8 @@ mod tests {
         let other_bytes = std::fs::read(&other).unwrap();
         for path in [&tree, &database] {
             let (original, version) = read(path, "ses_one").unwrap();
-            let backup = if path == &tree { canonical_backup_path(&tree.with_extension("ccgui-session.json")) }
-                else { canonical_backup_path(&db_backup_source(&native_database, "ses_one")) };
+            let backup = if path == &tree { tree_backup_path(&tree.with_extension("ccgui-session.json")) }
+                else { db_backup_path(&db_backup_source(&native_database, "ses_one")) };
             let mut view: Value = serde_json::from_str(&original).unwrap();
             view["session"]["title"] = json!("private aggregate");
             let (saved, fresh_version) = write(path, "ses_one", &view.to_string(), &version).unwrap();
@@ -1037,8 +1055,8 @@ mod tests {
             assert_eq!(super::super::linux_access_acl(&File::open(&backup).unwrap()).unwrap(), None);
         }
         assert_eq!(std::fs::read(&other).unwrap(), other_bytes);
-        assert!(!canonical_backup_path(&tree.with_file_name("ses_other.ccgui-session.json")).exists());
-        assert!(!canonical_backup_path(&db_backup_source(&native_database, "ses_other")).exists());
+        assert!(!tree_backup_path(&tree.with_file_name("ses_other.ccgui-session.json")).exists());
+        assert!(!db_backup_path(&db_backup_source(&native_database, "ses_other")).exists());
     }
 
     #[test]
@@ -1054,11 +1072,11 @@ mod tests {
         view["messages"][0]["parts"][0]["text"] = json!("new text");
         view["messages"][0]["parts"].as_array_mut().unwrap().pop();
         write(&path, "ses_one", &view.to_string(), &version).unwrap();
-        assert_eq!(std::fs::read(canonical_backup_path(&changed)).unwrap(), changed_bytes);
-        assert_eq!(std::fs::read(canonical_backup_path(&deleted)).unwrap(), deleted_bytes);
+        assert_eq!(std::fs::read(tree_backup_path(&changed)).unwrap(), changed_bytes);
+        assert_eq!(std::fs::read(tree_backup_path(&deleted)).unwrap(), deleted_bytes);
         assert!(!deleted.exists());
-        assert!(!canonical_backup_path(&path).exists());
-        assert!(!canonical_backup_path(&scratch.0.join("storage/part/msg_other/prt_other.json")).exists());
+        assert!(!tree_backup_path(&path).exists());
+        assert!(!tree_backup_path(&scratch.0.join("storage/part/msg_other/prt_other.json")).exists());
     }
 
     #[test]
@@ -1070,8 +1088,8 @@ mod tests {
             for path in [&tree, &database] {
                 let (text, version) = read(path, "ses_one").unwrap();
                 let backup = if path == &tree {
-                    canonical_backup_path(&if aggregate { path.with_extension("ccgui-session.json") } else { path.to_path_buf() })
-                } else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+                    tree_backup_path(&if aggregate { path.with_extension("ccgui-session.json") } else { path.to_path_buf() })
+                } else { db_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
                 std::fs::create_dir(&backup).unwrap();
                 let mut view: Value = serde_json::from_str(&text).unwrap();
                 view["session"]["title"] = json!("must not persist");
@@ -1130,8 +1148,8 @@ mod tests {
             let mut view: Value = serde_json::from_str(&text).unwrap();
             view["messages"] = json!([]);
             let (_, fresh_version) = write(path, "ses_one", &view.to_string(), &version).unwrap();
-            let backup = if path == &tree { canonical_backup_path(&path.with_extension("ccgui-session.json")) }
-                else { canonical_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
+            let backup = if path == &tree { tree_backup_path(&path.with_extension("ccgui-session.json")) }
+                else { db_backup_path(&db_backup_source(&scratch.0.join("opencode.db"), "ses_one")) };
             assert_eq!(std::fs::read_to_string(&backup).unwrap(), text);
             // Recovery does not grant the editor arbitrary insertion authority.
             assert!(write(path, "ses_one", &text, &fresh_version).is_err());
@@ -1140,9 +1158,36 @@ mod tests {
                 for relative in ["message/ses_one/msg_one.json", "part/msg_one/prt_one.json", "part/msg_one/prt_two.json"] {
                     let native = scratch.0.join("storage").join(relative);
                     assert!(!native.exists());
-                    let restored: Value = serde_json::from_slice(&std::fs::read(canonical_backup_path(&native)).unwrap()).unwrap();
+                    let restored: Value = serde_json::from_slice(&std::fs::read(tree_backup_path(&native)).unwrap()).unwrap();
                     assert_eq!(restored["sessionID"], "ses_one");
                 }
+            }
+        }
+    }
+
+    /// OpenCode ≤1.1 `Storage.list` reads every non-hidden file under
+    /// `storage/` back as `<name minus 5 chars>.json`, and Session.list /
+    /// MessageV2 do not catch the failure: one visible backup hid the whole
+    /// project's sessions. Saves (and failed saves) leave only hidden extras.
+    #[test]
+    fn opencode_tree_save_leaves_only_json_records_in_native_storage() {
+        let scratch = Scratch::new();
+        let path = tree_fixture(&scratch);
+        let (text, version) = read(&path, "ses_one").unwrap();
+        let mut view: Value = serde_json::from_str(&text).unwrap();
+        view["session"]["title"] = json!("edited title");
+        view["messages"][0]["parts"][0]["text"] = json!("edited");
+        view["messages"][0]["parts"].as_array_mut().unwrap().pop();
+        write(&path, "ses_one", &view.to_string(), &version).unwrap();
+        assert!(tree_backup_path(&path).exists());
+        assert!(tree_backup_path(&scratch.0.join("storage/part/msg_one/prt_two.json")).exists());
+        let mut stack = vec![scratch.0.join("storage")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+                if path.is_dir() { stack.push(path); continue; }
+                assert!(name.starts_with('.') || name.ends_with(".json"), "OpenCode cannot read {}", path.display());
             }
         }
     }

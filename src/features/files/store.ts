@@ -150,6 +150,28 @@ export interface OpenFileState {
   name?: string;
 }
 
+/** The native source changed on disk: re-read a conversation the chat already
+ *  shows, in place, so it matches without a manual "Refresh rendering". A load
+ *  still running may have read the old source, so re-read once it settles. */
+function refreshLoadedConversation(target: NonNullable<OpenFileState["session"]>) {
+  const key = `${target.engine}/${target.sessionId}`;
+  const reload = () => {
+    const chat = useChatStore.getState();
+    if (!chat.bySession[key]) return;
+    const meta = chat.sessions.find((s) => s.engine === target.engine && s.sessionId === target.sessionId);
+    if (meta) void chat.reloadSession(meta);
+  };
+  if (!useChatStore.getState().bySession[key]?.loading) {
+    reload();
+    return;
+  }
+  const unsubscribe = useChatStore.subscribe((state) => {
+    if (state.bySession[key]?.loading) return;
+    unsubscribe();
+    reload();
+  });
+}
+
 type ExternalEditorLaunch =
   | { status: "opening"; promise: Promise<void> }
   | { status: "opened" }
@@ -635,6 +657,7 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
       set((s) => ({ fileStates: { ...s.fileStates, [path]: pending } }));
       try {
         const savedDocument: SessionFileDocument = await ipc.writeSessionFile(target.engine, target.sessionId, content, entry.version, target.remote ? target.workspacePath : undefined, target.remote ? target.remotePath : undefined);
+        refreshLoadedConversation(target);
         if (get().fileStates[path] !== pending) throw new Error("The session editor changed while saving; reopen it to read the current file");
         savedText = savedDocument.text;
         const savedContent = { ...entry.content, text: savedText };

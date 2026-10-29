@@ -286,8 +286,28 @@ fn write_local_document(db: &crate::db::Db, engine: &str, session_id: &str, cont
     let source = local_source(db, engine, session_id)?;
     let physical = physical_source(engine, session_id, &source)?;
     let name = source_name(engine, &physical, session_id)?;
-    let (text, version) = write_local_source(engine, session_id, &source, content, expected_version)?;
+    let result = write_local_source(engine, session_id, &source, content, expected_version);
+    // Even a failed save may have changed files (an OpenCode rollback can fail).
+    super::reader::forget_parsed_session(&source);
+    if let Err(error) = mark_session_for_reindex(db, engine, session_id) {
+        // The source is already written; never report a committed save as failed.
+        eprintln!("[history] re-index {engine}/{session_id} after native save: {error}");
+    }
+    let (text, version) = result?;
     Ok(SessionFileDocument { path: physical.to_string_lossy().into_owned(), name, text, version })
+}
+
+/// The save need not move the stat this session's index row (title, preview,
+/// search) is keyed on: an OpenCode part edit, a SQLite WAL write. Make the
+/// next scan re-summarize it instead of reusing the row.
+fn mark_session_for_reindex(db: &crate::db::Db, engine: &str, session_id: &str) -> Result<(), String> {
+    let conn = db.0.lock();
+    conn.execute(
+        "UPDATE sessions SET file_mtime_ms=-1 WHERE engine=?1 AND session_id=?2",
+        rusqlite::params![engine, session_id],
+    ).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM meta WHERE key='stat_signature'", []).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn write_local_source(engine: &str, session_id: &str, source: &Path, content: String, expected_version: &str) -> Result<(String, String), String> {
@@ -372,7 +392,7 @@ fn atomic_write_existing_checked(path: &Path, bytes: &[u8], original: &Metadata,
             if read_native_bytes(path)?.0 != original_bytes {
                 return Err(format!("{SESSION_EDIT_CONFLICT}: native source changed while preparing backup"));
             }
-            preserve_backup(path, original_bytes)?;
+            preserve_backup(path, original_bytes, BackupName::Beside)?;
             if read_native_bytes(path)?.0 != original_bytes {
                 return Err(format!("{SESSION_EDIT_CONFLICT}: native source changed while backing up"));
             }
@@ -383,16 +403,46 @@ fn atomic_write_existing_checked(path: &Path, bytes: &[u8], original: &Metadata,
     result
 }
 
+/// How the retained previous version is named beside its source.
+#[derive(Clone, Copy)]
+pub(super) enum BackupName {
+    /// `<name>.ccgui-backup`
+    Beside,
+    /// `.<name>.ccgui-backup`, for directories the owning CLI enumerates as
+    /// records: OpenCode ≤1.1 lists every non-hidden file under `storage/`,
+    /// reads it back as `<name minus 5 chars>.json` and fails the whole listing.
+    Hidden,
+}
+
+pub(super) fn backup_path(source: &Path, naming: BackupName) -> Result<PathBuf, String> {
+    let native = source.file_name().ok_or_else(|| "backup source has no filename".to_string())?;
+    let mut name = std::ffi::OsString::new();
+    if matches!(naming, BackupName::Hidden) { name.push("."); }
+    name.push(native);
+    name.push(".ccgui-backup");
+    Ok(source.with_file_name(name))
+}
+
+/// Backups a save can leave beside a registered session source. Deleting the
+/// session removes them too; backups of records inside per-session
+/// directories go with those directories.
+pub(super) fn session_backup_files(engine: &str, source: &Path) -> Vec<PathBuf> {
+    if engine == "opencode" {
+        return opencode::backup_files(source);
+    }
+    backup_path(source, BackupName::Beside).into_iter().collect()
+}
+
 /// Retain one exact previous native version. Never follow an existing backup
 /// symlink, and never mutate the source when backup staging/publication fails.
-pub(super) fn preserve_backup(source: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn preserve_backup(source: &Path, bytes: &[u8], naming: BackupName) -> Result<(), String> {
     check_document_size(bytes.len() as u64)?;
     let original = regular_source(source)?;
     let security = File::open(source).map_err(|e| format!("open backup security source: {e}"))?;
     if !same_source(&original, &security.metadata().map_err(|e| format!("inspect backup security source: {e}"))?) {
         return Err(format!("{SESSION_EDIT_CONFLICT}: native backup security source changed"));
     }
-    stage_backup(source, bytes, |staged| {
+    stage_backup(&backup_path(source, naming)?, bytes, |staged| {
         preserve_source_permissions(&security, staged)?;
         #[cfg(windows)]
         preserve_backup_windows_dacl(&security, staged)?;
@@ -402,15 +452,12 @@ pub(super) fn preserve_backup(source: &Path, bytes: &[u8]) -> Result<(), String>
 
 /// An aggregate includes private constituent files, so neither session metadata
 /// nor shared database access controls are authority to disclose its transcript.
-pub(super) fn preserve_private_backup(source: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn preserve_private_backup(source: &Path, bytes: &[u8], naming: BackupName) -> Result<(), String> {
     check_document_size(bytes.len() as u64)?;
-    stage_backup(source, bytes, secure_private_backup)
+    stage_backup(&backup_path(source, naming)?, bytes, secure_private_backup)
 }
 
-fn stage_backup(source: &Path, bytes: &[u8], secure: impl FnOnce(&File) -> Result<(), String>) -> Result<(), String> {
-    let mut name = source.file_name().ok_or_else(|| "backup source has no filename".to_string())?.to_os_string();
-    name.push(".ccgui-backup");
-    let backup = source.with_file_name(name);
+fn stage_backup(backup: &Path, bytes: &[u8], secure: impl FnOnce(&File) -> Result<(), String>) -> Result<(), String> {
     let parent = backup.parent().ok_or_else(|| "backup source has no parent".to_string())?;
     for ancestor in parent.ancestors().filter(|p| !p.as_os_str().is_empty()) {
         let metadata = std::fs::symlink_metadata(ancestor).map_err(|e| format!("inspect backup directory: {e}"))?;
@@ -419,7 +466,7 @@ fn stage_backup(source: &Path, bytes: &[u8], secure: impl FnOnce(&File) -> Resul
         }
     }
     let check_destination = || -> Result<(), String> {
-        match std::fs::symlink_metadata(&backup) {
+        match std::fs::symlink_metadata(backup) {
             Ok(metadata) if metadata.file_type().is_file() && !metadata.permissions().readonly() => Ok(()),
             Ok(_) => Err("native backup must be a writable regular file, not a symlink".into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -450,7 +497,7 @@ fn stage_backup(source: &Path, bytes: &[u8], secure: impl FnOnce(&File) -> Resul
         staged.sync_all().map_err(|e| format!("flush native backup: {e}"))?;
         drop(staged);
         check_destination()?;
-        publish_backup(&temp, &backup).map_err(|e| format!("publish native backup: {e}"))?;
+        publish_backup(&temp, backup).map_err(|e| format!("publish native backup: {e}"))?;
         #[cfg(unix)]
         File::open(parent).and_then(|directory| directory.sync_all()).map_err(|e| format!("flush native backup directory: {e}"))?;
         Ok(())
@@ -554,7 +601,13 @@ unsafe extern "C" {
 fn check_private_macos_acl(staged: &File) -> Result<(), String> {
     use std::os::fd::AsRawFd;
     let acl = unsafe { acl_get_fd(staged.as_raw_fd()) };
-    if acl.is_null() { return Err(format!("read private backup ACL: {}", std::io::Error::last_os_error())); }
+    if acl.is_null() {
+        let error = std::io::Error::last_os_error();
+        // Darwin reports a file without an extended ACL (including one just set
+        // to the empty ACL) as ENOENT: that is exactly the private state wanted.
+        if error.raw_os_error() == Some(libc::ENOENT) { return Ok(()); }
+        return Err(format!("read private backup ACL: {error}"));
+    }
     let mut entry = std::ptr::null_mut();
     let result = unsafe { acl_get_entry(acl, 0, &mut entry) };
     let error = std::io::Error::last_os_error();
@@ -1010,6 +1063,46 @@ mod tests {
         }
     }
 
+    /// Editing an OpenCode tree part leaves the session metadata (the parse
+    /// cache's stat key) untouched; a later ordinary history load must still
+    /// show the saved text rather than the parse cached before the save.
+    #[test]
+    fn local_save_drops_the_cached_history_parse_of_its_source() {
+        let scratch = Scratch::new();
+        let db = scratch.db();
+        let storage = scratch.path("storage");
+        let session = storage.join("session/project/ses_edit.json");
+        for (path, value) in [
+            (session.clone(), serde_json::json!({"id":"ses_edit","projectID":"project","directory":"/fixture"})),
+            (storage.join("message/ses_edit/msg_a.json"), serde_json::json!({"id":"msg_a","sessionID":"ses_edit","role":"assistant","time":{"created":1}})),
+            (storage.join("part/msg_a/prt_a.json"), serde_json::json!({"id":"prt_a","sessionID":"ses_edit","messageID":"msg_a","type":"text","text":"before"})),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, value.to_string()).unwrap();
+        }
+        register(&db, "opencode", "ses_edit", &session);
+        let assistant = |page: super::super::reader::SessionPage| {
+            page.messages.into_iter().find(|row| row.role == "assistant").unwrap().text
+        };
+        let load = || super::super::reader::load_session_page_blocking(&db, "opencode", "ses_edit", None, None, false).unwrap();
+        assert_eq!(assistant(load()), "before");
+        let opened = read_local(&db, "opencode", "ses_edit").unwrap();
+        let mut view: Value = serde_json::from_str(&opened.text).unwrap();
+        view["messages"][0]["parts"][0]["text"] = serde_json::json!("after!");
+        let metadata_stat = super::super::stat_signature(&session);
+        db.0.lock().execute("INSERT OR REPLACE INTO meta(key, value) VALUES('stat_signature', 'before-save')", []).unwrap();
+        write_local_document(&db, "opencode", "ses_edit", view.to_string(), &opened.version).unwrap();
+        assert_eq!(super::super::stat_signature(&session), metadata_stat);
+        assert_eq!(assistant(load()), "after!");
+        // The sidebar/search row is re-summarized by the next scan, not reused.
+        let conn = db.0.lock();
+        let indexed: i64 = conn.query_row(
+            "SELECT file_mtime_ms FROM sessions WHERE engine='opencode' AND session_id='ses_edit'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(indexed, -1);
+        assert!(conn.query_row("SELECT value FROM meta WHERE key='stat_signature'", [], |r| r.get::<_, String>(0)).is_err());
+    }
+
     #[test]
     fn recompressed_source_conflicts_even_when_editable_text_is_unchanged() {
         let scratch = Scratch::new();
@@ -1050,7 +1143,7 @@ mod tests {
         let source = scratch.path("aggregate.json");
         let backup = scratch.path("aggregate.json.ccgui-backup");
         std::fs::write(&backup, b"previous secured backup").unwrap();
-        let error = stage_backup(&source, b"private transcript", |staged| {
+        let error = stage_backup(&backup, b"private transcript", |staged| {
             assert_eq!(staged.metadata().unwrap().len(), 0);
             Err("cannot secure native ACL".into())
         }).unwrap_err();
@@ -1058,6 +1151,22 @@ mod tests {
         assert_eq!(std::fs::read(&backup).unwrap(), b"previous secured backup");
         assert!(!source.exists());
         assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 1);
+    }
+
+    /// Darwin reports a file without an extended ACL as ENOENT from acl_get_fd;
+    /// that is the private state, not a failure (every OpenCode save failed).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn private_backup_accepts_a_file_without_an_extended_acl() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let source = scratch.path("aggregate.json");
+        preserve_private_backup(&source, b"private transcript", BackupName::Beside).unwrap();
+        let backup = scratch.path("aggregate.json.ccgui-backup");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"private transcript");
+        assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+        preserve_private_backup(&source, b"next", BackupName::Hidden).unwrap();
+        assert_eq!(std::fs::read(scratch.path(".aggregate.json.ccgui-backup")).unwrap(), b"next");
     }
 
     #[cfg(unix)]
@@ -1068,14 +1177,14 @@ mod tests {
         let source = scratch.path("private.jsonl");
         std::fs::write(&source, b"private bytes").unwrap();
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
-        preserve_backup(&source, b"private bytes").unwrap();
+        preserve_backup(&source, b"private bytes", BackupName::Beside).unwrap();
         let backup = scratch.path("private.jsonl.ccgui-backup");
         assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
         std::fs::remove_file(&backup).unwrap();
         let unrelated = scratch.path("unrelated");
         std::fs::write(&unrelated, b"untouched").unwrap();
         symlink(&unrelated, &backup).unwrap();
-        assert!(preserve_backup(&source, b"private bytes").is_err());
+        assert!(preserve_backup(&source, b"private bytes", BackupName::Beside).is_err());
         assert_eq!(std::fs::read(&unrelated).unwrap(), b"untouched");
     }
 

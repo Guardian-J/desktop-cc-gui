@@ -340,6 +340,10 @@ struct CachedSession {
 static PARSED_CACHE: LazyLock<Mutex<HashMap<(PathBuf, i64, i64, String), Arc<CachedSession>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static PARSED_CACHE_BYTES: LazyLock<Mutex<usize>> = LazyLock::new(|| Mutex::new(0));
+/// Bumped (under the cache lock) by every [`forget_parsed_session`]. A parse
+/// that began before a save may have read the old source under a stat key the
+/// save did not move, so it is served but never published once this changed.
+static PARSED_CACHE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const PARSED_CACHE_CAPACITY: usize = 32;
 const PARSED_CACHE_BUDGET_BYTES: usize = 128 * 1024 * 1024;
@@ -389,6 +393,23 @@ fn parsed_footprint(parsed: &ParsedSession) -> usize {
     parsed.messages.iter().map(message_footprint).sum()
 }
 
+/// Drop every cached parse of one source after the app rewrote it. A native
+/// save need not change the cache key's stat: an OpenCode tree edit can touch
+/// only part files under unchanged session metadata, SQLite writes land in WAL.
+pub(crate) fn forget_parsed_session(path: &Path) {
+    let mut cache = PARSED_CACHE.lock();
+    let mut bytes = PARSED_CACHE_BYTES.lock();
+    cache.retain(|(cached_path, ..), previous| {
+        if cached_path == path {
+            *bytes -= previous.footprint;
+            false
+        } else {
+            true
+        }
+    });
+    PARSED_CACHE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn cached_session(
     engine: &str,
     path: &Path,
@@ -396,6 +417,7 @@ fn cached_session(
     accepted_signature: &str,
     force_reload: bool,
 ) -> Result<Arc<CachedSession>, String> {
+    let generation = PARSED_CACHE_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
     let Some((size, mtime_ms)) = super::stat_signature(path) else {
         // Unstattable file: let the parse produce the real error.
         let parsed = parse_session_file(engine, path, accepted_frames)?;
@@ -422,12 +444,27 @@ fn cached_session(
             .map(|(_, row)| message_footprint(row))
             .sum::<usize>();
     let cached = Arc::new(CachedSession { parsed, fold, footprint });
+    Ok(publish_parse(key, path, cached, force_reload, generation))
+}
+
+/// Cache a finished parse unless a save evicted the cache while it ran.
+fn publish_parse(
+    key: (PathBuf, i64, i64, String),
+    path: &Path,
+    cached: Arc<CachedSession>,
+    force_reload: bool,
+    generation: u64,
+) -> Arc<CachedSession> {
+    let footprint = cached.footprint;
     let mut cache = PARSED_CACHE.lock();
+    if PARSED_CACHE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        return cached;
+    }
     // An ordinary miss may finish after a forced same-stat reload. Keep the
     // already-published parse rather than overwriting it with that older read.
     if !force_reload {
         if let Some(hit) = cache.get(&key) {
-            return Ok(Arc::clone(hit));
+            return Arc::clone(hit);
         }
     }
     let mut bytes = PARSED_CACHE_BYTES.lock();
@@ -444,7 +481,7 @@ fn cached_session(
     // Oversized parses can still supply the requested page without making the
     // bounded cache oversized or clearing unrelated sessions to admit them.
     if footprint > PARSED_CACHE_BUDGET_BYTES {
-        return Ok(cached);
+        return cached;
     }
     while cache.len() >= PARSED_CACHE_CAPACITY
         || *bytes + footprint > PARSED_CACHE_BUDGET_BYTES
@@ -458,7 +495,7 @@ fn cached_session(
     }
     *bytes += footprint;
     cache.insert(key, Arc::clone(&cached));
-    Ok(cached)
+    cached
 }
 
 /// The fold over a whole session, each row tagged with the index of the
@@ -637,7 +674,7 @@ fn page_from_cached(
 
 /// Sync body of `load_session_page` (parsing multi-MB session files must not
 /// run on the IPC main thread).
-fn load_session_page_blocking(
+pub(super) fn load_session_page_blocking(
     db: &crate::db::Db,
     engine: &str,
     session_id: &str,
@@ -1021,6 +1058,24 @@ fn delete_opencode_db_session(db: &Path, session_id: &str) -> Result<(), String>
     Ok(())
 }
 
+/// A deleted transcript must not survive as its editor backup. Only once the
+/// source is really gone: the layout guards above may refuse a delete.
+fn delete_session_backups(engine: &str, path: &Path) -> Result<(), String> {
+    let gone = super::split_opencode_db_path(path).is_some()
+        || matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+    if !gone {
+        return Ok(());
+    }
+    for backup in super::edit::session_backup_files(engine, path) {
+        match std::fs::remove_file(&backup) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("remove session backup {}: {e}", backup.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Sync body of `delete_session` (disk + db work off the main thread).
 pub(super) fn delete_session_blocking(
     db: &crate::db::Db,
@@ -1041,6 +1096,7 @@ pub(super) fn delete_session_blocking(
     }
     if let Some(path) = path {
         delete_session_disk(engine, &path)?;
+        delete_session_backups(engine, &path)?;
     }
     // No indexed transcript after the scan is a valid empty/failed session.
     // Model and effort can already exist even when no transcript was created.
@@ -1090,12 +1146,13 @@ fn remote_session_delete_script(engine: &str, remote_path: &str) -> Result<Strin
     let quoted = crate::engine::wsl_transport::sh_quote(remote_path);
     // run_script_output checks the final status, without enabling set -e.
     // Only empty-directory cleanup may mask a failure, never transcript rm.
-    let mut script = format!("rm -f -- {quoted} || exit $?");
+    // The editor's previous-version backup (`<source>.ccgui-backup`) goes with it.
+    let mut script = format!("rm -f -- {quoted} || exit $?\nrm -f -- {quoted}.ccgui-backup || exit $?");
     if engine == "dsh" {
         // 世代日志同目录共存(session.jsonl.zstd / session.vN.jsonl.zstd),
         // 只删当前代会留下旧代被插件源重新列出;目录删空才移除。
         script.push_str(&format!(
-            "\ndir=$(dirname -- {quoted}) || exit $?\nrm -f -- \"$dir\"/session.jsonl.zstd \"$dir\"/session.v*.jsonl.zstd || exit $?\nrmdir -- \"$dir\" 2>/dev/null || true"
+            "\ndir=$(dirname -- {quoted}) || exit $?\nrm -f -- \"$dir\"/session.jsonl.zstd \"$dir\"/session.v*.jsonl.zstd \"$dir\"/session.jsonl.zstd.ccgui-backup \"$dir\"/session.v*.jsonl.zstd.ccgui-backup || exit $?\nrmdir -- \"$dir\" 2>/dev/null || true"
         ));
     }
     Ok(script)
@@ -1788,6 +1845,26 @@ mod tests {
     fn restore_modified(path: &Path, modified: std::time::SystemTime) {
         std::fs::OpenOptions::new().write(true).open(path).unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+    }
+
+    /// A load that read the source before a save and finishes after the save
+    /// evicted the cache is served, but never published under a stat key the
+    /// save did not move (the next ordinary load would return pre-save text).
+    #[test]
+    fn parse_overlapping_a_save_is_served_but_not_cached() {
+        let scratch = Scratch::new();
+        let file = scratch.0.join("raced.jsonl");
+        write_session(&file, &scratch.0, "before the save");
+        let (size, mtime_ms) = super::super::stat_signature(&file).unwrap();
+        let key = (file.clone(), size, mtime_ms, String::new());
+        let parsed = parse_session_file("omp", &file, &HashSet::new()).unwrap();
+        let fold = subagent_fold(&parsed.messages);
+        let stale = Arc::new(CachedSession { parsed, fold, footprint: 1 });
+        let generation = PARSED_CACHE_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+        forget_parsed_session(&file); // the save lands while that parse runs
+        let served = publish_parse(key.clone(), &file, Arc::clone(&stale), false, generation);
+        assert!(Arc::ptr_eq(&served, &stale));
+        assert!(!PARSED_CACHE.lock().contains_key(&key));
     }
 
     #[test]
@@ -2952,6 +3029,53 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    /// Deleting a session must not leave its full transcript behind in the
+    /// editor's previous-version backup; a refused delete keeps it.
+    #[test]
+    fn deleting_a_session_removes_its_editor_backups() {
+        let scratch = Scratch::new();
+        let db = crate::db::Db::open_at(&scratch.0.join("app.db")).unwrap();
+        let transcript = scratch.0.join("2026-10-29_sid-one.jsonl");
+        let backup = scratch.0.join("2026-10-29_sid-one.jsonl.ccgui-backup");
+        std::fs::write(&transcript, "{}\n").unwrap();
+        std::fs::write(&backup, "previous transcript").unwrap();
+        register_history_source(&db, "omp", "sid-one", &transcript);
+        delete_session_blocking(&db, "omp", "sid-one").unwrap();
+        assert!(!transcript.exists());
+        assert!(!backup.exists());
+
+        // OpenCode tree: hidden metadata and aggregate backups beside the session.
+        let project = scratch.0.join("storage/session/proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let meta = project.join("ses_gone.json");
+        std::fs::write(&meta, json!({"id":"ses_gone"}).to_string()).unwrap();
+        let hidden = [project.join(".ses_gone.json.ccgui-backup"), project.join(".ses_gone.ccgui-session.json.ccgui-backup")];
+        for path in &hidden {
+            std::fs::write(path, "previous").unwrap();
+        }
+        let unrelated = project.join(".ses_other.ccgui-session.json.ccgui-backup");
+        std::fs::write(&unrelated, "other session").unwrap();
+        delete_session_disk("opencode", &meta).unwrap();
+        delete_session_backups("opencode", &meta).unwrap();
+        assert!(hidden.iter().all(|path| !path.exists()));
+        assert!(unrelated.exists());
+
+        // OpenCode SQLite: the JSON aggregate beside opencode.db.
+        let address = super::super::opencode_db_session_path(&scratch.0.join("opencode.db"), "ses_db");
+        let aggregate = scratch.0.join("opencode.db.ses_db.json.ccgui-backup");
+        std::fs::write(&aggregate, "previous").unwrap();
+        delete_session_backups("opencode", &address).unwrap();
+        assert!(!aggregate.exists());
+
+        // A delete the layout guard refused leaves the source, so the backup stays.
+        let kept = scratch.0.join("kept.jsonl");
+        let kept_backup = scratch.0.join("kept.jsonl.ccgui-backup");
+        std::fs::write(&kept, "{}\n").unwrap();
+        std::fs::write(&kept_backup, "previous").unwrap();
+        delete_session_backups("omp", &kept).unwrap();
+        assert!(kept_backup.exists());
+    }
+
     /// Unknown engines fail loudly instead of silently skipping the disk
     /// delete (the silent path is how deleted sessions resurrect).
     #[test]
@@ -3026,11 +3150,16 @@ mod tests {
         let sibling_transcript = sibling.join("session.jsonl.zstd");
         std::fs::write(&sibling_transcript, "other session").unwrap();
 
+        for name in ["session.v2.jsonl.zstd.ccgui-backup", "session.v1.jsonl.zstd.ccgui-backup"] {
+            std::fs::write(dir.join(name), "previous transcript").unwrap();
+        }
+
         let output = run_remote_delete_script("dsh", &dir.join("session.v2.jsonl.zstd"));
 
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         for name in generations {
             assert!(!dir.join(name).exists(), "generation remains: {name}");
+            assert!(!dir.join(format!("{name}.ccgui-backup")).exists(), "backup remains: {name}");
         }
         // Nonempty-directory cleanup is best effort, not a transcript failure.
         assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "keep");

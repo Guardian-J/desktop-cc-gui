@@ -16,6 +16,7 @@ vi.mock("@/lib/ipc", () => ({ ipc: mocks }));
 vi.mock("@/features/browser/store", () => ({
   useBrowserStore: { getState: () => browserMock },
 }));
+import { useChatStore, type SessionState } from "@/features/chat/store";
 import { useGitStore } from "@/features/git/store";
 import { resetMissionStore, useMissionStore } from "@/features/mission/store";
 import { usePluginHubStore } from "@/features/plugins/hub/store";
@@ -586,6 +587,41 @@ describe("native session editor tabs", () => {
     await saving;
     await useFilesStore.getState().saveFile(key, "second");
     expect(mocks.writeSessionFile).toHaveBeenLastCalledWith("omp", "edited", "second", "new-version", undefined, undefined);
+  });
+
+  it("re-reads a conversation the chat already shows after a save, without switching to it", async () => {
+    const original = useChatStore.getState();
+    const reloadSession = vi.fn(async () => {});
+    try {
+      useChatStore.setState({ reloadSession, sessions: [session], bySession: {} });
+      mocks.readSessionFile.mockResolvedValue(document("A"));
+      await useFilesStore.getState().openSessionFile(session);
+      const key = useFilesStore.getState().activeFilePath!;
+      await useFilesStore.getState().saveFile(key, "not loaded in chat");
+      expect(reloadSession).not.toHaveBeenCalled();
+
+      useChatStore.setState({ bySession: { "omp/edited": {} as SessionState } });
+      mocks.writeSessionFile.mockRejectedValueOnce(new Error("SESSION_EDIT_CONFLICT"));
+      await expect(useFilesStore.getState().saveFile(key, "conflict")).rejects.toThrow();
+      expect(reloadSession).not.toHaveBeenCalled();
+
+      await useFilesStore.getState().saveFile(key, "saved and shown");
+      expect(reloadSession).toHaveBeenCalledTimes(1);
+      expect(reloadSession).toHaveBeenCalledWith(session);
+      expect(useFilesStore.getState().activeFilePath).toBe(key);
+
+      // A history load already running may have read the pre-save source:
+      // re-read once after it settles, not during it.
+      useChatStore.setState({ bySession: { "omp/edited": { loading: true } as SessionState } });
+      await useFilesStore.getState().saveFile(key, "saved during a load");
+      expect(reloadSession).toHaveBeenCalledTimes(1);
+      useChatStore.setState({ bySession: { "omp/edited": { loading: false } as SessionState } });
+      expect(reloadSession).toHaveBeenCalledTimes(2);
+      useChatStore.setState({ bySession: { "omp/edited": { loading: false } as SessionState } });
+      expect(reloadSession).toHaveBeenCalledTimes(2);
+    } finally {
+      useChatStore.setState(original, true);
+    }
   });
 
   it("rejects edits without a source version", async () => {
