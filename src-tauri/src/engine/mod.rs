@@ -37,12 +37,14 @@ pub mod opencode_server;
 mod opencode_session;
 pub mod pi_family;
 pub mod pi_family_auth;
+mod pi_family_env;
 pub mod plan_review;
 pub mod qoder;
 mod qoder_session;
 mod reader;
 mod registry;
 pub mod resolve;
+mod shell_env;
 pub mod wsl_transport;
 
 pub(crate) use resolve::command_for_binary;
@@ -1097,6 +1099,11 @@ async fn send_reserved(
         allowed_tools,
         wsl_tp.is_some(),
     )?;
+    if wsl_tp.is_none() && matches!(engine.as_str(), "pi" | "omp") {
+        // 只向登录 shell 查询当前引擎配置中的变量：PI 用 $VAR，OMP 用裸名字。
+        // 只注入这次子进程；WSL 不带本机 env，跳过。
+        pi_family_env::apply(&mut launch.built.command, &engine).await;
+    }
     // pi/omp: the injected extension observes the provider response's own
     // `model` field and appends it to a per-run sidecar. The reader consults
     // that file when `message_end` has no `upstreamModel`. Remote workspaces
