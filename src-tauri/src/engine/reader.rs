@@ -539,6 +539,7 @@ impl TurnCore {
                 tool,
                 path,
                 message,
+                tool_use_id,
             } => {
                 // Not terminal either: the CLI works around the denial and
                 // the turn continues — the UI offers the grant alongside.
@@ -548,7 +549,12 @@ impl TurnCore {
                     &self.run_id,
                     &self.engine_id,
                     "permission_denied",
-                    serde_json::json!({ "tool": tool, "path": path, "message": message }),
+                    serde_json::json!({
+                        "tool": tool,
+                        "path": path,
+                        "message": message,
+                        "toolUseId": tool_use_id,
+                    }),
                 );
             }
             EngineEvent::Question {

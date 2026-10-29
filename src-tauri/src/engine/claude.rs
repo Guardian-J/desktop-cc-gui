@@ -393,6 +393,7 @@ impl Engine for ClaudeEngine {
                         tool,
                         path,
                         message: text,
+                        tool_use_id: id,
                     });
                 }
                 // Tool result output emitted in response to tool_use. The
@@ -464,11 +465,18 @@ impl Engine for ClaudeEngine {
                             .filter(|t| !t.is_empty())
                             .map(str::to_string);
                         let path = denial.get("tool_input").and_then(super::tool_path_arg);
+                        let tool_use_id = denial
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_string);
                         if tool.is_some() || path.is_some() {
                             out.push(EngineEvent::PermissionDenied {
                                 tool,
                                 path,
                                 message: String::new(),
+                                tool_use_id,
                             });
                         }
                     }
@@ -1478,6 +1486,7 @@ mod tests {
                 tool,
                 path,
                 message,
+                ..
             } => {
                 assert_eq!(*tool, None);
                 assert_eq!(path.as_deref(), Some(r"C:\dev\frontend"));
@@ -1536,9 +1545,15 @@ mod tests {
             .find(|e| matches!(e, EngineEvent::PermissionDenied { .. }))
             .expect("expected permission denial");
         match denial {
-            EngineEvent::PermissionDenied { tool, path, .. } => {
+            EngineEvent::PermissionDenied {
+                tool,
+                path,
+                tool_use_id,
+                ..
+            } => {
                 assert_eq!(tool.as_deref(), Some("Read"));
                 assert_eq!(path.as_deref(), Some("/etc/hosts"));
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_9"));
             }
             _ => unreachable!(),
         }
@@ -1590,9 +1605,17 @@ mod tests {
         ClaudeEngine::new().parse_line(&line, &mut out);
         assert_eq!(out.len(), 2);
         match &out[0] {
-            EngineEvent::PermissionDenied { tool, path, .. } => {
+            // The same call's mid-turn copy carries this id too: the
+            // frontend matches the two by it.
+            EngineEvent::PermissionDenied {
+                tool,
+                path,
+                tool_use_id,
+                ..
+            } => {
                 assert_eq!(tool.as_deref(), Some("Read"));
                 assert_eq!(path.as_deref(), Some("/Users/x/secrets/key.pem"));
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_1"));
             }
             _ => panic!("expected permission denial"),
         }
