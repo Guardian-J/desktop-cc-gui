@@ -29,6 +29,11 @@ const h = vi.hoisted(() => ({
     isMinimized: vi.fn(async () => false),
   },
   store: {} as Record<string, unknown>,
+  dismissCenterSurfaces: vi.fn(),
+}));
+
+vi.mock("@/features/chat/center-surfaces", () => ({
+  dismissCenterSurfaces: h.dismissCenterSurfaces,
 }));
 
 vi.mock("./platform", () => ({
@@ -86,6 +91,7 @@ function resetStore() {
       },
     },
     selectSession: vi.fn(async () => {}),
+    focusTab: vi.fn(),
   };
 }
 
@@ -141,6 +147,21 @@ describe("notifications", () => {
     it("keeps the cleaned body when it is non-empty", () => {
       const result = formatNotificationBody("**完成**", 100, "默认正文");
       expect(result).toBe("完成");
+    });
+
+    it("never cuts an emoji in half at the length limit", () => {
+      // 😀 is two UTF-16 units. Half of it is a lone surrogate, which the
+      // native side's JSON parser rejects, so the whole notice would be lost.
+      const result = formatNotificationBody(`${"a".repeat(159)}😀😀`, 160);
+      expect(result).toBe(`${"a".repeat(159)}😀...`);
+      expect(result.isWellFormed()).toBe(true);
+    });
+
+    it("keeps a multi-code-point emoji whole at the length limit", () => {
+      // A flag is two code points; a code-point cut would leave half of it.
+      expect(formatNotificationBody(`${"a".repeat(159)}🇨🇳🇨🇳`, 160)).toBe(`${"a".repeat(159)}🇨🇳...`);
+      const family = "👨‍👩‍👧";
+      expect(formatNotificationBody(`${"a".repeat(159)}${family}b`, 160)).toBe(`${"a".repeat(159)}${family}...`);
     });
   });
 
@@ -223,22 +244,67 @@ describe("notifications", () => {
       expect(plugin.onAction).not.toHaveBeenCalled();
     });
 
-    it("routes a click on a posted notice back to its session", async () => {
-      h.store.openTabs = [{ engine: "codex", sessionId: "ses-1", workspacePath: "/workspace" }];
+    /** Post a notice for `sessionKey` through a fresh module, then click it. */
+    async function clickPostedNotice(sessionKey: string) {
       vi.resetModules();
       const plugin = await import("@tauri-apps/plugin-notification");
       const core = await import("@tauri-apps/api/core");
       const fresh = await import("./notifications");
       fresh.updateCachedNotificationPreferences({ notificationsEnabled: true });
 
-      await fresh.sendOSNotification({ title: "T", sessionKey: KEY });
+      await fresh.sendOSNotification({ title: "T", sessionKey });
       expect(plugin.onAction).toHaveBeenCalledTimes(1);
       const [notice] = postedNotices(vi.mocked(core.invoke));
       const onClick = vi.mocked(plugin.onAction).mock.calls[0][0];
       onClick({ actionId: "tap", inputValue: null, notification: { id: notice.id } } as never);
+    }
+
+    it("routes a click on a posted notice back to its open tab", async () => {
+      h.store.openTabs = [{ engine: "codex", sessionId: "ses-1", workspacePath: "/workspace" }];
+      await clickPostedNotice(KEY);
+
+      // Same entry the tab strip uses, so the tab keeps its own overrides.
+      expect(h.store.focusTab).toHaveBeenCalledWith("codex", "ses-1", "/workspace");
+      expect(h.store.selectSession).not.toHaveBeenCalled();
+      // A file, diff or plugin page left open in the center would otherwise
+      // keep covering the session the click switched to.
+      const focusTab = h.store.focusTab as ReturnType<typeof vi.fn>;
+      expect(h.dismissCenterSurfaces).toHaveBeenCalledTimes(1);
+      expect(h.dismissCenterSurfaces.mock.invocationCallOrder[0]).toBeLessThan(
+        focusTab.mock.invocationCallOrder[0],
+      );
+      // focusAppWindow awaits unminimize before it focuses.
+      await vi.waitFor(() => expect(h.win.setFocus).toHaveBeenCalled());
+    });
+
+    it("focuses a pending tab (no session id yet) instead of opening a copy of it", async () => {
+      // A first turn that fails before the CLI reports its id still notifies.
+      // selectSession(engine, "") would add a second tab with sessionId "".
+      h.store.openTabs = [{ engine: "claude", sessionId: null, workspacePath: "/ws" }];
+      await clickPostedNotice("new:claude:/ws");
+
+      expect(h.store.focusTab).toHaveBeenCalledWith("claude", null, "/ws");
+      expect(h.store.selectSession).not.toHaveBeenCalled();
+    });
+
+    it("reopens a session whose tab was closed from the session list", async () => {
+      h.store.openTabs = [];
+      await clickPostedNotice(KEY);
 
       expect(h.store.selectSession).toHaveBeenCalledWith("codex", "ses-1", "/workspace");
-      // focusAppWindow awaits unminimize before it focuses.
+      expect(h.store.focusTab).not.toHaveBeenCalled();
+      expect(h.dismissCenterSurfaces).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the center alone when the session is gone (deleted since)", async () => {
+      h.store.openTabs = [];
+      h.store.sessions = [];
+      await clickPostedNotice(KEY);
+
+      expect(h.dismissCenterSurfaces).not.toHaveBeenCalled();
+      expect(h.store.focusTab).not.toHaveBeenCalled();
+      expect(h.store.selectSession).not.toHaveBeenCalled();
+      // The window still comes forward.
       await vi.waitFor(() => expect(h.win.setFocus).toHaveBeenCalled());
     });
   });
@@ -298,10 +364,30 @@ describe("notifications", () => {
 
     it("still sends the completed notice when the card's notice was switched off", async () => {
       updateCachedNotificationPreferences({ notifyOnQuestion: false });
-      const card = notifyPermissionRequest(KEY, "/src/x");
+      const card = notifyQuestion(KEY, "继续吗？");
       const done = notifyTurnComplete(KEY, "做完了", true);
       await Promise.all([card, done]);
       expect(postedNotices().map((n) => n.body)).toEqual(["做完了"]);
+    });
+
+    it("a grant notice raised mid-turn does not silence the completed notice", async () => {
+      // A denial does not stop the turn: the CLI works around it and keeps
+      // going, often for minutes, so the caller passes awaitsUser = false.
+      await notifyPermissionRequest(KEY, "/etc/hosts");
+      await notifyTurnComplete(KEY, "做完了", false);
+      expect(postedNotices().map((n) => n.body)).toEqual([
+        i18n.t("chat.notifyPermissionBody", { path: "/etc/hosts" }),
+        "做完了",
+      ]);
+    });
+
+    it("a grant card the turn ended on stands in for the completed notice", async () => {
+      // Claude reports stdio denials only on its result line, right before
+      // done: two notices at once for the same moment would be noise.
+      const grant = notifyPermissionRequest(KEY, "", "Bash");
+      const done = notifyTurnComplete(KEY, "做完了", true);
+      await Promise.all([grant, done]);
+      expect(postedNotices().map((n) => n.body)).toEqual(["Bash"]);
     });
 
     it("an earlier turn's card notice does not silence a later turn", async () => {
@@ -397,6 +483,20 @@ describe("notifications", () => {
       await notifyPermissionRequest(KEY, "/src/sensitive");
       const [notice] = postedNotices();
       expect(notice.body).toContain("/src/sensitive");
+    });
+
+    it("describes a denial that names no directory by its own message", async () => {
+      // e.g. a denied Bash call: there is no path for "access to directory {{path}}".
+      await notifyPermissionRequest(KEY, "", "Claude requested permissions to use Bash");
+      const [notice] = postedNotices();
+      expect(notice.body).toBe("Claude requested permissions to use Bash");
+    });
+
+    it("falls back to a generic body when the denial carries no detail", async () => {
+      await notifyPermissionRequest(KEY, "");
+      const [notice] = postedNotices();
+      expect(notice.body).toBe(i18n.t("chat.notifyPermissionBodyFallback"));
+      expect(notice.body).not.toBe(i18n.t("chat.notifyPermissionBody", { path: "" }));
     });
   });
 

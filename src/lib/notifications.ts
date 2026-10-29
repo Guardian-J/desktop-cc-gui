@@ -10,6 +10,7 @@ import { ipc, type AppSettings } from "./ipc";
 import { sessionKey, useChatStore } from "@/features/chat/store";
 import { useSplitStore } from "@/features/chat/split/store";
 import { listPanes } from "@/features/chat/split/tree";
+import { dismissCenterSurfaces } from "@/features/chat/center-surfaces";
 import i18n from "./i18n";
 
 /**
@@ -27,20 +28,46 @@ const activeNotifications = new Map<number, { key: string; onClick?: () => void 
  * 格式化通知正文：清理 Markdown 标记（代码块、粗斜体、反引号），
  * 压缩多余空白，并截断至指定长度，以便在桌面 Toast 弹窗中清晰展示。
  * 清理后为空（如正文只是一段代码块）时返回 fallback，避免空 Toast。
+ *
+ * The limit counts user-perceived characters, not UTF-16 units: a cut
+ * through an emoji leaves a lone surrogate, which the native side's JSON
+ * parser rejects, and the whole notice is dropped.
  */
 export function formatNotificationBody(text: string, maxLength = 160, fallback = ""): string {
   if (!text) return fallback;
-  let clean = text
+  const clean = text
     .replace(/```[\s\S]*?```/g, "")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
-  if (clean.length > maxLength) {
-    clean = `${clean.slice(0, maxLength)}...`;
+  return truncateChars(clean, maxLength) || fallback;
+}
+
+/** Cut `text` after `max` characters, adding `...` when anything was cut. */
+function truncateChars(text: string, max: number): string {
+  let out = "";
+  let count = 0;
+  for (const char of characters(text)) {
+    if (count === max) return `${out}...`;
+    out += char;
+    count += 1;
   }
-  return clean || fallback;
+  return out;
+}
+
+/** Graphemes, so flags and ZWJ emoji stay whole; code points where
+ *  Intl.Segmenter is missing (older WebKitGTK), which still never split a
+ *  surrogate pair. Lazy: a long reply is not segmented in full for a preview. */
+function* characters(text: string): Generator<string> {
+  if (typeof Intl.Segmenter !== "function") {
+    yield* text;
+    return;
+  }
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
+    yield segment;
+  }
 }
 
 /**
@@ -246,24 +273,28 @@ export function getSessionDisplayTitle(key: string): string {
  */
 function navigateToSession(key: string): void {
   const state = useChatStore.getState();
-
-  // 1. 查找是否在 openTabs 中
   const tab = state.openTabs.find(
     (t) => sessionKey(t.engine, t.sessionId, t.workspacePath) === key,
   );
+  const session = tab
+    ? undefined
+    : state.sessions.find((s) => sessionKey(s.engine, s.sessionId, s.workspacePath) === key);
+  // Gone (e.g. deleted since): leave whatever the user has open alone.
+  if (!tab && !session) return;
+
+  // A file, diff, browser or plugin page in the center would keep covering
+  // the session; clear it first, as the tab strip and the sidebar do.
+  dismissCenterSurfaces();
+
+  // 1. 已打开的页签：与页签条同一入口。A pending tab has no session id yet
+  //    (its first turn failed early); selectSession would add a second tab.
   if (tab) {
-    void state.selectSession(tab.engine, tab.sessionId ?? "", tab.workspacePath);
+    state.focusTab(tab.engine, tab.sessionId, tab.workspacePath);
     return;
   }
 
-  // 2. 从 sessions 中匹配
-  for (const s of state.sessions) {
-    const k = sessionKey(s.engine, s.sessionId, s.workspacePath);
-    if (k === key) {
-      void state.selectSession(s.engine, s.sessionId, s.workspacePath);
-      return;
-    }
-  }
+  // 2. 页签已关闭：按会话列表重新打开
+  if (session) void state.selectSession(session.engine, session.sessionId, session.workspacePath);
 }
 
 export interface SendSystemNotificationOptions {
@@ -385,7 +416,9 @@ async function postSessionNotice(
 
 /** The latest question / grant / plan notice per session, resolving to
  *  whether it was posted. The completed notice of the same turn reads and
- *  clears it; every new card overwrites it, so it never outlives its turn. */
+ *  clears it; every new card overwrites it, so it never outlives its turn.
+ *  Whether the card may stand in for the completed notice is the caller's
+ *  `awaitsUser` (turn-notice.ts): a grant card only when the turn ended on it. */
 const cardNotices = new Map<string, Promise<boolean>>();
 
 function trackCardNotice(key: string, posted: Promise<boolean>): Promise<void> {
@@ -394,11 +427,11 @@ function trackCardNotice(key: string, posted: Promise<boolean>): Promise<void> {
 }
 
 /**
- * 对话完成时触发通知。`awaitsUser`: the turn left a question, grant card or
- * plan awaiting review. When that card's own notice reached the user, it is
- * the thing to act on and a "completed" notice on top would be noise; when
- * it did not (its switch is off, or the user was watching then), this notice
- * is the only one the turn gets.
+ * 对话完成时触发通知。`awaitsUser`: the turn ended on a question, a plan
+ * awaiting review or a grant card. When that card's own notice reached the
+ * user, it is the thing to act on and a "completed" notice on top would be
+ * noise; when it did not (its switch is off, or the user was watching then),
+ * this notice is the only one the turn gets.
  */
 export async function notifyTurnComplete(
   key: string,
@@ -477,12 +510,24 @@ export function notifyPlanReview(key: string, planTitle?: string): Promise<void>
 }
 
 /**
- * 权限请求待确认时触发通知。
+ * 权限请求待确认时触发通知。`path` is the denied directory; a denial that
+ * names none (e.g. a blocked command) is described by `detail`, the CLI's own
+ * message or the tool name, instead of an empty "access to directory".
  */
-export function notifyPermissionRequest(key: string, path: string): Promise<void> {
-  return trackCardNotice(key, postSessionNotice(key, "onQuestion", () => ({
-    event: i18n.t("chat.notifyPermissionTitle", "请求访问权限"),
-    body: formatNotificationBody(i18n.t("chat.notifyPermissionBody", "请求访问目录 {{path}}", { path }), 160),
-    tag: `permission-${key}`,
-  })));
+export function notifyPermissionRequest(
+  key: string,
+  path: string,
+  detail = "",
+): Promise<void> {
+  return trackCardNotice(key, postSessionNotice(key, "onQuestion", () => {
+    const fallback = i18n.t("chat.notifyPermissionBodyFallback", "AI 请求了一项尚未授权的操作");
+    const text = path
+      ? i18n.t("chat.notifyPermissionBody", "请求访问目录 {{path}}", { path })
+      : detail.trim() || fallback;
+    return {
+      event: i18n.t("chat.notifyPermissionTitle", "请求访问权限"),
+      body: formatNotificationBody(text, 160, fallback),
+      tag: `permission-${key}`,
+    };
+  }));
 }

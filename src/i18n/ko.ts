@@ -397,7 +397,8 @@ export const ko: Messages = {
     notifyPlanReviewTitle: "계획 검토 대기 중",
     notifyPlanReviewBodyFallback: "제안된 계획이 검토를 기다리고 있습니다",
     notifyPermissionTitle: "권한이 필요합니다",
-    notifyPermissionBody: "{{path}} 디렉터리에 대한 접근을 요청했습니다"
+    notifyPermissionBody: "{{path}} 디렉터리에 대한 접근을 요청했습니다",
+    notifyPermissionBodyFallback: "AI가 아직 허용되지 않은 작업을 요청했습니다"
   },
   settings: {
     title: "설정",

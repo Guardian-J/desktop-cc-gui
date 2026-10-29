@@ -134,11 +134,14 @@ export interface Message {
   live?: boolean;
   /** Permission-denial card state (role "grant"): the CLI denied a tool call
    * targeting `path`; pending until the user answers the card. `dir` is the
-   * directory a grant would cover (grant_scope preview). Grant rows are
-   * ephemeral UI — they are not part of the CLI's session history. */
+   * directory a grant would cover (grant_scope preview). `toolUseId` is the
+   * denied call, which matches a denial's mid-turn and result-line copies.
+   * Grant rows are ephemeral UI — they are not part of the CLI's session
+   * history. */
   grant?: {
     status: "pending" | "granted" | "declined";
     dir?: string | null;
+    toolUseId?: string | null;
   };
   /** AskUserQuestion card state (role "question"): the CLI parked the ask on
    * the control protocol; `pending` until the user picks or skips. `runId`

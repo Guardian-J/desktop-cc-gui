@@ -64,11 +64,15 @@ pub enum EngineEvent {
     /// A tool call was denied by the CLI's permission system (headless mode
     /// cannot prompt). `path` is the denied absolute path when the denial
     /// text or tool input carries one — the UI offers a directory grant for
-    /// it; `tool` is the denied tool name when known.
+    /// it; `tool` is the denied tool name when known. `tool_use_id` names
+    /// the denied call: Claude reports a denial mid-turn (tool_result) and
+    /// again on the final result line, and the two copies can disagree on
+    /// path and text, so the frontend matches them by this id.
     PermissionDenied {
         tool: Option<String>,
         path: Option<String>,
         message: String,
+        tool_use_id: Option<String>,
     },
     /// The CLI is asking the user to choose (control protocol: `can_use_tool`
     /// for AskUserQuestion). `input` is the full tool input; the answer

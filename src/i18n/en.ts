@@ -74,6 +74,7 @@ export const en: Messages = {
     notifyPlanReviewBodyFallback: "A proposed plan is awaiting your review",
     notifyPermissionTitle: "Permission required",
     notifyPermissionBody: "Requested access to directory {{path}}",
+    notifyPermissionBodyFallback: "The AI asked for an action that has not been allowed yet",
 
     ompSpeedInherit: "Use CLI setting",
     ompSpeedUnsupported: "Select a Codex model to configure Fast.",

@@ -71,6 +71,7 @@ export const zh = {
     notifyPlanReviewBodyFallback: "模型提交了新计划等待审批",
     notifyPermissionTitle: "请求访问权限",
     notifyPermissionBody: "请求访问目录 {{path}}",
+    notifyPermissionBodyFallback: "AI 请求了一项尚未授权的操作",
 
     ompSpeedInherit: "跟随 CLI 设置",
     ompSpeedUnsupported: "选择 Codex 模型后可设置 Fast。",

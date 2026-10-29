@@ -166,6 +166,43 @@ describe("engine-events notifications", () => {
     expect(notifications.notifyQuestion).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the text streamed before a replayed question frame", () => {
+    // The duplicate frame drains the buffered chunks to fold them in before
+    // the card; returning early on the duplicate must not throw them away.
+    const { state, deps } = createDeps(false);
+    const question = {
+      runId: "r-1",
+      sessionId: "s-1",
+      engine: "claude",
+      seq: 3,
+      kind: "question" as const,
+      data: { requestId: "q-1", input: { questions: [{ question: "继续吗？", header: "确认", options: [] }] } },
+    };
+    handleEngineEvents(
+      [
+        question,
+        { runId: "r-1", sessionId: "s-1", engine: "claude", seq: 4, kind: "delta", data: "still streaming" },
+        { ...question, seq: 5 },
+      ],
+      deps,
+    );
+    const texts = state.bySession[KEY].messages.map((m) => m.text);
+    expect(texts).toContain("still streaming");
+    expect(state.bySession[KEY].messages.filter((m) => m.role === "question")).toHaveLength(1);
+  });
+
+  it("keeps the text streamed before a duplicate denial", () => {
+    const { state, deps } = createDeps(false);
+    const denied = (seq: number) =>
+      ({ runId: "r-1", sessionId: "s-1", engine: "claude", seq, kind: "permission_denied", data: { tool: "Read", path: "/etc/hosts", message: "" } }) as const;
+    handleEngineEvents(
+      [denied(3), { runId: "r-1", sessionId: "s-1", engine: "claude", seq: 4, kind: "delta", data: "still streaming" }, denied(5)],
+      deps,
+    );
+    expect(state.bySession[KEY].messages.map((m) => m.text)).toContain("still streaming");
+    expect(state.bySession[KEY].messages.filter((m) => m.role === "grant")).toHaveLength(1);
+  });
+
   it("triggers notifyPermissionRequest on a pending grant card", () => {
     const { deps } = createDeps(false);
     handleEngineEvents(
@@ -181,7 +218,29 @@ describe("engine-events notifications", () => {
       ],
       deps,
     );
-    expect(notifications.notifyPermissionRequest).toHaveBeenCalledWith(KEY, "/src/sensitive");
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledWith(KEY, "/src/sensitive", "Bash");
+  });
+
+  it("hands a denial without a path its message, so the notice is not a bare \"directory\"", () => {
+    const { deps } = createDeps(false);
+    handleEngineEvents(
+      [
+        {
+          runId: "r-1",
+          sessionId: "s-1",
+          engine: "claude",
+          seq: 3,
+          kind: "permission_denied",
+          data: { tool: "Bash", path: null, message: "Claude requested permissions to use Bash" },
+        },
+      ],
+      deps,
+    );
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledWith(
+      KEY,
+      "",
+      "Claude requested permissions to use Bash",
+    );
   });
 
   it("does NOT trigger notifyPermissionRequest for a duplicate grant card", () => {
@@ -324,17 +383,74 @@ describe("engine-events notifications", () => {
     expect(notifications.notifyTurnComplete).toHaveBeenCalledWith(KEY, expect.any(String), true);
   });
 
-  it("reports a pending grant card to the completed notice", () => {
+  it("a grant card the turn worked around does not hold back the completed notice", () => {
+    // permission_denied is not terminal: the CLI keeps going after it.
     const { deps } = createDeps(false);
     handleEngineEvents(
       [
         { runId: "r-1", sessionId: "s-1", engine: "claude", seq: 3, kind: "permission_denied", data: { tool: "Bash", path: "/src/x" } },
-        doneEvent(4),
+        { runId: "r-1", sessionId: "s-1", engine: "claude", seq: 4, kind: "delta", data: "Worked around it" },
+        doneEvent(5),
       ],
       deps,
     );
     expect(notifications.notifyPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyTurnComplete).toHaveBeenCalledWith(KEY, "Worked around it", false);
+  });
+
+  it("a turn that ends on a denial reports its grant card to the completed notice", () => {
+    // Claude's stdio denials only surface on the result line, right before
+    // done: the card is the turn's last row, and its notice speaks for the end.
+    const { deps } = createDeps(false);
+    handleEngineEvents(
+      [
+        { runId: "r-1", sessionId: "s-1", engine: "claude", seq: 3, kind: "permission_denied", data: { tool: "Bash", path: null, message: "" } },
+        doneEvent(4),
+      ],
+      deps,
+    );
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledWith(KEY, "", "Bash");
     expect(notifications.notifyTurnComplete).toHaveBeenCalledWith(KEY, expect.any(String), true);
+  });
+
+  it("matches the result line's copy of a denial to its mid-turn card by tool call id", () => {
+    // A hard block scraped "/etc" out of the error text mid-turn; the result
+    // line's copy of the same call has no path and no text. Matched by path
+    // or text it became a second, trailing card: a second grant notice, and
+    // the completed notice skipped.
+    const { state, deps } = createDeps(false);
+    const denied = (seq: number, data: Record<string, unknown>) =>
+      ({ runId: "r-1", sessionId: "s-1", engine: "claude", seq, kind: "permission_denied", data }) as const;
+    handleEngineEvents(
+      [
+        denied(3, { tool: "Bash", path: "/etc", message: "cd /etc was blocked. For security…", toolUseId: "toolu_7" }),
+        { runId: "r-1", sessionId: "s-1", engine: "claude", seq: 4, kind: "delta", data: "Listed it another way" },
+        denied(5, { tool: "Bash", path: null, message: "", toolUseId: "toolu_7" }),
+        doneEvent(6),
+      ],
+      deps,
+    );
+    const grants = state.bySession[KEY].messages.filter((m) => m.role === "grant");
+    expect(grants).toHaveLength(1);
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyTurnComplete).toHaveBeenCalledWith(KEY, "Listed it another way", false);
+  });
+
+  it("does not bring back a card the user declined when the result line repeats its call", () => {
+    const { state, deps } = createDeps(false);
+    const denied = (seq: number, data: Record<string, unknown>) =>
+      ({ runId: "r-1", sessionId: "s-1", engine: "claude", seq, kind: "permission_denied", data }) as const;
+    handleEngineEvents([denied(3, { tool: "Read", path: "/etc/hosts", message: "denied", toolUseId: "toolu_8" })], deps);
+    const card = state.bySession[KEY].messages.find((m) => m.role === "grant")!;
+    state.bySession[KEY] = {
+      ...state.bySession[KEY],
+      messages: state.bySession[KEY].messages.map((m) =>
+        m === card ? { ...m, grant: { ...m.grant!, status: "declined" as const } } : m,
+      ),
+    };
+    handleEngineEvents([denied(4, { tool: "Read", path: "/etc/hosts", message: "", toolUseId: "toolu_8" })], deps);
+    expect(state.bySession[KEY].messages.filter((m) => m.role === "grant")).toHaveLength(1);
+    expect(notifications.notifyPermissionRequest).toHaveBeenCalledTimes(1);
   });
 
   it("still sends the completed notice once the turn's question was answered", () => {

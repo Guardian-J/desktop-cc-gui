@@ -1371,9 +1371,11 @@ function onPermissionDenied(
     tool?: string | null;
     path?: string | null;
     message?: string;
+    toolUseId?: string | null;
   };
   const path = data.path?.trim() || null;
   const message = (data.message ?? "").trim();
+  const toolUseId = data.toolUseId?.trim() || null;
   // Fold unflushed chunks first so the card lands after the streamed text.
   const pending = drainPending(key);
   let rowSeq = -1;
@@ -1387,13 +1389,20 @@ function onPermissionDenied(
         )
       : cur.messages;
     const messages = settleLiveRows(base);
+    // The result line repeats the turn's denials, and its copy can disagree
+    // with the mid-turn one on path and text (e.g. a path scraped from the
+    // error text vs none in the tool input): the same call id is the same
+    // denial, even on a card the user already declined.
     const dup = messages.some(
       (m) =>
         m.role === "grant" &&
-        (path ? m.path === path : m.text === message) &&
-        m.grant?.status !== "declined",
+        ((toolUseId !== null && m.grant?.toolUseId === toolUseId) ||
+          ((path ? m.path === path : m.text === message) && m.grant?.status !== "declined")),
     );
-    if (dup) return {};
+    // No new card, but the chunks drained above are out of the buffer now:
+    // keep them (still live, as the scheduled flush would), or the text
+    // streamed before this frame is lost.
+    if (dup) return pending ? { bySession: { ...s.bySession, [key]: { ...cur, messages: base } } } : {};
     const seq = messages.length ? messages[messages.length - 1].seq + 1 : 1;
     rowSeq = seq;
     return {
@@ -1409,7 +1418,7 @@ function onPermissionDenied(
               path,
               ts: new Date().toISOString(),
               seq,
-              grant: { status: "pending" as const },
+              grant: { status: "pending" as const, toolUseId },
             },
           ],
         },
@@ -1427,7 +1436,7 @@ function onPermissionDenied(
       .catch(() => {});
   }
   if (rowSeq > 0) {
-    void notifyPermissionRequest(key, path || "");
+    void notifyPermissionRequest(key, path ?? "", message || data.tool?.trim() || "");
   }
 }
 
@@ -1510,7 +1519,10 @@ function onQuestion(
     const dup = messages.some(
       (m) => m.role === "question" && m.question?.requestId === requestId,
     );
-    if (dup) return {};
+    // No new card, but the chunks drained above are out of the buffer now:
+    // keep them (still live, as the scheduled flush would), or the text
+    // streamed before this frame is lost.
+    if (dup) return pending ? { bySession: { ...s.bySession, [key]: { ...cur, messages: base } } } : {};
     const seq = messages.length ? messages[messages.length - 1].seq + 1 : 1;
     rowSeq = seq;
     return {
@@ -1844,8 +1856,8 @@ function onDone(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
   // stopped the session, the next message is theirs to send.
   if (!prev.interrupted) {
     const finalMessages = deps.get().bySession[key]?.messages ?? [];
-    // A card this turn left pending (question, grant, plan review) may have
-    // raised its own notice already; notifyTurnComplete skips the second one.
+    // A card this turn ended on (question, plan review, trailing grant) may
+    // have raised its own notice already; notifyTurnComplete skips the second.
     void notifyTurnComplete(key, turnReplyText(finalMessages), turnAwaitsUser(finalMessages));
     deps.drainQueue(key);
     // Claude's result line reports the turn's summed usage (every request of
