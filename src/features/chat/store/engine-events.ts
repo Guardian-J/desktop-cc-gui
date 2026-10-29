@@ -8,6 +8,15 @@ import {
 } from "./plan-review";
 import { errorText } from "@/lib/errors";
 import { pendingWorkspaceOfKey, dedupeTabs, persistTabs, sessionKey } from "./persistence";
+import {
+  notifyTurnComplete,
+  notifyInterrupted,
+  notifyTurnError,
+  notifyQuestion,
+  notifyPlanReview,
+  notifyPermissionRequest,
+} from "@/lib/notifications";
+import { planRevisionStatus, turnAwaitsUser, turnReplyText } from "./turn-notice";
 import { migrateSessionContributions } from "./session-contributions";
 import { migrateAutoCompactSettings } from "../auto-compact-context";
 import {
@@ -1256,12 +1265,33 @@ function onError(
   deps.markUnseenIfBackground(key);
   dispatchNormalized(event);
   finishRunLifecycle(event.runId, "failed", typeof event.data === "string" ? event.data : undefined, event.sessionId);
+  if (!prev.interrupted) {
+    const errText = typeof event.data === "string" ? event.data : "";
+    if (looksLikeDisconnection(errText)) {
+      void notifyInterrupted(key, errText);
+    } else {
+      void notifyTurnError(key, errText);
+    }
+  }
   void deps.refreshSessionUsage?.(key).catch(() => {});
   // An error settles the turn exactly like done does — the messages typed
   // behind it are the user's next step, and parking them here left the queue
   // stuck until it was sent or cleared by hand. A stop is still the user's
   // own call: that queue stays parked.
   if (!prev.interrupted) deps.drainQueue(key);
+}
+
+/**
+ * Guess whether a turn error is a connection/stream interruption rather than
+ * a request failure, so it can raise the dedicated "interrupted" notice.
+ * Heuristic over the error text: the engine event carries no error class.
+ * Known false positives: request-level timeouts ("request timeout after 30s",
+ * "turn/start timed out") are classified as interruptions; a "session
+ * interrupted by user" echo from the CLI never reaches here (gated by
+ * `prev.interrupted` upstream).
+ */
+function looksLikeDisconnection(errText: string): boolean {
+  return /中断|disconnect|abort|timeout|timed out/i.test(errText);
 }
 
 /** Patch the grant state of one card row, located by its message seq. */
@@ -1341,9 +1371,11 @@ function onPermissionDenied(
     tool?: string | null;
     path?: string | null;
     message?: string;
+    toolUseId?: string | null;
   };
   const path = data.path?.trim() || null;
   const message = (data.message ?? "").trim();
+  const toolUseId = data.toolUseId?.trim() || null;
   // Fold unflushed chunks first so the card lands after the streamed text.
   const pending = drainPending(key);
   let rowSeq = -1;
@@ -1357,13 +1389,20 @@ function onPermissionDenied(
         )
       : cur.messages;
     const messages = settleLiveRows(base);
+    // The result line repeats the turn's denials, and its copy can disagree
+    // with the mid-turn one on path and text (e.g. a path scraped from the
+    // error text vs none in the tool input): the same call id is the same
+    // denial, even on a card the user already declined.
     const dup = messages.some(
       (m) =>
         m.role === "grant" &&
-        (path ? m.path === path : m.text === message) &&
-        m.grant?.status !== "declined",
+        ((toolUseId !== null && m.grant?.toolUseId === toolUseId) ||
+          ((path ? m.path === path : m.text === message) && m.grant?.status !== "declined")),
     );
-    if (dup) return {};
+    // No new card, but the chunks drained above are out of the buffer now:
+    // keep them (still live, as the scheduled flush would), or the text
+    // streamed before this frame is lost.
+    if (dup) return pending ? { bySession: { ...s.bySession, [key]: { ...cur, messages: base } } } : {};
     const seq = messages.length ? messages[messages.length - 1].seq + 1 : 1;
     rowSeq = seq;
     return {
@@ -1379,7 +1418,7 @@ function onPermissionDenied(
               path,
               ts: new Date().toISOString(),
               seq,
-              grant: { status: "pending" as const },
+              grant: { status: "pending" as const, toolUseId },
             },
           ],
         },
@@ -1395,6 +1434,9 @@ function onPermissionDenied(
         patchGrantBySeq(deps.set, key, rowSeq, (grant) => ({ ...grant, dir })),
       )
       .catch(() => {});
+  }
+  if (rowSeq > 0) {
+    void notifyPermissionRequest(key, path ?? "", message || data.tool?.trim() || "");
   }
 }
 
@@ -1477,7 +1519,10 @@ function onQuestion(
     const dup = messages.some(
       (m) => m.role === "question" && m.question?.requestId === requestId,
     );
-    if (dup) return {};
+    // No new card, but the chunks drained above are out of the buffer now:
+    // keep them (still live, as the scheduled flush would), or the text
+    // streamed before this frame is lost.
+    if (dup) return pending ? { bySession: { ...s.bySession, [key]: { ...cur, messages: base } } } : {};
     const seq = messages.length ? messages[messages.length - 1].seq + 1 : 1;
     rowSeq = seq;
     return {
@@ -1512,6 +1557,10 @@ function onQuestion(
   });
   if (rowSeq > 0 && rpc && multi) {
     openAskLoop(key, { base: frame.base, seq: rowSeq, requestId, runId: event.runId });
+  }
+  if (rowSeq > 0) {
+    const qText = spec?.question || questions[0]?.question || "";
+    void notifyQuestion(key, qText);
   }
 }
 
@@ -1587,9 +1636,19 @@ function onPlanReview(event: ChatEngineEvent, key: string, deps: EngineEventDeps
   ) {
     return;
   }
+  const statusOf = () =>
+    planRevisionStatus(deps.get().bySession[key]?.messages ?? [], record.planId, record.revision);
+  const before = statusOf();
   updatePlanMessages(deps, key, event, (messages) =>
     applyPlanReview(messages, record),
   );
+  // Notify a revision once, when it first enters review (new, or upgraded
+  // from its draft). A re-broadcast, a replay that moves a deferred or
+  // submitting card back, or a stale frame the card rejected stays silent.
+  const firstSight = before === undefined || before === "draft";
+  if (firstSight && statusOf() === "awaiting_review") {
+    void notifyPlanReview(key, record.title);
+  }
 }
 
 function onPlanReviewSettled(
@@ -1796,6 +1855,10 @@ function onDone(event: ChatEngineEvent, key: string, deps: EngineEventDeps) {
   // An interrupted turn settles here too: keep the queue parked — the user
   // stopped the session, the next message is theirs to send.
   if (!prev.interrupted) {
+    const finalMessages = deps.get().bySession[key]?.messages ?? [];
+    // A card this turn ended on (question, plan review, trailing grant) may
+    // have raised its own notice already; notifyTurnComplete skips the second.
+    void notifyTurnComplete(key, turnReplyText(finalMessages), turnAwaitsUser(finalMessages));
     deps.drainQueue(key);
     // Claude's result line reports the turn's summed usage (every request of
     // the turn added up), not the occupancy the meter shows — so re-read the
