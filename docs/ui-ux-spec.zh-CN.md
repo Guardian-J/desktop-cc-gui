@@ -245,6 +245,7 @@
 - **工具输出有界渲染，不裁剪原文**：`ToolPayloadViewer.tsx` 的 `BoundedPre` 把展开后的命令结果 / 参数 / 通用结果渲染上限设为 **32,000 字符**，`FileDiffViewer` 的差异行上限为 **400 行**；超出部分不渲染进 DOM（MB 级 bash 日志、巨型 diff 展开时冻结滚动与布局），底部条给出「已截断显示前 N 字符（共 M 字符）」/「已显示前 N 行差异（共 M 行）」与「显示全部」按钮，点击后才渲染完整内容。数据本身不变，复制走原始值；文案在 `chat.toolPayloadTruncated` / `chat.toolDiffTruncated` / `chat.toolPayloadShowAll`。
 - **OMP 常驻 ACP 守护进程与会话预热**：本机普通 OMP 会话由应用内单实例常驻 `omp --mode acp` 守护进程统一承接，支持跨会话、跨工作区并发与热切换模型/推理强度，无需按会话重启进程；切到 OMP 页签或新建 OMP 对话时后台预热守护进程（已有会话同步预加载，不产生用户回合），关闭页签或编辑会话文件时释放该会话句柄，配置/权限漂移时优雅排空旧守护进程并无缝重建；计划审批、WSL、电脑操控、记忆 Bot 与按需 MCP 注入场景仍使用各自隔离传输。
 - **动画合成与隐藏态停摆**：`agent-thinking.tsx` 的 `DotsIndicator` 与标签 `ai-chat-text-shimmer` / `.bui-agent-thinking-label` 均只动画 `opacity`（走纯 GPU 合成层，避免 `background-position` + `background-clip: text` 逐帧主线程重光栅化与 80ms JS 定时器唤醒）；`ElapsedTimer` 仅在窗口与保活页签均可见时以 **500ms** 节奏运行，`paused`（隐藏保活页签）或 `document.hidden` 时立即停摆并在恢复可见时按绝对时间差重算；`KeptSessionTimeline` 隐藏态冻结快照引用，后台流式输出不触发隐藏时间线的 React 重渲染与布局；`AgentAvatar` 离屏或窗口隐藏时主动退订 `requestAnimationFrame`。
+- **切页签时间线保活与滚动位置保留**：`ChatConversation` 最多保活最近 4 个已打开会话的 `MessageTimeline`（固定 DOM 插入顺序、以 `visibility: hidden` 隐藏，避免反复卸载重解析与重排重置 `scrollTop`）；隐藏期间冻结传给时间线的会话快照、停掉内部流式揭示动效并关闭已打开的计划全文模态 `<dialog>`，切回保活页签时一次性追上最新消息并恢复精确 `scrollTop`；超过保活上限被 LRU 淘汰或关闭后重开的会话从尾部重新挂载。
 - **渲染性能面板（react-scan）**：设置 → 其他 → 性能诊断页内的独立开关，**默认关闭**，手动开启后即时生效并持久化。打包（生产）版只提供重渲染高亮与次数，不含单次渲染耗时（开发版 `pnpm dev` 才有）。react-scan 必须在 React/react-dom 首次导入前接管 instrumentation，因此入口 `src/main.tsx` 只做启动编排：先装轻量 devtools hook，再按开关决定是否加载 overlay，应用体经动态导入的 `src/bootstrap.tsx` 加载；`src/lib/react-scan.ts` 只在开关开启时拉取 react-scan 本体 chunk（未开启时只多取几 KB 的 hook chunk，开关无需重启即生效）。
 
 异步动作必须让用户看到三件事：**正在进行**、**成功**、**失败**。失败要么有对号以外的显式反馈（错误文案 / 状态标记），要么保持原样不误导。
@@ -402,7 +403,7 @@ Windows 桌面端在「发送系统通知」下提供「通知提示音」开关
 
 | 版本 | 时间 | 内容 |
 |---|---|---|
-| v1.38 | 2026-11-22 | OMP 常驻 ACP 守护进程：单实例 `omp --mode acp` 跨会话/跨工作区复用并支持并发、热切模型与推理强度、ACP `elicitation/create` 提问桥、切页/新对话预热与关页/编辑会话释放；配置漂移优雅排空重建。§4 同步 |
+| v1.38 | 2026-11-22 | OMP 常驻 ACP 守护进程：单实例 `omp --mode acp` 跨会话/跨工作区复用并支持并发、热切模型与推理强度、ACP `elicitation/create` 提问桥、切页/新对话预热与关页/编辑会话释放；配置漂移优雅排空重建；同步纳入 PR #1537/#1538 审稿修复（隐藏停用流式揭示与关闭模态 `<dialog>`、LRU 重挂载回尾、DSH 目录键与不缓存兜底）。§4 同步 |
 | v1.37 | 2026-11-20 | 前台渲染降 CPU：`DotsIndicator` 与 `ai-chat-text-shimmer` 改为纯 GPU 合成层 `opacity` 动画（去掉 80ms JS 定时器与每帧文字光栅化）；隐藏保活页签（`KeptSessionTimeline`）冻结流式快照并暂停 `AgentThinking` 动效与计时器；`AgentAvatar` 离屏/隐藏窗口退订 rAF、`FlameOverlay` 隐藏窗口停帧。§4 同步 |
 | v1.36 | 2026-11-18 | 长会话渲染开销收敛：工具输出展开后有界渲染（32,000 字符 / 400 行差异，超出给截断说明与「显示全部」），思考点阵与计时器在窗口隐藏时停摆、计时刷新降到 500ms；状态栏汇总按 250ms 合并、过程折叠按消息身份缓存 JSON 与待办解析、`JSON.parse` 先按 `"phases"` 预筛；关闭页签缓存同时按条数与 8M 字符淘汰；会话库补 `journal_size_limit` 与启动时被动 checkpoint，避免首次建索引把 `app.db-wal` 长期撑大。§4 补两条规则 |
 | v1.35 | 2026-11-16 | #1521 引用选区到对话：文件编辑器页头新增入口，把路径、行范围与选中原文追加到会话草稿后切回对话并聚焦输入框；无选区、无会话或文件不在会话工作区内时保持可 hover 的禁用并说明原因；历史用户消息中的路径行可打开文件并选中对应行。§3 补条目 |

@@ -119,16 +119,38 @@ pub(super) async fn run_probe_detailed(
     cmd.process_group(0);
     #[cfg(windows)]
     super::hide_console(&mut cmd);
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| ProbeError::Failed(format!("failed to run {bin}: {e}")))?;
     let pid = child.id();
     #[cfg(windows)]
     let tree_guard = super::job::assign_kill_on_close(&child);
-    let output = match tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut s) = stdout_pipe {
+            let _ = s.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut s) = stderr_pipe {
+            let _ = s.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let status = match tokio::time::timeout(PROBE_TIMEOUT, child.wait()).await {
+        Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(ProbeError::Failed(format!("failed to run {bin}: {e}"))),
         Err(_) => {
+            // Tear down the whole process tree BEFORE dropping `child`
+            // (whose `kill_on_drop` terminates only the direct child): on
+            // Windows without a Job Object, `taskkill /T` must walk the tree
+            // while the root pid is still alive (see registry::kill_process_group).
             #[cfg(unix)]
             if let Some(pid) = pid {
                 super::kill_process_group(pid);
@@ -139,20 +161,25 @@ pub(super) async fn run_probe_detailed(
                 drop(tree_guard);
                 if !had_job {
                     if let Some(pid) = pid {
-                        tokio::task::spawn_blocking(move || super::kill_process_group(pid));
+                        let _ = tokio::task::spawn_blocking(move || super::kill_process_group(pid))
+                            .await;
                     }
                 }
             }
+            let _ = child.start_kill();
+            stdout_task.abort();
+            stderr_task.abort();
             return Err(ProbeError::Timeout(format!("{bin} {probe} timed out")));
         }
     };
-    if !output.status.success() {
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let _ = stderr_task.await;
+    if !status.success() {
         return Err(ProbeError::Failed(format!(
-            "{bin} {probe} exited with {}",
-            output.status
+            "{bin} {probe} exited with {status}"
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(String::from_utf8_lossy(&stdout_bytes).to_string())
 }
 
 pub(super) async fn run_probe(bin: &str, args: &[&str], probe: &str) -> Result<String, String> {
@@ -215,9 +242,11 @@ impl EngineCatalog {
 /// Process-wide cache for local engine model catalogs: switching to another
 /// local workspace triggers a workspace-context probe, and without this cache
 /// every unseen local workspace would respawn every enabled CLI binary at once.
-/// Kept for 10 minutes (invalidated immediately when pi/omp's own models file
-/// changes on disk) so heavy CLIs like `omp` are not respawned every 2 minutes.
-const LOCAL_CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// Engines without a config-file fingerprint keep a 2-minute TTL so manual
+/// config edits surface promptly; pi/omp carry a models-file fingerprint that
+/// invalidates immediately on edit and therefore hold a 10-minute TTL.
+const LOCAL_CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+const PI_FAMILY_LOCAL_CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 /// Cooldown after a probe timeout/failure: prevents back-to-back callers from
 /// spawning another wave of probes while the CLI / SQLite cache is contended.
 const LOCAL_CATALOG_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
@@ -225,7 +254,7 @@ const LOCAL_CATALOG_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration:
 type ConfigStamp = Option<(u64, Option<std::time::SystemTime>)>;
 
 struct CachedLocalCatalog {
-    bin: String,
+    cache_key: String,
     config_stamp: ConfigStamp,
     catalog: EngineCatalog,
     cached_at: std::time::Instant,
@@ -254,6 +283,18 @@ fn engine_probe_lock(engine: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+fn local_catalog_cache_key(
+    settings: &crate::settings::AppSettings,
+    engine: &str,
+    bin: &str,
+) -> String {
+    if engine == "dsh" {
+        format!("{bin}@{}", crate::dsh_host::configured_origin(settings))
+    } else {
+        bin.to_string()
+    }
+}
+
 fn engine_config_stamp(engine: &str) -> ConfigStamp {
     let file = match engine {
         "pi" => "models.json",
@@ -265,22 +306,25 @@ fn engine_config_stamp(engine: &str) -> ConfigStamp {
     Some((meta.len(), meta.modified().ok()))
 }
 
-fn read_cached_local_catalog(engine: &str, bin: &str) -> Option<EngineCatalog> {
+fn read_cached_local_catalog(engine: &str, cache_key: &str) -> Option<EngineCatalog> {
     let stamp = engine_config_stamp(engine);
     let guard = LOCAL_CATALOG_CACHE.lock().ok()?;
     let entry = guard.get(engine)?;
-    if entry.bin == bin && entry.config_stamp == stamp && entry.cached_at.elapsed() < entry.ttl {
+    if entry.cache_key == cache_key
+        && entry.config_stamp == stamp
+        && entry.cached_at.elapsed() < entry.ttl
+    {
         Some(entry.catalog.clone())
     } else {
         None
     }
 }
 
-fn read_last_good_local_catalog(engine: &str, bin: &str) -> Option<EngineCatalog> {
+fn read_last_good_local_catalog(engine: &str, cache_key: &str) -> Option<EngineCatalog> {
     let stamp = engine_config_stamp(engine);
     let guard = LOCAL_CATALOG_CACHE.lock().ok()?;
     let entry = guard.get(engine)?;
-    if entry.from_probe && entry.bin == bin && entry.config_stamp == stamp {
+    if entry.from_probe && entry.cache_key == cache_key && entry.config_stamp == stamp {
         Some(entry.catalog.clone())
     } else {
         None
@@ -289,17 +333,17 @@ fn read_last_good_local_catalog(engine: &str, bin: &str) -> Option<EngineCatalog
 
 fn write_cached_local_catalog_with_meta(
     engine: &str,
-    bin: String,
+    cache_key: String,
+    config_stamp: ConfigStamp,
     catalog: &EngineCatalog,
     ttl: std::time::Duration,
     from_probe: bool,
 ) {
-    let config_stamp = engine_config_stamp(engine);
     if let Ok(mut guard) = LOCAL_CATALOG_CACHE.lock() {
         guard.insert(
             engine.to_string(),
             CachedLocalCatalog {
-                bin,
+                cache_key,
                 config_stamp,
                 catalog: catalog.clone(),
                 cached_at: std::time::Instant::now(),
@@ -311,42 +355,56 @@ fn write_cached_local_catalog_with_meta(
 }
 
 #[cfg(test)]
-fn write_cached_local_catalog(engine: &str, bin: String, catalog: &EngineCatalog) {
-    write_cached_local_catalog_with_meta(engine, bin, catalog, LOCAL_CATALOG_TTL, true);
+fn write_cached_local_catalog(engine: &str, cache_key: String, catalog: &EngineCatalog) {
+    let stamp = engine_config_stamp(engine);
+    write_cached_local_catalog_with_meta(
+        engine,
+        cache_key,
+        stamp,
+        catalog,
+        LOCAL_CATALOG_TTL,
+        true,
+    );
 }
 
 async fn resolve_local_catalog_with<F, Fut>(
     engine: &str,
-    bin_key: &str,
+    cache_key: &str,
     force: bool,
     probe: F,
 ) -> Result<EngineCatalog, String>
 where
     F: FnOnce(Option<EngineCatalog>) -> Fut,
-    Fut: Future<Output = Result<(EngineCatalog, std::time::Duration, bool), String>>,
+    Fut: Future<Output = Result<(EngineCatalog, Option<std::time::Duration>, bool), String>>,
 {
     if !force {
-        if let Some(cached) = read_cached_local_catalog(engine, bin_key) {
+        if let Some(cached) = read_cached_local_catalog(engine, cache_key) {
             return Ok(cached);
         }
     }
     let probe_lock = engine_probe_lock(engine);
     let _probe_guard = probe_lock.lock().await;
     if !force {
-        if let Some(cached) = read_cached_local_catalog(engine, bin_key) {
+        if let Some(cached) = read_cached_local_catalog(engine, cache_key) {
             return Ok(cached);
         }
     }
-    let last_good = read_last_good_local_catalog(engine, bin_key);
+    // Capture the config fingerprint BEFORE running the probe so an edit while
+    // the probe is in flight cannot tag a stale catalog with the new stamp.
+    let pre_probe_stamp = engine_config_stamp(engine);
+    let last_good = read_last_good_local_catalog(engine, cache_key);
     let had_last_good = last_good.is_some();
-    let (catalog, ttl, from_probe) = probe(last_good).await?;
-    write_cached_local_catalog_with_meta(
-        engine,
-        bin_key.to_string(),
-        &catalog,
-        ttl,
-        from_probe || had_last_good,
-    );
+    let (catalog, cache_ttl, from_probe) = probe(last_good).await?;
+    if let Some(ttl) = cache_ttl {
+        write_cached_local_catalog_with_meta(
+            engine,
+            cache_key.to_string(),
+            pre_probe_stamp,
+            &catalog,
+            ttl,
+            from_probe || had_last_good,
+        );
+    }
     Ok(catalog)
 }
 
@@ -389,11 +447,13 @@ pub async fn list_engine_models(
             }
         }
     }
-    let bin_key = {
+    let (bin_key, cache_key) = {
         let engine_for_bin = engine.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let settings = crate::settings::read_settings().unwrap_or_default();
-            super::engine_bin(&settings, &engine_for_bin)
+            let bin = super::engine_bin(&settings, &engine_for_bin);
+            let key = local_catalog_cache_key(&settings, &engine_for_bin, &bin);
+            (bin, key)
         })
         .await
         .map_err(|e| format!("engine bin lookup failed: {e}"))?
@@ -401,38 +461,59 @@ pub async fn list_engine_models(
     let force = force.unwrap_or(false);
     let engine_ref = engine.as_str();
     let bin_ref = bin_key.as_str();
-    resolve_local_catalog_with(engine_ref, bin_ref, force, |last_good| async move {
+    resolve_local_catalog_with(engine_ref, &cache_key, force, |last_good| async move {
         Ok(match engine_ref {
-            "codex" => (codex_catalog().await, LOCAL_CATALOG_TTL, true),
-            "kimi" => (kimi_catalog().await, LOCAL_CATALOG_TTL, true),
-            "grok" => (grok_catalog(), LOCAL_CATALOG_TTL, true),
-            "claude" => (claude_catalog(), LOCAL_CATALOG_TTL, true),
+            "codex" => {
+                let (catalog, probed) = codex_catalog().await;
+                (catalog, probed.then_some(LOCAL_CATALOG_TTL), probed)
+            }
+            "kimi" => {
+                let (catalog, probed) = kimi_catalog().await;
+                (catalog, probed.then_some(LOCAL_CATALOG_TTL), probed)
+            }
+            "grok" => (grok_catalog(), Some(LOCAL_CATALOG_TTL), true),
+            "claude" => (claude_catalog(), Some(LOCAL_CATALOG_TTL), true),
             "pi" | "omp" => {
                 let (catalog, probed) = pi_family_catalog(engine_ref, bin_ref, last_good).await;
                 let ttl = if probed {
-                    LOCAL_CATALOG_TTL
+                    PI_FAMILY_LOCAL_CATALOG_TTL
                 } else {
                     LOCAL_CATALOG_FAILURE_COOLDOWN
                 };
-                (catalog, ttl, probed)
+                (catalog, Some(ttl), probed)
             }
-            "dsh" => (dsh_catalog().await?, LOCAL_CATALOG_TTL, true),
-            "agy" => (agy_catalog().await, LOCAL_CATALOG_TTL, true),
-            "opencode" => (opencode_catalog().await, LOCAL_CATALOG_TTL, true),
-            "qoder" => (qoder_catalog("qoder").await?, LOCAL_CATALOG_TTL, true),
-            "qoder-cn" => (qoder_catalog("qoder-cn").await?, LOCAL_CATALOG_TTL, true),
+            "dsh" => (dsh_catalog().await?, Some(LOCAL_CATALOG_TTL), true),
+            "agy" => {
+                let catalog = agy_catalog().await;
+                let probed = catalog.authoritative;
+                (catalog, probed.then_some(LOCAL_CATALOG_TTL), probed)
+            }
+            "opencode" => {
+                let (catalog, probed) = opencode_catalog().await;
+                (catalog, probed.then_some(LOCAL_CATALOG_TTL), probed)
+            }
+            "qoder" => (qoder_catalog("qoder").await?, Some(LOCAL_CATALOG_TTL), true),
+            "qoder-cn" => (
+                qoder_catalog("qoder-cn").await?,
+                Some(LOCAL_CATALOG_TTL),
+                true,
+            ),
             // MiniMax's catalog comes from a live `mcode acp` probe (the /model
             // menu only exists on the session handshake), cached last-success;
             // a failed probe falls back to the static stock list.
-            "minimax" => (minimax::minimax_catalog(bin_ref).await, LOCAL_CATALOG_TTL, true),
-            "codebuddy" => (
-                codebuddy::codebuddy_catalog(bin_ref).await,
-                LOCAL_CATALOG_TTL,
-                true,
-            ),
+            "minimax" => {
+                let catalog = minimax::minimax_catalog(bin_ref).await;
+                let probed = catalog.authoritative;
+                (catalog, probed.then_some(LOCAL_CATALOG_TTL), probed)
+            }
+            "codebuddy" => {
+                let catalog = codebuddy::codebuddy_catalog(bin_ref).await;
+                let probed = catalog.authoritative;
+                (catalog, probed.then_some(LOCAL_CATALOG_TTL), probed)
+            }
             // Unknown engine: no CLI-sourced catalog — the frontend fills the
             // picker from the configured provider channels.
-            _ => (EngineCatalog::authoritative(Vec::new()), LOCAL_CATALOG_TTL, true),
+            _ => (EngineCatalog::authoritative(Vec::new()), None, false),
         })
     })
     .await
@@ -449,7 +530,7 @@ async fn agy_catalog() -> EngineCatalog {
     agy::agy_catalog(&bin).await
 }
 
-async fn opencode_catalog() -> EngineCatalog {
+async fn opencode_catalog() -> (EngineCatalog, bool) {
     let settings = crate::settings::read_settings().unwrap_or_default();
     let bin = super::engine_bin(&settings, "opencode");
     opencode::opencode_catalog(&bin).await
@@ -554,7 +635,7 @@ fn flatten_llm_models(
     models
 }
 
-async fn codex_catalog() -> EngineCatalog {
+async fn codex_catalog() -> (EngineCatalog, bool) {
     let settings = crate::settings::read_settings().unwrap_or_default();
     let bin = super::engine_bin(&settings, "codex");
     if let Ok(mut models) = codex::run_codex_debug_models(&bin).await {
@@ -568,13 +649,19 @@ async fn codex_catalog() -> EngineCatalog {
                     model.context_window = Some(window);
                 }
             }
-            return EngineCatalog::authoritative(with_default_first(models, configured));
+            return (
+                EngineCatalog::authoritative(with_default_first(models, configured)),
+                true,
+            );
         }
     }
-    EngineCatalog::authoritative(codex::codex_config_model().into_iter().collect())
+    (
+        EngineCatalog::authoritative(codex::codex_config_model().into_iter().collect()),
+        false,
+    )
 }
 
-async fn kimi_catalog() -> EngineCatalog {
+async fn kimi_catalog() -> (EngineCatalog, bool) {
     // The CLI's own registry is ground truth for `-m` aliases; the
     // config's [models.*] tables are the offline equivalent (same alias
     // semantics), then the CLI's configured default as a single-entry
@@ -583,17 +670,23 @@ async fn kimi_catalog() -> EngineCatalog {
     let bin = super::engine_bin(&settings, "kimi");
     if let Ok(models) = kimi::run_kimi_provider_list(&bin).await {
         if !models.is_empty() {
-            return EngineCatalog::authoritative(with_default_first(
-                models,
-                kimi::kimi_default_model(),
-            ));
+            return (
+                EngineCatalog::authoritative(with_default_first(
+                    models,
+                    kimi::kimi_default_model(),
+                )),
+                true,
+            );
         }
     }
     let local = kimi::kimi_local_models();
     if !local.is_empty() {
-        return EngineCatalog::authoritative(local);
+        return (EngineCatalog::authoritative(local), false);
     }
-    EngineCatalog::authoritative(kimi::kimi_default_model().into_iter().collect())
+    (
+        EngineCatalog::authoritative(kimi::kimi_default_model().into_iter().collect()),
+        false,
+    )
 }
 
 fn grok_catalog() -> EngineCatalog {
@@ -941,7 +1034,7 @@ model = \"must-not-leak\"
                             provider: "p".to_string(),
                             context_window: None,
                         }]),
-                        LOCAL_CATALOG_TTL,
+                        Some(LOCAL_CATALOG_TTL),
                         true,
                     ))
                 })
@@ -1022,5 +1115,26 @@ model = \"must-not-leak\"
         assert_eq!(stages_called, vec!["models-json", "list-no-ext"]);
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].id, "legacy/m1");
+    }
+
+    #[test]
+    fn dsh_local_catalog_cache_key_tracks_configured_origin() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.dsh_host = Some("127.0.0.1".to_string());
+        settings.dsh_port = Some(7777);
+        let k1 = local_catalog_cache_key(&settings, "dsh", "dsh");
+        settings.dsh_port = Some(8888);
+        let k2 = local_catalog_cache_key(&settings, "dsh", "dsh");
+        assert_ne!(k1, k2);
+        assert_eq!(local_catalog_cache_key(&settings, "claude", "claude"), "claude");
+    }
+
+    #[test]
+    fn pi_family_local_catalog_ttl_is_longer_than_unfingerprinted_engines() {
+        assert_eq!(LOCAL_CATALOG_TTL, std::time::Duration::from_secs(120));
+        assert_eq!(
+            PI_FAMILY_LOCAL_CATALOG_TTL,
+            std::time::Duration::from_secs(600)
+        );
     }
 }

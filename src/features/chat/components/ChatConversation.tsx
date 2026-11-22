@@ -22,7 +22,6 @@ import {
 import type { SessionState } from "../store/stream";
 
 import { MessageTimeline } from "./MessageTimeline";
-import { clearSessionScrollSnapshot } from "./use-scroll-follow";
 import { ConversationFooter } from "./ConversationFooter";
 import { useComposerActions } from "./use-composer-actions";
 import { filterEngineOptions, orderEngineOptions } from "./engine-options";
@@ -60,7 +59,8 @@ interface KeptTimelineEntry {
 /** One session's message list with its own bySession subscription and frozen
  *  SessionScope: stream flushes stay inside this subtree, and hidden kept
  *  timelines freeze their snapshot reference so background streaming triggers
- *  zero React re-renders, Markdown reparses, or virtualizer layout passes. */
+ *  zero React re-renders, Markdown reparses, or virtualizer layout passes
+ *  until the tab becomes visible again. */
 const KeptSessionTimeline = memo(function KeptSessionTimeline({
   entry,
   visible,
@@ -103,7 +103,6 @@ const KeptSessionTimeline = memo(function KeptSessionTimeline({
           streaming={session.streaming}
           onLoadEarlier={handleLoadEarlier}
           workspacePath={entry.session.workspacePath}
-          scrollMemoryKey={entry.key}
           visible={visible}
         />
       </div>
@@ -166,8 +165,7 @@ const SessionTimeline = memo(function SessionTimeline({
     setKept(nextKept);
   }
 
-  // Record LRU recency for eviction and drop scroll snapshots only when a tab
-  // is actually closed (LRU-evicted open tabs retain their scroll position).
+  // Record LRU recency for eviction and drop stale keys when a tab closes.
   useLayoutEffect(() => {
     if (activeKey) {
       lruRankRef.current.set(activeKey, ++lruTickRef.current);
@@ -178,7 +176,6 @@ const SessionTimeline = memo(function SessionTimeline({
     for (const k of Array.from(lruRankRef.current.keys())) {
       if (k !== activeKey && !open.has(k)) {
         lruRankRef.current.delete(k);
-        clearSessionScrollSnapshot(k);
       }
     }
   }, [activeKey, openTabs]);
