@@ -1297,6 +1297,7 @@ pub async fn prewarm_omp_session(
             launch.req.session_id.as_deref(),
             launch.req.model.as_deref(),
             launch.req.effort.as_deref(),
+            launch.req.provider_id.as_deref(),
         )
         .await
 }
